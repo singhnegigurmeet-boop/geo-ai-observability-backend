@@ -1,0 +1,38 @@
+{
+  "name": "geo-ai-observability-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Production-oriented GEO and AI observability backend.",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "tsx --test tests/routes.test.ts",
+    "typecheck": "tsc --noEmit",
+    "migrate": "tsx src/db/migrate.ts",
+    "elasticsearch:setup": "tsx src/search/setup-elasticsearch.ts",
+    "infra:up": "docker compose up -d postgres redis elasticsearch",
+    "infra:down": "docker compose down",
+    "docker:migrate": "docker compose run --rm migrate",
+    "docker:up": "docker compose up -d --build api",
+    "docker:logs": "docker compose logs -f api"
+  },
+  "dependencies": {
+    "@elastic/elasticsearch": "^8.15.1",
+    "bullmq": "^5.12.11",
+    "dotenv": "^16.4.5",
+    "express": "^5.1.0",
+    "ioredis": "^5.4.1",
+    "pg": "^8.12.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.5.4",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  }
+}

@@ -1,0 +1,96 @@
+services:
+  api:
+    build: .
+    container_name: geo-api
+    command: node dist/main.js
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_NODE: http://elasticsearch:9200
+      CACHE_TTL_SECONDS: 3600
+      ANALYSIS_STALE_HOURS: 24
+      PROVIDER_TIMEOUT_MS: 60000
+      PROVIDER_MAX_RETRIES: 3
+      USE_MOCK_PROVIDERS: "true"
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+
+  migrate:
+    build: .
+    container_name: geo-migrate
+    command: node dist/db/migrate.js
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_NODE: http://elasticsearch:9200
+      CACHE_TTL_SECONDS: 3600
+      ANALYSIS_STALE_HOURS: 24
+      PROVIDER_TIMEOUT_MS: 60000
+      PROVIDER_MAX_RETRIES: 3
+      USE_MOCK_PROVIDERS: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: geo-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: geo_observability
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d geo_observability"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: geo-redis
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.1
+    container_name: geo-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  postgres_data:
+  redis_data:
+  elasticsearch_data:

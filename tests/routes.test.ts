@@ -1,0 +1,173 @@
+import assert from "node:assert/strict";
+import { after, before, describe, it } from "node:test";
+import type { Server } from "node:http";
+import { createApp } from "../src/app.js";
+import type { AnalysisApiService } from "../src/services/analysis-api.service.js";
+
+const domainId = 1;
+const jobId = 10;
+
+const fakeAnalysisService = {
+  async enqueueOrReturnCachedAnalysis(domain: string) {
+    return {
+      statusCode: 202,
+      body: {
+        status: "queued",
+        job_id: jobId,
+        domain_id: domainId,
+        message: "Analysis started",
+        domain
+      }
+    };
+  },
+
+  async getAnalysisJobStatus(requestedJobId: number) {
+    return {
+      statusCode: 200,
+      body: {
+        status: "completed",
+        job_id: requestedJobId,
+        domain: "nike.com"
+      }
+    };
+  },
+
+  async getLatestProviderScores(requestedDomainId: number, llmName: string) {
+    return {
+      statusCode: 200,
+      body: {
+        domain_id: requestedDomainId,
+        domain: "nike.com",
+        provider: llmName,
+        scores: [
+          {
+            top_k: 5,
+            rank_position: 2,
+            mention_count: 1,
+            score: "92.00",
+            status: "completed"
+          }
+        ]
+      }
+    };
+  },
+
+  async getLatestProviderScoreComparison(requestedDomainId: number) {
+    return {
+      statusCode: 200,
+      body: {
+        domain_id: requestedDomainId,
+        domain: "nike.com",
+        providers: {
+          openai: [{ top_k: 5, score: "92.00", status: "completed" }],
+          gemini: [{ top_k: 5, score: "80.00", status: "completed" }],
+          claude: [{ top_k: 5, score: "88.00", status: "completed" }]
+        }
+      }
+    };
+  },
+
+  async getLatestVisibilityScore(requestedDomainId: number) {
+    return {
+      statusCode: 200,
+      body: {
+        domain_id: requestedDomainId,
+        domain: "nike.com",
+        data: {
+          overall_geo_score: "86.67"
+        }
+      }
+    };
+  }
+} as unknown as AnalysisApiService;
+
+describe("routes", () => {
+  let server: Server;
+  let baseUrl: string;
+
+  before(async () => {
+    const app = createApp(fakeAnalysisService);
+    server = app.listen(0);
+
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  after(async () => {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  });
+
+  it("GET /health returns ok", async () => {
+    const response = await fetch(`${baseUrl}/health`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(body, { status: "ok" });
+  });
+
+  it("POST /v1/analysis queues an analysis", async () => {
+    const response = await fetch(`${baseUrl}/v1/analysis`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ domain: "nike.com" })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 202);
+    assert.equal(body.status, "queued");
+    assert.equal(body.job_id, jobId);
+    assert.equal(body.domain_id, domainId);
+  });
+
+  it("GET /v1/analysis/jobs/:jobId returns job status", async () => {
+    const response = await fetch(`${baseUrl}/v1/analysis/jobs/${jobId}`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.status, "completed");
+    assert.equal(body.job_id, jobId);
+  });
+
+  it("GET /v1/domains/:domainId/providers/:llmName/scores returns one provider", async () => {
+    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/providers/openai/scores`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.domain_id, domainId);
+    assert.equal(body.provider, "openai");
+    assert.equal(body.scores[0].top_k, 5);
+  });
+
+  it("GET /v1/domains/:domainId/provider-scores returns provider comparison", async () => {
+    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/provider-scores`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.domain_id, domainId);
+    assert.ok(body.providers.openai);
+    assert.ok(body.providers.gemini);
+    assert.ok(body.providers.claude);
+  });
+
+  it("GET /v1/domains/:domainId/visibility-score returns final score", async () => {
+    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/visibility-score`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.domain_id, domainId);
+    assert.equal(body.data.overall_geo_score, "86.67");
+  });
+
+  it("rejects an invalid provider name", async () => {
+    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/providers/not-a-provider/scores`);
+    const body = await response.json();
+
+    assert.equal(response.status, 400);
+    assert.equal(body.error, "Invalid request body");
+  });
+});
