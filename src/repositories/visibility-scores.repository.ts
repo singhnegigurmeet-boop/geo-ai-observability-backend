@@ -16,6 +16,19 @@ export class VisibilityScoresRepository extends BaseRepository<VisibilityScoreRo
     );
   }
 
+  async findVisibilityScoreHistory(domainId: number, limit = 50) {
+    return this.executeQuery<VisibilityScoreRow>(
+      `
+        SELECT *
+        FROM visibility_scores
+        WHERE domain_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+      `,
+      [domainId, limit]
+    );
+  }
+
   async insertVisibilityScore(input: Omit<VisibilityScoreRow, "id" | "created_at">) {
     const result = await query<VisibilityScoreRow>(
       `

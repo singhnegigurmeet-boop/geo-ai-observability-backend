@@ -8,11 +8,14 @@ import { domainsRepository } from "./repositories/domains.repository.js";
 import { providerAnalysisRepository } from "./repositories/provider-analysis.repository.js";
 import { providerSnapshotsRepository } from "./repositories/provider-snapshots.repository.js";
 import { visibilityScoresRepository } from "./repositories/visibility-scores.repository.js";
-import { AnalysisApiService } from "./services/analysis-api.service.js";
+import { AnalysisCommandService } from "./services/analysis-command.service.js";
 import { AnalysisJobService } from "./services/analysis-job.service.js";
+import { AnalysisStatusService } from "./services/analysis-status.service.js";
 import { ObservabilityIndexService } from "./services/observability-index.service.js";
 import { ProviderExecutionService } from "./services/provider-execution.service.js";
+import { ProviderScoresService } from "./services/provider-scores.service.js";
 import { RateLimitService } from "./services/rate-limit.service.js";
+import { VisibilityScoreReadService } from "./services/visibility-score-read.service.js";
 import { VisibilityScoreService } from "./services/visibility-score.service.js";
 
 const visibilityScoreService = new VisibilityScoreService({
@@ -30,16 +33,33 @@ const rateLimitService = new RateLimitService({
   sameDomainTtlSeconds: env.RATE_LIMIT_SAME_DOMAIN_TTL_SECONDS
 });
 
-export const analysisApiService = new AnalysisApiService({
+export const analysisCommandService = new AnalysisCommandService({
   analysisRunsRepository,
   domainsRepository,
-  providerAnalysisRepository,
   visibilityScoresRepository,
   queue: analysisQueue,
   redis: redisConnection,
   rateLimitService,
   cacheTtlSeconds: env.CACHE_TTL_SECONDS,
   staleHours: env.ANALYSIS_STALE_HOURS
+});
+
+export const analysisStatusService = new AnalysisStatusService({
+  analysisRunsRepository,
+  domainsRepository,
+  providerAnalysisRepository,
+  visibilityScoresRepository
+});
+
+export const providerScoresService = new ProviderScoresService({
+  domainsRepository,
+  providerAnalysisRepository,
+  providerSnapshotsRepository
+});
+
+export const visibilityScoreReadService = new VisibilityScoreReadService({
+  domainsRepository,
+  visibilityScoresRepository
 });
 
 export const analysisJobService = new AnalysisJobService({

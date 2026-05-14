@@ -2,6 +2,10 @@
 
 This document explains how the backend starts, which functions are called, and what each layer does.
 
+## Documentation Rule
+
+Markdown files are the project source of truth. Any change to architecture, routes, worker flow, scoring logic, database behavior, Redis caching/rate limiting, Elasticsearch indexing, provider execution, or local run commands must update the relevant `.md` file in the same change.
+
 ## Runtime Process
 
 The backend runs as one combined process.
@@ -9,6 +13,15 @@ The backend runs as one combined process.
 Start command:
 
 ```bash
+npm start
+```
+
+For a clean checkout, build before starting:
+
+```bash
+npm install
+npm run build
+npm run migrate
 npm start
 ```
 
@@ -29,11 +42,12 @@ HTTP client
   -> Redis / PostgreSQL lookup
   -> BullMQ job
   -> Worker process
+  -> analysis_runs processing update
   -> Provider execution
   -> PostgreSQL writes
-  -> analysis_runs status update
   -> Elasticsearch trace indexing
   -> Redis cache write
+  -> analysis_runs final status update
 ```
 
 ## API Startup
@@ -55,7 +69,7 @@ Call flow:
 ```text
 main.ts
   -> container.ts
-  -> createApp(analysisApiService)
+  -> createApp(route services)
   -> createAnalysisWorker(analysisJobService)
   -> app.listen(env.PORT)
 ```
@@ -64,7 +78,7 @@ What happens:
 
 1. `main.ts` imports wired services from `src/container.ts`.
 2. `main.ts` imports `createApp` from `src/app.ts`.
-3. `createApp(analysisApiService)` builds the Express app.
+3. `createApp(...)` builds the Express app with focused route services.
 4. Express registers JSON parsing.
 5. Express registers `GET /health`.
 6. Express registers `/v1/analysis`.
@@ -80,6 +94,8 @@ Key files:
 - `src/container.ts`
 - `src/app.ts`
 - `src/routes/analysis.routes.ts`
+- `src/routes/provider-scores.routes.ts`
+- `src/routes/visibility-scores.routes.ts`
 
 ## API Request Flow
 
@@ -101,6 +117,12 @@ Latest provider score endpoint:
 GET /v1/domains/:domainId/providers/:llmName/scores
 ```
 
+Provider history endpoint:
+
+```http
+GET /v1/domains/:domainId/providers/:llmName/history
+```
+
 All provider comparison endpoint:
 
 ```http
@@ -111,6 +133,18 @@ Final visibility score endpoint:
 
 ```http
 GET /v1/domains/:domainId/visibility-score
+```
+
+Visibility score history endpoint:
+
+```http
+GET /v1/domains/:domainId/visibility-score/history
+```
+
+Visibility score trend endpoint:
+
+```http
+GET /v1/domains/:domainId/visibility-score/trend
 ```
 
 Example body:
@@ -125,9 +159,10 @@ Call flow:
 
 ```text
 analysis.routes.ts
-  -> requestSchema.parse(req.body)
+  -> validateBody(requestSchema)
+  -> AnalysisController.handleAnalysisRequest(req, res)
   -> getClientIp(req)
-  -> enqueueOrReturnCachedAnalysis(domain, ipAddress)
+  -> AnalysisCommandService.enqueueOrReturnCachedAnalysis(domain, ipAddress)
 ```
 
 Inside `enqueueOrReturnCachedAnalysis()`:
@@ -172,13 +207,24 @@ Polling behavior:
 Score read behavior:
 
 1. `GET /v1/domains/:domainId/providers/:llmName/scores` returns one provider's latest top-k rows from `provider_analysis`.
-2. `GET /v1/domains/:domainId/provider-scores` returns OpenAI, Gemini, and Claude latest top-k rows from `provider_analysis`.
-3. `GET /v1/domains/:domainId/visibility-score` returns the final aggregated latest score from `visibility_scores`.
+2. `GET /v1/domains/:domainId/providers/:llmName/history` returns historical provider rows from `provider_snapshots`.
+3. `GET /v1/domains/:domainId/provider-scores` returns OpenAI, Gemini, and Claude latest top-k rows from `provider_analysis`.
+4. `GET /v1/domains/:domainId/visibility-score` returns the final aggregated latest score from `visibility_scores`.
+5. `GET /v1/domains/:domainId/visibility-score/history` returns historical final scores from `visibility_scores`.
+6. `GET /v1/domains/:domainId/visibility-score/trend` compares the latest and previous `visibility_scores` rows.
 
 Key files:
 
 - `src/routes/analysis.routes.ts`
-- `src/services/analysis-api.service.ts`
+- `src/routes/provider-scores.routes.ts`
+- `src/routes/visibility-scores.routes.ts`
+- `src/controllers/analysis.controller.ts`
+- `src/controllers/provider-scores.controller.ts`
+- `src/controllers/visibility-scores.controller.ts`
+- `src/services/analysis-command.service.ts`
+- `src/services/analysis-status.service.ts`
+- `src/services/provider-scores.service.ts`
+- `src/services/visibility-score-read.service.ts`
 - `src/queue/analysis.queue.ts`
 - `src/repositories/domains.repository.ts`
 - `src/repositories/provider-analysis.repository.ts`
@@ -260,6 +306,7 @@ Call flow:
 
 ```text
 analysisJobService.processAnalysisJob(job)
+  -> mark analysis_runs processing
   -> Promise.allSettled(providerAdapters.map(executeProvider))
   -> persistProviderSuccess(...) for successful providers
   -> persistProviderFailure(...) for failed providers
@@ -270,13 +317,14 @@ analysisJobService.processAnalysisJob(job)
 
 Important behavior:
 
-1. Providers run in parallel.
-2. `Promise.allSettled()` is used so one provider failure does not fail the whole workflow.
-3. Successful provider results write completed rows.
-4. Failed provider results write failed rows.
-5. Aggregated GEO scoring happens after provider rows are written.
-6. Elasticsearch indexing happens after aggregation.
-7. Redis is updated with the final result.
+1. The analysis run is marked `processing`.
+2. Providers run in parallel.
+3. `Promise.allSettled()` is used so one provider failure does not fail the whole workflow.
+4. Successful provider results write completed rows.
+5. Failed provider results write failed rows.
+6. Aggregated GEO scoring happens after provider rows are written.
+7. Elasticsearch indexing happens after aggregation.
+8. Redis is updated with the final result.
 
 ## Provider Registry
 
@@ -340,16 +388,18 @@ Call flow:
 ```text
 executeProvider(adapter, domain)
   -> buildRankingPrompt(domain)
-  -> withRetries(adapter.runTextPrompt(rankingPrompt), 3)
+  -> withRetries(adapter.runTextPrompt(rankingPrompt), PROVIDER_MAX_RETRIES)
   -> parseJsonObject(rankingResponse)
   -> buildObservabilityPrompt(domain)
-  -> withRetries(adapter.runTextPrompt(observabilityPrompt), 3)
+  -> withRetries(adapter.runTextPrompt(observabilityPrompt), PROVIDER_MAX_RETRIES)
   -> for each top_k in [5, 10, 15, 50, 100]
        -> buildScoringPrompt(domain, top_k)
-       -> withRetries(adapter.runTextPrompt(scoringPrompt), 3)
+       -> withRetries(adapter.runTextPrompt(scoringPrompt), PROVIDER_MAX_RETRIES)
        -> parseJsonObject(scoringResponse)
   -> return provider execution result
 ```
+
+`PROVIDER_MAX_RETRIES` defaults to `3`.
 
 Prompts:
 
@@ -659,6 +709,44 @@ CACHE_TTL_SECONDS
 
 Failed all-provider runs are not cached, because no `visibility_scores` row is created for them. Completed and partial-success runs are cached after the worker stores the final visibility score.
 
+## History And Trend API
+
+V4 history APIs reuse existing append-only/source tables. No schema change is required.
+
+Visibility history:
+
+```sql
+SELECT *
+FROM visibility_scores
+WHERE domain_id = $1
+ORDER BY created_at DESC
+LIMIT 50;
+```
+
+Provider history:
+
+```sql
+SELECT *
+FROM provider_snapshots
+WHERE domain_id = $1
+  AND llm_name = $2
+ORDER BY created_at DESC
+LIMIT 50;
+```
+
+Trend summary:
+
+```text
+current_score = latest visibility_scores.overall_geo_score
+previous_score = previous visibility_scores.overall_geo_score
+change = current_score - previous_score
+trend =
+  improved if change > 0
+  dropped if change < 0
+  stable if change = 0
+  insufficient_history if there is no previous score
+```
+
 ## Happy Path Summary
 
 ```text
@@ -671,14 +759,15 @@ Failed all-provider runs are not cached, because no `visibility_scores` row is c
 7. API checks unique-domain Redis rate limit for uncached/stale domains
 8. API enqueues BullMQ job
 9. worker picks job
-10. worker runs openai, gemini, claude adapters in parallel
-11. each provider runs ranking, observability, and scoring prompts
-12. worker writes provider_analysis latest rows
-13. worker writes provider_snapshots history rows
-14. worker calculates visibility_scores row
-15. worker indexes Elasticsearch trace documents
-16. worker caches final result in Redis
-17. next API request returns cached or PostgreSQL result
+10. worker marks analysis_runs processing
+11. worker runs openai, gemini, claude adapters in parallel
+12. each provider runs ranking, observability, and scoring prompts
+13. worker writes provider_analysis latest rows
+14. worker writes provider_snapshots history rows
+15. worker calculates visibility_scores row
+16. worker indexes Elasticsearch trace documents
+17. worker caches final result in Redis
+18. next API request returns cached or PostgreSQL result
 ```
 
 ## Current Local Caveats

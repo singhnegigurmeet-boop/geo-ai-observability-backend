@@ -12,13 +12,20 @@ export class ObservabilityIndexService {
   constructor(private readonly dependencies: ObservabilityIndexServiceDependencies) {}
 
   ensureObservabilityIndexes() {
-    this.indexSetupPromise ??= this.createObservabilityIndexes();
+    this.indexSetupPromise ??= this.createObservabilityIndexes().catch((error) => {
+      this.indexSetupPromise = null;
+      throw error;
+    });
     return this.indexSetupPromise;
   }
 
   async indexProviderTrace(document: TraceDocument) {
-    await this.ensureObservabilityIndexes();
-    await this.indexTraceDocument(document);
+    try {
+      await this.ensureObservabilityIndexes();
+      await this.indexTraceDocument(document);
+    } catch (error) {
+      this.logIndexingError("Failed to index provider trace document", error);
+    }
   }
 
   async indexProviderTraces(documents: TraceDocument[]) {
@@ -26,7 +33,13 @@ export class ObservabilityIndexService {
       return;
     }
 
-    await this.ensureObservabilityIndexes();
+    try {
+      await this.ensureObservabilityIndexes();
+    } catch (error) {
+      this.logIndexingError("Failed to prepare Elasticsearch observability indexes", error);
+      return;
+    }
+
     const results = await Promise.allSettled(documents.map((document) => this.indexTraceDocument(document)));
     const failures = results.filter((result) => result.status === "rejected");
 
@@ -91,5 +104,10 @@ export class ObservabilityIndexService {
         console.log(`Created Elasticsearch index: ${index}`);
       })
     );
+  }
+
+  private logIndexingError(message: string, error: unknown) {
+    const detail = error instanceof Error ? error.message : error;
+    console.error(message, detail);
   }
 }

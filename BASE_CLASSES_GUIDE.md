@@ -2,6 +2,10 @@
 
 The backend uses small base classes only where they remove repeated plumbing.
 
+## Documentation Rule
+
+Markdown files are the project source of truth. When code changes the architecture, layer boundaries, dependency wiring, response shape, validation flow, or runtime behavior, update the relevant `.md` file in the same change.
+
 ## Composition Root
 
 Runtime dependencies are wired in `src/container.ts`.
@@ -10,9 +14,12 @@ Runtime dependencies are wired in `src/container.ts`.
 
 ```text
 main.ts
-  -> analysisApiService
+  -> analysisCommandService
+  -> analysisStatusService
+  -> providerScoresService
+  -> visibilityScoreReadService
   -> analysisJobService
-  -> createApp(analysisApiService)
+  -> createApp(route services)
   -> createAnalysisWorker(analysisJobService)
 ```
 
@@ -75,22 +82,95 @@ src/routes/base.router.ts
 
 Kept methods:
 
-- `validateBody`
-- `validateParams`
 - `asyncHandler`
+
+Routes only map URL patterns to controller methods.
+
+## BaseController
+
+Location:
+
+```text
+src/controllers/base.controller.ts
+```
+
+Kept methods:
+
 - `logRequest`
 - `logResponse`
 
-Routes should validate input, call one service method, and return the service result.
+Controllers call one service method and return the service result.
+
+## Validation Middleware
+
+Location:
+
+```text
+src/middleware/validate.middleware.ts
+```
+
+Kept functions:
+
+- `validateBody`
+- `validateParams`
+
+Routes attach validation middleware before controller handlers. Controllers should assume validated request data.
+
+## API Responses
+
+Location:
+
+```text
+src/utils/api-response.ts
+src/types/api-response.types.ts
+```
+
+Kept helpers:
+
+- `apiResult`
+- `apiError`
+- `sendApiResult`
+
+All controllers should send service results through `sendApiResult`.
+
+Do not change existing success response payloads into a new envelope unless the endpoint explicitly requires it. Error responses use the shared shape:
+
+```json
+{
+  "status": "error",
+  "error": "message"
+}
+```
 
 ## Current Layers
 
 ```text
 routes
+  -> validation middleware
+  -> controllers
   -> services
   -> repositories
   -> PostgreSQL / Redis / Elasticsearch
 ```
+
+Controller/service split:
+
+```text
+AnalysisRouter
+  -> AnalysisController
+  -> AnalysisCommandService
+  -> AnalysisStatusService
+
+ProviderScoresRouter
+  -> ProviderScoresController
+  -> ProviderScoresService
+
+VisibilityScoresRouter
+  -> VisibilityScoresController
+  -> VisibilityScoreReadService
+```
+
+Keep this split unless a service has a clear reason to own the dependency. Do not put all repositories, Redis, and BullMQ into one API facade.
 
 ## Shared Types
 

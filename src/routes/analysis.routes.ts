@@ -1,7 +1,8 @@
-import { Router, Request, Response } from "express";
+import { Router } from "express";
 import { z } from "zod";
+import { validateBody, validateParams } from "../middleware/validate.middleware.js";
 import { BaseRouter } from "./base.router.js";
-import type { AnalysisApiService } from "../services/analysis-api.service.js";
+import type { AnalysisController } from "../controllers/analysis.controller.js";
 
 const requestSchema = z.object({
   domain: z.string().trim().min(1).max(253)
@@ -14,7 +15,7 @@ const jobParamsSchema = z.object({
 export class AnalysisRouter extends BaseRouter {
   private readonly router: Router;
 
-  constructor(private readonly analysisService: AnalysisApiService, router: Router = Router()) {
+  constructor(private readonly analysisController: AnalysisController, router: Router = Router()) {
     super();
     this.router = router;
     this.setupRoutes();
@@ -25,45 +26,19 @@ export class AnalysisRouter extends BaseRouter {
   }
 
   private setupRoutes(): void {
-    this.router.post("/", this.asyncHandler((req, res) => this.handleAnalysisRequest(req, res)));
-    this.router.get("/jobs/:jobId", this.asyncHandler((req, res) => this.handleJobStatusRequest(req, res)));
-  }
-
-  private async handleAnalysisRequest(req: Request, res: Response): Promise<void> {
-    this.logRequest(req);
-
-    const input = this.validateBody<{ domain: string }>(req, requestSchema);
-    this.log(`Processing analysis request for domain: ${input.domain}`);
-
-    const result = await this.analysisService.enqueueOrReturnCachedAnalysis(input.domain, this.getClientIp(req));
-
-    this.logResponse(req, result.statusCode);
-    res.status(result.statusCode).json(result.body);
-  }
-
-  private async handleJobStatusRequest(req: Request, res: Response): Promise<void> {
-    this.logRequest(req);
-
-    const params = this.validateParams<{ jobId: number }>(req, jobParamsSchema);
-    this.log(`Checking analysis job status: ${params.jobId}`);
-
-    const result = await this.analysisService.getAnalysisJobStatus(params.jobId);
-
-    this.logResponse(req, result.statusCode);
-    res.status(result.statusCode).json(result.body);
-  }
-
-  private log(message: string, data?: unknown): void {
-    const logMessage = `[AnalysisRouter] ${message}`;
-    if (data !== undefined) {
-      console.log(logMessage, data);
-      return;
-    }
-
-    console.log(logMessage);
+    this.router.post(
+      "/",
+      validateBody(requestSchema),
+      this.asyncHandler((req, res) => this.analysisController.handleAnalysisRequest(req, res))
+    );
+    this.router.get(
+      "/jobs/:jobId",
+      validateParams(jobParamsSchema),
+      this.asyncHandler((req, res) => this.analysisController.handleJobStatusRequest(req, res))
+    );
   }
 }
 
-export function createAnalysisRouter(analysisService: AnalysisApiService): Router {
-  return new AnalysisRouter(analysisService).getRouter();
+export function createAnalysisRouter(analysisController: AnalysisController): Router {
+  return new AnalysisRouter(analysisController).getRouter();
 }

@@ -2,12 +2,11 @@ import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import type { Server } from "node:http";
 import { createApp } from "../src/app.js";
-import type { AnalysisApiService } from "../src/services/analysis-api.service.js";
 
 const domainId = 1;
 const jobId = 10;
 
-const fakeAnalysisService = {
+const fakeAnalysisCommandService = {
   async enqueueOrReturnCachedAnalysis(domain: string) {
     return {
       statusCode: 202,
@@ -19,8 +18,10 @@ const fakeAnalysisService = {
         domain
       }
     };
-  },
+  }
+};
 
+const fakeAnalysisStatusService = {
   async getAnalysisJobStatus(requestedJobId: number) {
     return {
       statusCode: 200,
@@ -30,8 +31,10 @@ const fakeAnalysisService = {
         domain: "nike.com"
       }
     };
-  },
+  }
+};
 
+const fakeProviderScoresService = {
   async getLatestProviderScores(requestedDomainId: number, llmName: string) {
     return {
       statusCode: 200,
@@ -67,6 +70,20 @@ const fakeAnalysisService = {
     };
   },
 
+  async getProviderScoreHistory(requestedDomainId: number, llmName: string) {
+    return {
+      statusCode: 200,
+      body: {
+        domain_id: requestedDomainId,
+        domain: "nike.com",
+        provider: llmName,
+        history: [{ top_k: 5, score: "92.00", status: "completed" }]
+      }
+    };
+  }
+};
+
+const fakeVisibilityScoreReadService = {
   async getLatestVisibilityScore(requestedDomainId: number) {
     return {
       statusCode: 200,
@@ -78,15 +95,45 @@ const fakeAnalysisService = {
         }
       }
     };
+  },
+
+  async getVisibilityScoreHistory(requestedDomainId: number) {
+    return {
+      statusCode: 200,
+      body: {
+        domain_id: requestedDomainId,
+        domain: "nike.com",
+        history: [{ overall_geo_score: "86.67" }]
+      }
+    };
+  },
+
+  async getVisibilityScoreTrend(requestedDomainId: number) {
+    return {
+      statusCode: 200,
+      body: {
+        domain_id: requestedDomainId,
+        domain: "nike.com",
+        current_score: 86.67,
+        previous_score: 80,
+        change: 6.67,
+        trend: "improved"
+      }
+    };
   }
-} as unknown as AnalysisApiService;
+};
 
 describe("routes", () => {
   let server: Server;
   let baseUrl: string;
 
   before(async () => {
-    const app = createApp(fakeAnalysisService);
+    const app = createApp({
+      analysisCommandService: fakeAnalysisCommandService,
+      analysisStatusService: fakeAnalysisStatusService,
+      providerScoresService: fakeProviderScoresService,
+      visibilityScoreReadService: fakeVisibilityScoreReadService
+    });
     server = app.listen(0);
 
     await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -161,6 +208,35 @@ describe("routes", () => {
     assert.equal(response.status, 200);
     assert.equal(body.domain_id, domainId);
     assert.equal(body.data.overall_geo_score, "86.67");
+  });
+
+  it("GET /v1/domains/:domainId/visibility-score/history returns visibility history", async () => {
+    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/visibility-score/history`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.domain_id, domainId);
+    assert.equal(body.history[0].overall_geo_score, "86.67");
+  });
+
+  it("GET /v1/domains/:domainId/providers/:llmName/history returns provider history", async () => {
+    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/providers/openai/history`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.domain_id, domainId);
+    assert.equal(body.provider, "openai");
+    assert.equal(body.history[0].top_k, 5);
+  });
+
+  it("GET /v1/domains/:domainId/visibility-score/trend returns trend summary", async () => {
+    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/visibility-score/trend`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.domain_id, domainId);
+    assert.equal(body.trend, "improved");
+    assert.equal(body.change, 6.67);
   });
 
   it("rejects an invalid provider name", async () => {

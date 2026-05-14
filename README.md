@@ -433,6 +433,7 @@ npm run docker:logs
 
 ## Important Notes
 
+- Markdown files are the project source of truth. Any architecture, route, workflow, scoring, database, cache, queue, or provider behavior change must update the relevant `.md` file in the same change.
 - BullMQ is not a separate server. It is an npm package and uses Redis.
 - PostgreSQL remains the business source of truth.
 - Elasticsearch is not the ranking engine.

@@ -1,4 +1,5 @@
 import { BaseRepository } from "./base.repository.js";
+import type { ProviderName } from "../config/constants.js";
 import type {
   LatestProviderSnapshotRow,
   ProviderAnalysisInput,
@@ -50,6 +51,20 @@ export class ProviderSnapshotsRepository extends BaseRepository<ProviderSnapshot
         ORDER BY llm_name, top_k, created_at DESC
       `,
       [domainId]
+    );
+  }
+
+  async findProviderSnapshotHistory(domainId: number, llmName: ProviderName, limit = 50) {
+    return this.executeQuery<ProviderSnapshotRow>(
+      `
+        SELECT *
+        FROM provider_snapshots
+        WHERE domain_id = $1
+          AND llm_name = $2
+        ORDER BY created_at DESC
+        LIMIT $3
+      `,
+      [domainId, llmName, limit]
     );
   }
 }

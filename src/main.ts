@@ -1,14 +1,25 @@
 import type { Server } from "node:http";
 import { createApp } from "./app.js";
 import { env } from "./config/env.js";
-import { analysisApiService, analysisJobService } from "./container.js";
+import {
+  analysisCommandService,
+  analysisJobService,
+  analysisStatusService,
+  providerScoresService,
+  visibilityScoreReadService
+} from "./container.js";
 import { elasticsearch } from "./lib/elasticsearch.js";
 import { pool } from "./lib/postgres.js";
 import { redisConnection } from "./lib/redis.js";
 import { analysisQueue } from "./queue/analysis.queue.js";
 import { createAnalysisWorker } from "./runtime/analysis-worker.js";
 
-const app = createApp(analysisApiService);
+const app = createApp({
+  analysisCommandService,
+  analysisStatusService,
+  providerScoresService,
+  visibilityScoreReadService
+});
 const worker = createAnalysisWorker(analysisJobService);
 
 const server = app.listen(env.PORT, () => {
