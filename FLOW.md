@@ -126,17 +126,21 @@ Call flow:
 ```text
 analysis.routes.ts
   -> requestSchema.parse(req.body)
-  -> enqueueOrReturnCachedAnalysis(domain)
+  -> getClientIp(req)
+  -> enqueueOrReturnCachedAnalysis(domain, ipAddress)
 ```
 
 Inside `enqueueOrReturnCachedAnalysis()`:
 
 ```text
 normalizeDomain(rawDomain)
+  -> check same-domain Redis rate limit
   -> Redis GET analysis:{domain}
+  -> if cached, return cached visibility score
   -> upsertDomain(domain)
   -> findLatestVisibilityScore(domainId)
   -> if fresh score exists, cache and return it
+  -> check unique-domain Redis rate limit
   -> else enqueue BullMQ job
 ```
 
@@ -144,13 +148,15 @@ Detailed behavior:
 
 1. The request body is validated with Zod.
 2. The input domain is normalized.
-3. Redis is checked first using key `analysis:{domain}`.
-4. If Redis has a cached result, API returns `200`.
-5. If Redis misses, PostgreSQL `domains` is upserted.
-6. PostgreSQL `visibility_scores` is checked for latest score.
-7. If the score exists and is fresh, it is cached in Redis and returned.
-8. If missing or stale, a BullMQ job is queued.
-9. API returns `202 queued` with numeric `analysis_runs.id` as `job_id` and numeric `domains.id` as `domain_id`.
+3. Redis same-domain spam protection is checked using IP + domain.
+4. Redis cache is checked using key `analysis:{domain}`.
+5. If Redis has a cached result, API returns `200`.
+6. If Redis misses, PostgreSQL `domains` is upserted.
+7. PostgreSQL `visibility_scores` is checked for latest score.
+8. If the score exists and is fresh, it is cached in Redis and returned.
+9. If missing or stale, Redis unique-domain rate limiting is checked.
+10. If allowed, a BullMQ job is queued.
+11. API returns `202 queued` with numeric `analysis_runs.id` as `job_id` and numeric `domains.id` as `domain_id`.
 
 The client can then poll `GET /v1/analysis/jobs/:jobId`.
 
@@ -423,14 +429,69 @@ Call flow:
 
 ```text
 visibilityScoreService.calculateAndStoreVisibilityScore(domainId)
-  -> providerSnapshotsRepository.findLatestProviderSnapshots(domainId)
-  -> filter completed snapshots
-  -> average provider scores
+  -> providerAnalysisRepository.findLatestScoringRowsForDomain(domainId)
+  -> filter completed latest provider_analysis rows
+  -> calculate weighted provider scores
   -> calculate coverage score
   -> calculate mention frequency score
   -> calculate consistency score
   -> calculate overall GEO score
   -> insertVisibilityScore(...)
+```
+
+Provider score formula:
+
+```text
+provider_score =
+  top_5_score * 0.5
+  + top_10_score * 0.3
+  + top_50_score * 0.2
+```
+
+Only top 5, top 10, and top 50 are used for the current aggregate. Other stored top-k rows remain useful for observability and debugging.
+
+Example:
+
+```text
+OpenAI top 5 score  = 0
+OpenAI top 10 score = 0
+OpenAI top 50 score = 65
+
+openai_score =
+  0 * 0.5
+  + 0 * 0.3
+  + 65 * 0.2
+  = 13
+```
+
+Coverage score:
+
+```text
+providers_found / total_providers * 100
+```
+
+A provider counts as found when one of its weighted top-k rows has a positive score, a non-null rank, or mention count above zero.
+
+Consistency score:
+
+```text
+best rank per provider
+  -> calculate rank spread
+  -> subtract spread penalty
+  -> subtract missing provider penalty
+```
+
+Current implementation:
+
+```text
+consistency_score =
+  max(0, 100 - min(100, rank_spread * 2) - missing_provider_count * 25)
+```
+
+Mention frequency score:
+
+```text
+min(100, total_mentions_across_weighted_rows * 10)
 ```
 
 Current formula:
@@ -444,6 +505,60 @@ overall_geo_score =
 ```
 
 This is intentionally simple for now. Do not add complicated ranking math until provider execution and observability are stable.
+
+## Provider API Keys
+
+Provider API keys come from environment variables:
+
+```text
+OPENAI_API_KEY
+GEMINI_API_KEY
+ANTHROPIC_API_KEY
+```
+
+Do not store provider API keys in PostgreSQL for this version. A database table for keys adds secret storage, encryption, auditing, and rotation complexity. For now, use `.env` locally and deployment secrets in production.
+
+Operational rule:
+
+```text
+Rotate provider API keys at least every 3 months.
+```
+
+If this later becomes multi-tenant, key storage should be designed separately with encrypted secret storage or a cloud secrets manager, not added casually to the core analytics schema.
+
+## Rate Limit Flow
+
+Rate limiting uses Redis and runs before a new analysis job is created.
+
+Request flow:
+
+```text
+POST /v1/analysis
+  -> normalize domain
+  -> check same-domain spam limit
+  -> check Redis cache
+  -> if cached, return cached result
+  -> check PostgreSQL latest score freshness
+  -> if fresh, cache and return result
+  -> check unique-domain limit
+  -> enqueue BullMQ job
+```
+
+Redis keys:
+
+```text
+rate_limit:same_domain:{ip}:{domain}
+rate_limit:unique_domains:{ip}:{yyyy-mm-dd}
+```
+
+Defaults:
+
+```text
+same domain: 20 requests per IP/domain/hour
+unique uncached domains: 5 domains per IP/day
+```
+
+Cached and fresh PostgreSQL results do not count against the unique-domain limit. Same-domain spam protection still applies before cache lookup.
 
 ## Elasticsearch Trace Flow
 
@@ -481,6 +596,18 @@ Elasticsearch indexing is best-effort. If Elasticsearch is down, the worker logs
 
 This is intentional because Elasticsearch is observability storage, not the structured source of truth.
 
+Index setup is idempotent:
+
+```text
+ensureObservabilityIndexes()
+  -> check openai-responses exists
+  -> if exists, return
+  -> else create it
+  -> repeat for gemini-responses and claude-responses
+```
+
+Within a running process, index setup is guarded by one shared promise, so a batch of trace documents does not try to recreate indexes repeatedly.
+
 ## Cache Flow
 
 Cache key:
@@ -501,11 +628,36 @@ Read by:
 enqueueOrReturnCachedAnalysis()
 ```
 
+Stored value:
+
+```text
+JSON.stringify(visibility_scores latest row)
+```
+
+Shape:
+
+```json
+{
+  "id": 1,
+  "domain_id": 1,
+  "openai_score": "82.00",
+  "gemini_score": "70.00",
+  "claude_score": "90.00",
+  "coverage_score": "100.00",
+  "consistency_score": "92.00",
+  "mention_frequency_score": "80.00",
+  "overall_geo_score": "82.80",
+  "created_at": "2026-05-14T..."
+}
+```
+
 TTL:
 
 ```text
 CACHE_TTL_SECONDS
 ```
+
+Failed all-provider runs are not cached, because no `visibility_scores` row is created for them. Completed and partial-success runs are cached after the worker stores the final visibility score.
 
 ## Happy Path Summary
 
@@ -513,18 +665,20 @@ CACHE_TTL_SECONDS
 1. node dist/main.js starts Express and the BullMQ worker
 2. client POSTs domain to /v1/analysis
 3. API validates domain
-4. API checks Redis
-5. API checks PostgreSQL
-6. API enqueues BullMQ job
-7. worker picks job
-8. worker runs openai, gemini, claude adapters in parallel
-9. each provider runs ranking, observability, and scoring prompts
-10. worker writes provider_analysis latest rows
-11. worker writes provider_snapshots history rows
-12. worker calculates visibility_scores row
-13. worker indexes Elasticsearch trace documents
-14. worker caches final result in Redis
-15. next API request returns cached or PostgreSQL result
+4. API checks same-domain Redis rate limit
+5. API checks Redis cache
+6. API checks PostgreSQL
+7. API checks unique-domain Redis rate limit for uncached/stale domains
+8. API enqueues BullMQ job
+9. worker picks job
+10. worker runs openai, gemini, claude adapters in parallel
+11. each provider runs ranking, observability, and scoring prompts
+12. worker writes provider_analysis latest rows
+13. worker writes provider_snapshots history rows
+14. worker calculates visibility_scores row
+15. worker indexes Elasticsearch trace documents
+16. worker caches final result in Redis
+17. next API request returns cached or PostgreSQL result
 ```
 
 ## Current Local Caveats

@@ -38,6 +38,15 @@ export type ProviderAnalysisStatusRow = {
   error_message: string | null;
 };
 
+export type ProviderAnalysisScoreRow = {
+  llm_name: ProviderName;
+  top_k: TopKValue;
+  rank_position: number | null;
+  mention_count: number;
+  score: string;
+  status: ProviderStatus;
+};
+
 export type ProviderLatestScoreRow = {
   id: number;
   domain_id: number;

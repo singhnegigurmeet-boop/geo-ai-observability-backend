@@ -17,14 +17,26 @@ export abstract class BaseRouter {
   }
 
   protected logRequest(req: Request, data?: unknown): void {
-    console.log(`[Request] ${req.method} ${req.path} from ${this.getClientIp(req)}`, data);
+    const message = `[Request] ${req.method} ${req.path} from ${this.getClientIp(req)}`;
+    if (data !== undefined) {
+      console.log(message, data);
+      return;
+    }
+
+    console.log(message);
   }
 
   protected logResponse(req: Request, statusCode: number, data?: unknown): void {
-    console.log(`[Response] ${req.method} ${req.path} - ${statusCode}`, data);
+    const message = `[Response] ${req.method} ${req.path} - ${statusCode}`;
+    if (data !== undefined) {
+      console.log(message, data);
+      return;
+    }
+
+    console.log(message);
   }
 
-  private getClientIp(req: Request): string {
+  protected getClientIp(req: Request): string {
     return (req.headers["x-forwarded-for"] as string)?.split(",")[0].trim() || req.socket.remoteAddress || "unknown";
   }
 }

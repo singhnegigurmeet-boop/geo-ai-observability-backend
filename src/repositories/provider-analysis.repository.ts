@@ -1,6 +1,7 @@
 import { ProviderName } from "../config/constants.js";
 import type {
   ProviderAnalysisInput,
+  ProviderAnalysisScoreRow,
   ProviderAnalysisStatusRow,
   ProviderLatestScoreRow
 } from "../types/database.types.js";
@@ -61,6 +62,24 @@ export class ProviderAnalysisRepository extends BaseRepository {
         WHERE domain_id = $1
         GROUP BY llm_name
         ORDER BY llm_name
+      `,
+      [domainId]
+    );
+  }
+
+  async findLatestScoringRowsForDomain(domainId: number) {
+    return this.executeQuery<ProviderAnalysisScoreRow>(
+      `
+        SELECT
+          llm_name,
+          top_k,
+          rank_position,
+          mention_count,
+          score,
+          status
+        FROM provider_analysis
+        WHERE domain_id = $1
+        ORDER BY llm_name ASC, top_k ASC
       `,
       [domainId]
     );

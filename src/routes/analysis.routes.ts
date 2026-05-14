@@ -35,7 +35,7 @@ export class AnalysisRouter extends BaseRouter {
     const input = this.validateBody<{ domain: string }>(req, requestSchema);
     this.log(`Processing analysis request for domain: ${input.domain}`);
 
-    const result = await this.analysisService.enqueueOrReturnCachedAnalysis(input.domain);
+    const result = await this.analysisService.enqueueOrReturnCachedAnalysis(input.domain, this.getClientIp(req));
 
     this.logResponse(req, result.statusCode);
     res.status(result.statusCode).json(result.body);
@@ -54,7 +54,13 @@ export class AnalysisRouter extends BaseRouter {
   }
 
   private log(message: string, data?: unknown): void {
-    console.log(`[AnalysisRouter] ${message}`, data);
+    const logMessage = `[AnalysisRouter] ${message}`;
+    if (data !== undefined) {
+      console.log(logMessage, data);
+      return;
+    }
+
+    console.log(logMessage);
   }
 }
 

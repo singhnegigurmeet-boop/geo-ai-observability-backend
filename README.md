@@ -66,6 +66,7 @@ Redis is used for:
 
 - BullMQ queue state
 - final analysis result cache
+- analysis request rate limiting
 
 ## Requirements
 
@@ -93,6 +94,10 @@ REDIS_URL=redis://localhost:6379
 ELASTICSEARCH_NODE=http://localhost:9200
 CACHE_TTL_SECONDS=3600
 ANALYSIS_STALE_HOURS=24
+RATE_LIMIT_UNIQUE_DOMAINS_PER_IP_PER_DAY=5
+RATE_LIMIT_UNIQUE_DOMAINS_TTL_SECONDS=86400
+RATE_LIMIT_SAME_DOMAIN_PER_IP_PER_HOUR=20
+RATE_LIMIT_SAME_DOMAIN_TTL_SECONDS=3600
 USE_MOCK_PROVIDERS=true
 ALLOW_MISSING_PROVIDER_KEYS=false
 PROVIDER_TIMEOUT_MS=60000
@@ -105,6 +110,16 @@ ANTHROPIC_MODEL=claude-3-5-haiku-latest
 ```
 
 Do not commit real provider API keys when real adapters are added.
+
+Provider API keys should come from environment variables or deployment secrets:
+
+```env
+OPENAI_API_KEY=
+GEMINI_API_KEY=
+ANTHROPIC_API_KEY=
+```
+
+Do not store provider API keys in PostgreSQL in this version. Rotate real provider keys at least every 3 months.
 
 ## Provider Modes
 
@@ -247,6 +262,18 @@ First response usually returns:
   "bullmq_job_id": "1",
   "message": "Analysis started",
   "domain": "nike.com"
+}
+```
+
+If rate limited, the API returns `429`:
+
+```json
+{
+  "status": "rate_limited",
+  "error": "Same domain request limit exceeded",
+  "limit": 20,
+  "current": 21,
+  "retry_after_seconds": 3600
 }
 ```
 

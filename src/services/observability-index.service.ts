@@ -18,20 +18,28 @@ export class ObservabilityIndexService {
 
   async indexProviderTrace(document: TraceDocument) {
     await this.ensureObservabilityIndexes();
-
-    await this.dependencies.elasticsearch.index({
-      index: PROVIDER_RESPONSE_INDEX[document.llm_name],
-      document
-    });
+    await this.indexTraceDocument(document);
   }
 
   async indexProviderTraces(documents: TraceDocument[]) {
-    const results = await Promise.allSettled(documents.map((document) => this.indexProviderTrace(document)));
+    if (documents.length === 0) {
+      return;
+    }
+
+    await this.ensureObservabilityIndexes();
+    const results = await Promise.allSettled(documents.map((document) => this.indexTraceDocument(document)));
     const failures = results.filter((result) => result.status === "rejected");
 
     if (failures.length > 0) {
       console.error(`Failed to index ${failures.length} provider trace document(s)`);
     }
+  }
+
+  private async indexTraceDocument(document: TraceDocument) {
+    await this.dependencies.elasticsearch.index({
+      index: PROVIDER_RESPONSE_INDEX[document.llm_name],
+      document
+    });
   }
 
   private async createObservabilityIndexes() {
