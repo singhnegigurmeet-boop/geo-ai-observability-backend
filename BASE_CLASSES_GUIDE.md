@@ -197,3 +197,7 @@ runtime/analysis-worker.ts
   -> ProviderExecutionService
   -> repositories + VisibilityScoreService + ObservabilityIndexService
 ```
+
+`ObservabilityIndexService` owns Elasticsearch index setup and trace writes. Elasticsearch is observability-only, so index setup or trace write failures are logged and must not fail the PostgreSQL scoring workflow.
+
+`ProviderExecutionService` owns provider prompt execution and uses `BaseService.withRetries`; retry count comes from `PROVIDER_MAX_RETRIES`.

@@ -34,12 +34,14 @@ API
   -> PostgreSQL latest score lookup
   -> BullMQ job enqueue when missing or stale
   -> Worker
+  -> analysis_runs processing update
   -> Parallel provider execution
   -> PostgreSQL provider_analysis latest state
   -> PostgreSQL provider_snapshots history
   -> PostgreSQL visibility_scores aggregate score
   -> Elasticsearch provider trace documents
   -> Redis final result cache
+  -> analysis_runs final status update
 ```
 
 Provider failures are isolated. One failed provider should not fail the full workflow.
@@ -101,6 +103,7 @@ RATE_LIMIT_SAME_DOMAIN_TTL_SECONDS=3600
 USE_MOCK_PROVIDERS=true
 ALLOW_MISSING_PROVIDER_KEYS=false
 PROVIDER_TIMEOUT_MS=60000
+PROVIDER_MAX_RETRIES=3
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
 GEMINI_API_KEY=
@@ -222,10 +225,12 @@ npm run build
 
 ## Run The API And Worker
 
-Recommended single-command runtime:
+For a clean checkout:
 
 ```bash
 cd /mnt/d/geo-ai-observability-backend
+npm install
+npm run migrate
 npm run build
 npm start
 ```
