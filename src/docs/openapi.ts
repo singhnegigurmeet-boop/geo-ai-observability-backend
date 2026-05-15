@@ -231,12 +231,12 @@ export const openApiDocument = {
       },
       QueuedAnalysisResponse: {
         type: "object",
-        required: ["status", "job_id", "domain_id", "message", "domain"],
+        required: ["status", "analysis_run_id", "domain_id", "message", "domain"],
         properties: {
           status: { type: "string", example: "queued" },
-          job_id: { type: "integer", example: 1 },
+          analysis_run_id: { type: "integer", example: 1 },
           domain_id: { type: "integer", example: 1 },
-          bullmq_job_id: { type: "string", example: "1" },
+          bullmq_job_id: { type: "string", example: "analysis-run-1-1778841898167" },
           message: { type: "string", example: "Analysis started" },
           domain: { type: "string", example: "nike.com" }
         }

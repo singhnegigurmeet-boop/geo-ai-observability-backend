@@ -1,23 +1,11 @@
 import type { AnalysisDiffInput, AnalysisDiffRow } from "../../../types/database.types.js";
 import { BaseRepository } from "../../../repositories/base.repository.js";
+import { SQL_QUERIES } from "../../../db/sql-queries.js";
 
 export class AnalysisDiffsRepository extends BaseRepository<AnalysisDiffRow> {
   async insertAnalysisDiff(input: AnalysisDiffInput) {
     return this.executeSingleQueryOrThrow<AnalysisDiffRow>(
-      `
-        INSERT INTO analysis_diffs (
-          domain_id,
-          analysis_run_id,
-          previous_analysis_run_id,
-          diff_type,
-          provider,
-          old_value,
-          new_value,
-          severity
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING *
-      `,
+      SQL_QUERIES.analysisDiffs.insert,
       [
         input.domainId,
         input.analysisRunId,
@@ -34,12 +22,7 @@ export class AnalysisDiffsRepository extends BaseRepository<AnalysisDiffRow> {
 
   async findDiffsByRunId(analysisRunId: number) {
     return this.executeQuery<AnalysisDiffRow>(
-      `
-        SELECT *
-        FROM analysis_diffs
-        WHERE analysis_run_id = $1
-        ORDER BY created_at DESC
-      `,
+      SQL_QUERIES.analysisDiffs.findByRunId,
       [analysisRunId]
     );
   }

@@ -12,7 +12,7 @@ const fakeAnalysisCommandService = {
       statusCode: 202,
       body: {
         status: "queued",
-        job_id: jobId,
+        analysis_run_id: jobId,
         domain_id: domainId,
         message: "Analysis started",
         domain
@@ -27,7 +27,7 @@ const fakeAnalysisStatusService = {
       statusCode: 200,
       body: {
         status: "completed",
-        job_id: requestedJobId,
+        analysis_run_id: requestedJobId,
         domain: "nike.com"
       }
     };
@@ -39,7 +39,7 @@ const fakeAnalysisStatusService = {
       body: {
         status: "found",
         source: "analysis_diffs",
-        job_id: requestedJobId,
+        analysis_run_id: requestedJobId,
         domain_id: domainId,
         domain: "nike.com",
         diffs: [
@@ -203,7 +203,7 @@ describe("routes", () => {
 
     assert.equal(response.status, 202);
     assert.equal(body.status, "queued");
-    assert.equal(body.job_id, jobId);
+    assert.equal(body.analysis_run_id, jobId);
     assert.equal(body.domain_id, domainId);
   });
 
@@ -213,7 +213,7 @@ describe("routes", () => {
 
     assert.equal(response.status, 200);
     assert.equal(body.status, "completed");
-    assert.equal(body.job_id, jobId);
+    assert.equal(body.analysis_run_id, jobId);
   });
 
   it("GET /v1/analysis/jobs/:jobId/diffs returns analysis diffs", async () => {
@@ -222,7 +222,7 @@ describe("routes", () => {
 
     assert.equal(response.status, 200);
     assert.equal(body.source, "analysis_diffs");
-    assert.equal(body.job_id, jobId);
+    assert.equal(body.analysis_run_id, jobId);
     assert.equal(body.diffs[0].diff_type, "visibility_score_dropped");
   });
 

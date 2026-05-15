@@ -20,6 +20,8 @@ src/modules/
   providers/
   visibility/
   diffs/
+  scheduler/
+  notifications/
   observability/
 ```
 
@@ -66,10 +68,12 @@ npm start
 
 This starts:
 
-1. API server
-2. BullMQ worker
+1. API serve
+2. Analysis worke
+3. Scheduler worke
+4. Notification worke
 
-in the same Node process and shuts both down together.
+in the same Node process and shuts them down together.
 
 The API and worker still communicate through BullMQ, which stores queue state in Redis.
 
@@ -87,6 +91,8 @@ HTTP client
   -> Elasticsearch trace indexing
   -> Redis cache write
   -> analysis_runs final status update
+  -> Diff engine
+  -> Notification queue
 ```
 
 ## API Startup
@@ -109,7 +115,11 @@ Call flow:
 main.ts
   -> container.ts
   -> createApp(route services)
+  -> observabilityIndexService.initialize()
   -> createAnalysisWorker(analysisJobService)
+  -> createSchedulerWorker(domainSchedulerService)
+  -> createNotificationWorker(notificationService)
+  -> ensureDomainSchedulerRepeatableJob()
   -> app.listen(env.PORT)
 ```
 
@@ -125,9 +135,13 @@ What happens:
 8. Express registers `/v1/analysis`.
 9. Express registers `/v1/domains`.
 10. Express registers the error handler.
-11. `main.ts` starts the BullMQ worker with `analysisJobService`.
-12. `app.listen()` opens the API port.
-13. Shutdown handlers close the API, worker, Redis, Postgres, and Elasticsearch clients.
+11. `main.ts` initializes Elasticsearch observability indexes once for the process.
+12. `main.ts` starts the analysis worker with `analysisJobService`.
+13. `main.ts` starts the scheduler worker with `domainSchedulerService`.
+14. `main.ts` starts the notification worker with `notificationService`.
+15. `main.ts` ensures the repeatable scheduler tick job exists.
+16. `app.listen()` opens the API port.
+17. Shutdown handlers close the API, workers, queues, Redis, Postgres, and Elasticsearch clients.
 
 Key files:
 
@@ -257,7 +271,7 @@ Detailed behavior:
 8. If the score exists and is fresh, it is cached in Redis and returned.
 9. If missing or stale, Redis unique-domain rate limiting is checked.
 10. If allowed, a BullMQ job is queued.
-11. API returns `202 queued` with numeric `analysis_runs.id` as `job_id` and numeric `domains.id` as `domain_id`.
+11. API returns `202 queued` with numeric `analysis_runs.id` as `analysis_run_id`, numeric `domains.id` as `domain_id`, and BullMQ infrastructure id as `bullmq_job_id`.
 
 The client can then poll `GET /v1/analysis/jobs/:jobId`.
 
@@ -300,7 +314,7 @@ Key files:
 - `src/modules/providers/repositories/provider-analysis.repository.ts`
 - `src/modules/visibility/repositories/visibility-scores.repository.ts`
 
-## Queue Layer
+## Queue Laye
 
 Queue name:
 
@@ -308,10 +322,19 @@ Queue name:
 domain-analysis
 ```
 
+Additional queues:
+
+```text
+domain-schedule
+analysis-notifications
+```
+
 Source:
 
 ```text
 src/queue/analysis.queue.ts
+src/queue/scheduler.queue.ts
+src/queue/notification.queue.ts
 ```
 
 Job data shape:
@@ -342,21 +365,51 @@ main.ts
   -> new Worker(ANALYSIS_QUEUE_NAME, handler)
   -> handler(job)
   -> analysisJobService.processAnalysisJob(job.data)
+  -> createSchedulerWorker(domainSchedulerService)
+  -> new Worker(SCHEDULER_QUEUE_NAME, handler)
+  -> createNotificationWorker(notificationService)
+  -> new Worker(NOTIFICATION_QUEUE_NAME, handler)
 ```
 
 What happens:
 
-1. Worker connects to Redis.
-2. Worker listens to the `domain-analysis` queue.
-3. Worker processes up to 3 jobs concurrently.
-4. For each job it calls `analysisJobService.processAnalysisJob()`.
+1. Workers connect to Redis.
+2. The analysis worker listens to the `domain-analysis` queue.
+3. The scheduler worker listens to the `domain-scheduler` queue.
+4. The notification worker listens to the `analysis-notifications` queue.
+5. The analysis worker processes up to 3 jobs concurrently.
+6. For each analysis job it calls `analysisJobService.processAnalysisJob()`.
 
 Key files:
 
 - `src/main.ts`
 - `src/container.ts`
 - `src/runtime/analysis-worker.ts`
+- `src/runtime/scheduler-worker.ts`
+- `src/runtime/notification-worker.ts`
 - `src/modules/analysis/services/analysis-job.service.ts`
+- `src/modules/scheduler/services/domain-scheduler.service.ts`
+- `src/modules/notifications/services/notification.service.ts`
+
+## Scheduler Flow
+
+The scheduler uses a repeatable BullMQ job on `domain-scheduler`.
+
+Call flow:
+
+```text
+ensureDomainSchedulerRepeatableJob()
+  -> enqueue repeatable scan-due-domains job
+  -> scheduler worker receives tick
+  -> DomainSchedulerService.enqueueDueDomains()
+  -> find enabled domain_schedules where next_run_at <= now()
+  -> create analysis_runs row with source = scheduled
+  -> enqueue domain-analysis job
+  -> attach BullMQ job id to analysis_runs
+  -> move domain_schedules.next_run_at forward by 7 days
+```
+
+Scheduled reruns are explicit. A domain must have a row in `domain_schedules`; the backend does not automatically schedule every analyzed domain.
 
 ## Job Processing Flow
 
@@ -419,12 +472,12 @@ Current behavior:
 
 ```text
 USE_MOCK_PROVIDERS=true
-  -> use MockProviderAdapter
+  -> use MockProviderAdapte
 
 USE_MOCK_PROVIDERS=false
-  -> use OpenAIProviderAdapter
-  -> use GeminiProviderAdapter
-  -> use AnthropicProviderAdapter
+  -> use OpenAIProviderAdapte
+  -> use GeminiProviderAdapte
+  -> use AnthropicProviderAdapte
 ```
 
 The mock adapter exists only to make the backend runnable without real LLM credentials. Real adapters make direct HTTP calls to each provider API and still return through the same `ProviderAdapter` interface.
@@ -537,7 +590,42 @@ Key files:
 - `src/modules/visibility/repositories/visibility-scores.repository.ts`
 - `src/modules/diffs/repositories/analysis-diffs.repository.ts`
 - `src/db/migrations/001_initial_schema.sql`
-- `src/db/migrations/003_run_linked_diffs.sql`
+
+Local migrations are reset-style. `npm run migrate` drops the known application tables and reapplies the current schema from `001_initial_schema.sql`; no backward-compatible migration chain is maintained for local development.
+
+## SQL Query Registry
+
+Application repository SQL lives in:
+
+```text
+src/db/sql-queries.ts
+```
+
+Repositories fetch SQL by key, for example `SQL_QUERIES.analysisRuns.findById`, and pass values separately through PostgreSQL parameter arrays. Route params, domains, provider names, limits, statuses, and JSON payloads must stay out of SQL string construction so PostgreSQL treats them as values, not executable SQL.
+
+## Endpoint Smoke Test Flow
+
+Command:
+
+```bash
+npm run test:endpoints
+```
+
+The smoke script owns its server lifecycle by default:
+
+```text
+scripts/test-endpoints.ts
+  -> fail if API_BASE_URL already has a running /health response
+  -> npm run build
+  -> npm run migrate, unless RUN_MIGRATIONS=false
+  -> Redis FLUSHDB for REDIS_URL, unless RESET_REDIS=false
+  -> start dist/main.js
+  -> wait for /health
+  -> call docs, analysis, status, diffs, provider, and visibility endpoints
+  -> stop the started server process
+```
+
+By default `REDIS_URL` is set to `redis://localhost:6379/15` inside the script so smoke-test queue, cache, and rate-limit state do not collide with normal local development. Set `USE_EXISTING_SERVER=true` only when intentionally testing an already-running API.
 
 ## Visibility Score Flow
 
@@ -603,7 +691,7 @@ A provider counts as found when one of its weighted top-k rows has a positive sc
 Consistency score:
 
 ```text
-best rank per provider
+best rank per provide
   -> calculate rank spread
   -> subtract spread penalty
   -> subtract missing provider penalty
@@ -677,6 +765,26 @@ provider_recovered
 
 `new_competitor_appeared` is intentionally not implemented yet because competitor extraction is not stored as structured source-of-truth data.
 
+## Notification Flow
+
+Notifications are log-channel only for now. No email, Slack, webhook, or external delivery provider is added yet.
+
+Call flow:
+
+```text
+AnalysisJobService.calculateDiffs(job)
+  -> diffEngineService.calculateAndStoreDiffs(domainId, analysisRunId)
+  -> NotificationService.enqueueDiffNotifications(diffs)
+  -> insert notifications rows with status = pending
+  -> enqueue analysis-notifications jobs
+  -> notification worker receives job
+  -> NotificationService.sendNotification(notificationId)
+  -> console.log payload
+  -> mark notification sent
+```
+
+Notification failures are isolated to the notification queue. They do not change the completed analysis result.
+
 ## Provider API Keys
 
 Provider API keys come from environment variables:
@@ -725,13 +833,13 @@ rate_limit:unique_domains:{ip}:{yyyy-mm-dd}
 Defaults:
 
 ```text
-same domain: 20 requests per IP/domain/hour
+same domain: 20 requests per IP/domain/hou
 unique uncached domains: 5 domains per IP/day
 ```
 
 Cached and fresh PostgreSQL results do not count against the unique-domain limit. Same-domain spam protection still applies before cache lookup.
 
-## Elasticsearch Trace Flow
+## Elasticsearch Observability Flow
 
 Main service method:
 
@@ -742,7 +850,8 @@ observabilityIndexService.indexProviderTraces(documents)
 Source:
 
 ```text
-src/modules/observability/services/observability-index.service.ts
+src/modules/observability/elasticsearch/elasticsearch-observability.service.ts
+src/modules/observability/elasticsearch/observability-index-definitions.ts
 ```
 
 Call flow:
@@ -753,19 +862,30 @@ observabilityIndexService.indexProviderTraces(documents)
   -> log failures if Elasticsearch is down
 ```
 
+Operational event methods:
+
+```text
+observabilityIndexService.indexScheduledRun(document)
+observabilityIndexService.indexNotification(document)
+```
+
 Indexes:
 
 ```text
 openai-responses
 gemini-responses
 claude-responses
+scheduled-runs
+notifications
 ```
 
 Important behavior:
 
-Elasticsearch indexing is best-effort. If Elasticsearch is down, the worker logs the failure but the PostgreSQL scoring workflow still completes.
+Elasticsearch indexing is best-effort. If Elasticsearch is down, the worker, scheduler, or notification flow logs the failure but PostgreSQL workflow state still completes.
 
 This is intentional because Elasticsearch is observability storage, not the structured source of truth.
+
+Scheduled run documents are written when `DomainSchedulerService.enqueueDueDomains()` creates an `analysis_runs` row and enqueues the BullMQ analysis job. Notification documents are written when notifications are queued and when the log-channel notification worker marks them sent or failed.
 
 Index setup is idempotent:
 
@@ -774,10 +894,10 @@ ensureObservabilityIndexes()
   -> check openai-responses exists
   -> if exists, return
   -> else create it
-  -> repeat for gemini-responses and claude-responses
+  -> repeat for gemini-responses, claude-responses, scheduled-runs, and notifications
 ```
 
-Within a running process, index setup is guarded by one shared promise, so a batch of trace documents does not try to recreate indexes repeatedly.
+Within a running process, index setup is guarded by one shared promise and called during startup through `observabilityIndexService.initialize()`. Runtime API/worker calls reuse that startup result and do not re-check Elasticsearch indexes on every request.
 
 ## Cache Flow
 
@@ -871,7 +991,7 @@ trend =
 ## Happy Path Summary
 
 ```text
-1. node dist/main.js starts Express and the BullMQ worker
+1. node dist/main.js starts Express and the BullMQ workers
 2. client POSTs domain to /v1/analysis
 3. API validates domain
 4. API checks same-domain Redis rate limit

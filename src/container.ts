@@ -3,9 +3,12 @@ import { elasticsearch } from "./lib/elasticsearch.js";
 import { redisConnection } from "./lib/redis.js";
 import { providerAdapters } from "./modules/providers/adapters/provider-registry.js";
 import { analysisQueue } from "./queue/analysis.queue.js";
+import { notificationQueue } from "./queue/notification.queue.js";
 import { analysisDiffsRepository } from "./modules/diffs/repositories/analysis-diffs.repository.js";
 import { analysisRunsRepository } from "./modules/analysis/repositories/analysis-runs.repository.js";
+import { domainSchedulesRepository } from "./modules/scheduler/repositories/domain-schedules.repository.js";
 import { domainsRepository } from "./repositories/domains.repository.js";
+import { notificationsRepository } from "./modules/notifications/repositories/notifications.repository.js";
 import { providerAnalysisRepository } from "./modules/providers/repositories/provider-analysis.repository.js";
 import { providerSnapshotsRepository } from "./modules/providers/repositories/provider-snapshots.repository.js";
 import { visibilityScoresRepository } from "./modules/visibility/repositories/visibility-scores.repository.js";
@@ -14,6 +17,8 @@ import { AnalysisJobService } from "./modules/analysis/services/analysis-job.ser
 import { AnalysisStatusService } from "./modules/analysis/services/analysis-status.service.js";
 import { DiffEngineService } from "./modules/diffs/services/diff-engine.service.js";
 import { ObservabilityIndexService } from "./modules/observability/services/observability-index.service.js";
+import { DomainSchedulerService } from "./modules/scheduler/services/domain-scheduler.service.js";
+import { NotificationService } from "./modules/notifications/services/notification.service.js";
 import { ProviderExecutionService } from "./modules/providers/services/provider-execution.service.js";
 import { ProviderScoresService } from "./modules/providers/services/provider-scores.service.js";
 import { RateLimitService } from "./services/rate-limit.service.js";
@@ -27,6 +32,17 @@ const visibilityScoreService = new VisibilityScoreService({
 
 const providerExecutionService = new ProviderExecutionService();
 const observabilityIndexService = new ObservabilityIndexService({ elasticsearch });
+export const notificationService = new NotificationService({
+  notificationsRepository,
+  notificationQueue,
+  observabilityIndexService
+});
+export const domainSchedulerService = new DomainSchedulerService({
+  analysisRunsRepository,
+  domainSchedulesRepository,
+  analysisQueue,
+  observabilityIndexService
+});
 const diffEngineService = new DiffEngineService({
   analysisDiffsRepository,
   analysisRunsRepository,
@@ -78,6 +94,7 @@ export const analysisJobService = new AnalysisJobService({
   providerExecutionService,
   visibilityScoreService,
   diffEngineService,
+  notificationService,
   observabilityIndexService,
   providerAdapters,
   redis: redisConnection,

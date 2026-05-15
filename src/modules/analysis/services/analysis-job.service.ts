@@ -11,6 +11,7 @@ import { ObservabilityIndexService } from "../../observability/services/observab
 import { ProviderExecutionService } from "../../providers/services/provider-execution.service.js";
 import { VisibilityScoreService } from "../../visibility/services/visibility-score.service.js";
 import { DiffEngineService } from "../../diffs/services/diff-engine.service.js";
+import { NotificationService } from "../../notifications/services/notification.service.js";
 
 type AnalysisJobServiceDependencies = {
   analysisRunsRepository: AnalysisRunsRepository;
@@ -19,6 +20,7 @@ type AnalysisJobServiceDependencies = {
   providerExecutionService: ProviderExecutionService;
   visibilityScoreService: VisibilityScoreService;
   diffEngineService: DiffEngineService;
+  notificationService: NotificationService;
   observabilityIndexService: ObservabilityIndexService;
   providerAdapters: ProviderAdapter[];
   redis: Redis;
@@ -225,6 +227,7 @@ export class AnalysisJobService {
 
       if (diffs.length > 0) {
         console.log(`Stored ${diffs.length} analysis diff(s) for run ${job.analysisRunId}`);
+        await this.dependencies.notificationService.enqueueDiffNotifications(diffs);
       }
     } catch (error) {
       console.error(`Failed to calculate analysis diffs for run ${job.analysisRunId}`, error);

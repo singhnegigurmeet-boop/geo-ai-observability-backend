@@ -1,51 +1,25 @@
-import { query } from "../../../lib/postgres.js";
+import { SQL_QUERIES } from "../../../db/sql-queries.js";
 import type { VisibilityScoreRow } from "../../../types/database.types.js";
 import { BaseRepository } from "../../../repositories/base.repository.js";
 
 export class VisibilityScoresRepository extends BaseRepository<VisibilityScoreRow> {
   async findLatestVisibilityScore(domainId: number) {
     return this.executeSingleQuery<VisibilityScoreRow>(
-      `
-        SELECT *
-        FROM visibility_scores
-        WHERE domain_id = $1
-        ORDER BY created_at DESC
-        LIMIT 1
-      `,
+      SQL_QUERIES.visibilityScores.findLatest,
       [domainId]
     );
   }
 
   async findVisibilityScoreHistory(domainId: number, limit = 50) {
     return this.executeQuery<VisibilityScoreRow>(
-      `
-        SELECT *
-        FROM visibility_scores
-        WHERE domain_id = $1
-        ORDER BY created_at DESC
-        LIMIT $2
-      `,
+      SQL_QUERIES.visibilityScores.findHistory,
       [domainId, limit]
     );
   }
 
   async insertVisibilityScore(input: Omit<VisibilityScoreRow, "id" | "created_at">) {
-    const result = await query<VisibilityScoreRow>(
-      `
-        INSERT INTO visibility_scores (
-          analysis_run_id,
-          domain_id,
-          openai_score,
-          gemini_score,
-          claude_score,
-          coverage_score,
-          consistency_score,
-          mention_frequency_score,
-          overall_geo_score
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        RETURNING *
-      `,
+    return this.executeSingleQueryOrThrow<VisibilityScoreRow>(
+      SQL_QUERIES.visibilityScores.insert,
       [
         input.analysis_run_id,
         input.domain_id,
@@ -56,26 +30,14 @@ export class VisibilityScoresRepository extends BaseRepository<VisibilityScoreRo
         input.consistency_score,
         input.mention_frequency_score,
         input.overall_geo_score
-      ]
+      ],
+      "Failed to insert visibility score"
     );
-
-    const row = result.rows[0];
-    if (!row) {
-      throw new Error("Failed to insert visibility score");
-    }
-
-    return row;
   }
 
   async findVisibilityScoreByRunId(analysisRunId: number) {
     return this.executeSingleQuery<VisibilityScoreRow>(
-      `
-        SELECT *
-        FROM visibility_scores
-        WHERE analysis_run_id = $1
-        ORDER BY created_at DESC
-        LIMIT 1
-      `,
+      SQL_QUERIES.visibilityScores.findByRunId,
       [analysisRunId]
     );
   }

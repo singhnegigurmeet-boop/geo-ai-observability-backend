@@ -19,8 +19,12 @@ main.ts
   -> providerScoresService
   -> visibilityScoreReadService
   -> analysisJobService
+  -> domainSchedulerService
+  -> notificationService
   -> createApp(route services)
   -> createAnalysisWorker(analysisJobService)
+  -> createSchedulerWorker(domainSchedulerService)
+  -> createNotificationWorker(notificationService)
 ```
 
 Service classes should not create repositories, queues, Redis clients, or Elasticsearch clients internally. They receive dependencies through constructors.
@@ -29,7 +33,7 @@ Infrastructure objects are created once and reused:
 
 - PostgreSQL pool: `src/lib/postgres.ts`
 - Redis connection: `src/lib/redis.ts`
-- BullMQ queue: `src/queue/analysis.queue.ts`
+- BullMQ queues: `src/queue/analysis.queue.ts`, `src/queue/scheduler.queue.ts`, `src/queue/notification.queue.ts`
 - Elasticsearch client: `src/lib/elasticsearch.ts`
 - Shared repositories: singleton exports in `src/repositories`
 - Domain repositories/services/controllers/routes: colocated in `src/modules/*`
@@ -60,6 +64,12 @@ src/modules/
     services/
     repositories/
   diffs/
+    services/
+    repositories/
+  scheduler/
+    services/
+    repositories/
+  notifications/
     services/
     repositories/
   observability/
@@ -107,6 +117,14 @@ Kept methods:
 - `log`
 
 Repositories stay raw SQL-first. Do not add an ORM.
+
+Repository SQL text is centralized in:
+
+```text
+src/db/sql-queries.ts
+```
+
+Repositories select queries by key and pass all runtime values through parameter arrays (`$1`, `$2`, etc.). Do not concatenate request input, route params, domains, provider names, limits, JSON payloads, or statuses into SQL strings.
 
 ## BaseService
 
@@ -257,7 +275,19 @@ runtime/analysis-worker.ts
   -> module repositories + VisibilityScoreService + ObservabilityIndexService + DiffEngineService
 ```
 
-`ObservabilityIndexService` owns Elasticsearch index setup and trace writes. Elasticsearch is observability-only, so index setup or trace write failures are logged and must not fail the PostgreSQL scoring workflow.
+Additional workers:
+
+```text
+runtime/scheduler-worker.ts
+  -> modules/scheduler/DomainSchedulerService
+  -> domain_schedules + analysis_runs + domain-analysis queue
+
+runtime/notification-worker.ts
+  -> modules/notifications/NotificationService
+  -> notifications
+```
+
+`ObservabilityIndexService` is exported from the Elasticsearch observability module. Index names and mappings live in `src/modules/observability/elasticsearch/observability-index-definitions.ts`, while the service implementation lives in `src/modules/observability/elasticsearch/elasticsearch-observability.service.ts`. Elasticsearch is observability-only, so index setup or trace write failures are logged and must not fail the PostgreSQL workflow.
 
 `ProviderExecutionService` owns provider prompt execution and uses `BaseService.withRetries`; retry count comes from `PROVIDER_MAX_RETRIES`.
 

@@ -10,6 +10,7 @@ This project is intentionally focused on backend infrastructure:
 - BullMQ async job orchestration
 - Elasticsearch prompt/response observability
 - Raw SQL repositories
+- Central SQL query registry in `src/db/sql-queries.ts`
 - Provider-isolated execution
 - Constructor-based dependency wiring from `src/container.ts`
 - Shared contracts in `src/types`
@@ -39,6 +40,12 @@ src/modules/
   diffs/
     services/
     repositories/
+  scheduler/
+    services/
+    repositories/
+  notifications/
+    services/
+    repositories/
   observability/
     services/
 ```
@@ -49,9 +56,9 @@ Workers can become separate processes later if needed, but they should continue 
 
 - **Domain**: The website being analyzed, for example `nike.com`.
 - **Analysis**: One request to evaluate a domain's visibility across OpenAI, Gemini, and Claude.
-- **Analysis run**: A tracked execution row in `analysis_runs`. The frontend polls this with `job_id`.
+- **Analysis run**: A tracked execution row in `analysis_runs`. The frontend polls this with `analysis_run_id`.
 - **Job**: A BullMQ queue item stored in Redis. The API returns quickly while the worker processes the job in the background.
-- **Worker**: Code that listens to a queue and performs background work. The current app starts the API and analysis worker in one Node process.
+- **Worker**: Code that listens to a queue and performs background work. The current app starts the API, analysis worker, scheduler worker, and notification worker in one Node process.
 - **Provider**: One LLM source: `openai`, `gemini`, or `claude`.
 - **Provider analysis**: Latest provider/top-k result for a domain, stored in `provider_analysis`.
 - **Provider snapshot**: Historical provider/top-k result for a specific run, stored in `provider_snapshots`.
@@ -65,6 +72,8 @@ Workers can become separate processes later if needed, but they should continue 
 - `providers`: Owns provider adapters, provider prompt execution, provider latest scores, and provider history reads.
 - `visibility`: Owns aggregate visibility score calculation and visibility score read APIs.
 - `diffs`: Owns run-over-run change detection and `analysis_diffs` persistence.
+- `scheduler`: Owns recurring due-domain scans and scheduled analysis enqueueing.
+- `notifications`: Owns notification records and the log-channel notification worker.
 - `observability`: Owns Elasticsearch index setup and best-effort provider trace indexing.
 - Shared `src/repositories/domains.repository.ts`: Owns the cross-module `domains` table.
 - Shared `src/services/rate-limit.service.ts`: Owns Redis-backed request rate limits.
@@ -86,7 +95,7 @@ API
   -> Redis cache lookup
   -> PostgreSQL latest score lookup
   -> BullMQ job enqueue when missing or stale
-  -> Worker
+  -> Worke
   -> analysis_runs processing update
   -> Parallel provider execution
   -> PostgreSQL provider_analysis latest state
@@ -96,6 +105,7 @@ API
   -> Redis final result cache
   -> analysis_runs final status update
   -> analysis_diffs run-over-run changes
+  -> notifications log-channel jobs for detected diffs
 ```
 
 Provider failures are isolated. One failed provider should not fail the full workflow.
@@ -110,20 +120,32 @@ PostgreSQL is the structured source of truth.
 - `visibility_scores`: final aggregated GEO scores
 - `analysis_runs`: async run status for frontend polling
 - `analysis_diffs`: detected run-over-run changes after completed or partial-success runs
+- `domain_schedules`: explicit weekly rerun schedules for domains
+- `notifications`: pending/sent/failed notification records for detected diffs
 
 Elasticsearch is for observability only.
 
 - `openai-responses`
 - `gemini-responses`
 - `claude-responses`
+- `scheduled-runs`
+- `notifications`
 
 For index setup and search examples, see [ELASTICSEARCH.md](./ELASTICSEARCH.md).
+
+Elasticsearch index names and mappings live in `src/modules/observability/elasticsearch/observability-index-definitions.ts`. The server prepares these indexes once during startup; runtime writes are best-effort observability events.
 
 Redis is used for:
 
 - BullMQ queue state
 - final analysis result cache
 - analysis request rate limiting
+
+BullMQ queues:
+
+- `domain-analysis`: runs domain analyses.
+- `domain-scheduler`: scans `domain_schedules` for due reruns.
+- `analysis-notifications`: sends log-channel notifications for diffs.
 
 ## Requirements
 
@@ -160,6 +182,7 @@ CACHE_TTL_SECONDS=3600
 ANALYSIS_STALE_HOURS=24
 PROVIDER_TIMEOUT_MS=60000
 PROVIDER_MAX_RETRIES=3
+SCHEDULER_TICK_MS=60000
 
 USE_MOCK_PROVIDERS=true
 ALLOW_MISSING_PROVIDER_KEYS=false
@@ -278,6 +301,8 @@ PONG
 npm run migrate
 ```
 
+Local migrations are reset-style. The command drops the known application tables, recreates the current schema from `src/db/migrations/001_initial_schema.sql`, and verifies the required tables. This project does not preserve backward-compatible migration history during local development.
+
 ## Build And Typecheck
 
 ```bash
@@ -286,7 +311,7 @@ npm run typecheck
 npm run build
 ```
 
-## Run The API And Worker
+## Run The API And Workers
 
 For a clean checkout:
 
@@ -298,7 +323,7 @@ npm run build
 npm start
 ```
 
-This starts the API and BullMQ worker in the same Node process. When the process receives `Ctrl+C` or `SIGTERM`, it closes the HTTP server, worker, Redis connection, PostgreSQL pool, and Elasticsearch client.
+This starts the API plus the analysis, scheduler, and notification BullMQ workers in the same Node process. When the process receives `Ctrl+C` or `SIGTERM`, it closes the HTTP server, workers, BullMQ queues, Redis connection, PostgreSQL pool, and Elasticsearch client.
 
 Health check:
 
@@ -441,6 +466,36 @@ Trend values:
 - `stable`
 - `insufficient_history`
 
+## Scheduler And Notifications
+
+The scheduler and notification workers run inside the same Node process for now. They are separate BullMQ workers, not microservices.
+
+Scheduler behavior:
+
+1. A repeatable BullMQ job runs on `domain-scheduler`.
+2. Each tick scans enabled rows in `domain_schedules` where `next_run_at <= now()`.
+3. For every due schedule, it creates an `analysis_runs` row with `source = scheduled`.
+4. It enqueues a normal `domain-analysis` job.
+5. It moves that schedule's `next_run_at` forward by 7 days.
+
+Notification behavior:
+
+1. The analysis worker runs the diff engine after completed or partial-success runs.
+2. If diffs are detected, notification records are inserted into `notifications`.
+3. Jobs are enqueued on `analysis-notifications`.
+4. The notification worker currently uses only the `log` channel and marks notifications as `sent`.
+
+Enable a weekly schedule manually:
+
+```sql
+INSERT INTO domain_schedules (domain_id, cadence, enabled, next_run_at)
+VALUES (1, 'weekly', true, now())
+ON CONFLICT (domain_id)
+DO UPDATE SET enabled = true, next_run_at = excluded.next_run_at, updated_at = now();
+```
+
+This intentionally requires an explicit schedule row. The backend does not automatically rerun every analyzed domain.
+
 ## Submit Analysis
 
 ```bash
@@ -454,9 +509,9 @@ First response usually returns:
 ```json
 {
   "status": "queued",
-  "job_id": 1,
+  "analysis_run_id": 1,
   "domain_id": 1,
-  "bullmq_job_id": "1",
+  "bullmq_job_id": "analysis-run-1-1778841898167",
   "message": "Analysis started",
   "domain": "nike.com"
 }
@@ -482,7 +537,7 @@ Or poll the job directly:
 curl http://127.0.0.1:4000/v1/analysis/jobs/1
 ```
 
-Use the numeric `job_id` returned by the submit endpoint, not the internal `bullmq_job_id`.
+Use the numeric `analysis_run_id` returned by the submit endpoint, not the internal `bullmq_job_id`.
 
 Read detected run-over-run diffs for a job:
 
@@ -502,7 +557,7 @@ Possible job responses:
 ```json
 {
   "status": "processing",
-  "job_id": 1,
+  "analysis_run_id": 1,
   "domain": "nike.com",
   "run_status": "processing"
 }
@@ -511,7 +566,7 @@ Possible job responses:
 ```json
 {
   "status": "partial_success",
-  "job_id": 1,
+  "analysis_run_id": 1,
   "domain": "nike.com",
   "providers": {
     "openai": { "status": "completed", "error_message": null },
@@ -527,7 +582,7 @@ Possible job responses:
 ```json
 {
   "status": "failed",
-  "job_id": 1,
+  "analysis_run_id": 1,
   "domain": "nike.com",
   "error": "Analysis failed. All providers failed after retries."
 }
@@ -624,12 +679,12 @@ limit 20;
 
 ```bash
 npm run dev          # API and worker in one process with tsx watch
-npm run migrate      # apply raw SQL migrations
+npm run migrate      # reset local app tables and apply the current raw SQL schema
 npm run elasticsearch:setup # create Elasticsearch observability indexes
-npm run test:endpoints # start the API and smoke test all HTTP endpoints with curl
+npm run test:endpoints # reset local state, start the API, and smoke test HTTP endpoints
 npm run typecheck    # TypeScript check
 npm run build        # compile to dist
-npm start            # run compiled API and worker together
+npm start            # run compiled API and worker togethe
 ```
 
 Endpoint smoke test:
@@ -638,7 +693,19 @@ Endpoint smoke test:
 npm run test:endpoints
 ```
 
-The script builds the project, optionally runs migrations, starts `npm start`, waits for `/health`, submits `POST /v1/analysis`, polls the returned job when a new job is queued, and then calls every read endpoint with curl. It prints each response body so payload shape can be checked, truncating large Swagger responses by default. By default it uses a timestamped smoke-test domain so it normally exercises the queue path. Set `RUN_MIGRATIONS=false` to skip migrations, `TEST_DOMAIN=nike.com` to test a known cached/fresh-domain path, `SHOW_RESPONSES=false` to hide response bodies, or `MAX_RESPONSE_CHARS=8000` to show longer previews.
+The script builds the project, optionally runs migrations, flushes the selected Redis database, starts `dist/main.js`, waits for `/health`, submits `POST /v1/analysis`, polls the returned `analysis_run_id`, and then calls every read endpoint. It stops the server process that it started when the smoke test finishes.
+
+By default the smoke test uses `REDIS_URL=redis://localhost:6379/15` so test queue/cache/rate-limit state is isolated from normal local development. It also refuses to reuse an already-running API at `API_BASE_URL`; stop the old process first so the script can start the current build. Set `USE_EXISTING_SERVER=true` only when intentionally testing a server you started yourself.
+
+Useful options:
+
+```bash
+RUN_MIGRATIONS=false npm run test:endpoints
+RESET_REDIS=false npm run test:endpoints
+TEST_DOMAIN=nike.com npm run test:endpoints
+SHOW_RESPONSES=false npm run test:endpoints
+MAX_RESPONSE_CHARS=8000 npm run test:endpoints
+```
 
 Docker scripts are present, but Docker was not available in the current WSL environment:
 

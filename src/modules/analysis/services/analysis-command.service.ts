@@ -89,22 +89,27 @@ export class AnalysisCommandService extends BaseService {
     }
 
     const analysisRun = await this.dependencies.analysisRunsRepository.createQueuedRun(domainRow.id);
-    const job = await this.dependencies.queue.add("analyze-domain", {
-      analysisRunId: analysisRun.id,
-      domainId: domainRow.id,
-      domain
-    });
+    const bullMqJobId = `analysis-run-${analysisRun.id}-${Date.now()}`;
+    const job = await this.dependencies.queue.add(
+      "analyze-domain",
+      {
+        analysisRunId: analysisRun.id,
+        domainId: domainRow.id,
+        domain
+      },
+      { jobId: bullMqJobId }
+    );
 
-    await this.dependencies.analysisRunsRepository.attachBullMqJob(analysisRun.id, String(job.id));
-    this.log("Analysis queued", { domain, ipAddress, analysisRunId: analysisRun.id, bullMqJobId: job.id });
+    await this.dependencies.analysisRunsRepository.attachBullMqJob(analysisRun.id, bullMqJobId);
+    this.log("Analysis queued", { domain, ipAddress, analysisRunId: analysisRun.id, bullMqJobId });
 
     return {
       statusCode: 202,
       body: {
         status: "queued",
-        job_id: analysisRun.id,
+        analysis_run_id: analysisRun.id,
         domain_id: domainRow.id,
-        bullmq_job_id: job.id,
+        bullmq_job_id: bullMqJobId,
         message: "Analysis started",
         domain
       }

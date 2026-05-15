@@ -10,7 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "test": "tsx --test tests/routes.test.ts",
-    "test:endpoints": "bash scripts/test-endpoints.sh",
+    "test:endpoints": "tsx scripts/test-endpoints.ts",
     "typecheck": "tsc --noEmit",
     "migrate": "tsx src/db/migrate.ts",
     "elasticsearch:setup": "tsx src/search/setup-elasticsearch.ts",

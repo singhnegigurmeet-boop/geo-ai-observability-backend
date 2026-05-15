@@ -2,16 +2,30 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { pool } from "../lib/postgres.js";
+import { SQL_QUERIES } from "./sql-queries.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const currentDir = path.dirname(currentFile);
 const migrationsDir = path.join(currentDir, "migrations");
+const resetTables = [
+  "notifications",
+  "domain_schedules",
+  "analysis_diffs",
+  "visibility_scores",
+  "provider_snapshots",
+  "provider_analysis",
+  "analysis_runs",
+  "domains",
+  "schema_migrations"
+];
 const requiredTables = [
   "domains",
   "provider_analysis",
   "provider_snapshots",
   "visibility_scores",
   "analysis_diffs",
+  "domain_schedules",
+  "notifications",
   "analysis_runs",
   "schema_migrations"
 ];
@@ -19,25 +33,16 @@ const requiredTables = [
 async function migrate() {
   const files = (await readdir(migrationsDir)).filter((file) => file.endsWith(".sql")).sort();
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      filename text PRIMARY KEY,
-      applied_at timestamptz NOT NULL DEFAULT now()
-    )
-  `);
+  await resetSchema();
+
+  await pool.query(SQL_QUERIES.migrations.createSchemaMigrationsTable);
 
   for (const file of files) {
-    const existing = await pool.query("SELECT 1 FROM schema_migrations WHERE filename = $1", [file]);
-    if (existing.rowCount) {
-      console.log(`Skipping already applied migration: ${file}`);
-      continue;
-    }
-
     const sql = await readFile(path.join(migrationsDir, file), "utf8");
     await pool.query("BEGIN");
     try {
       await pool.query(sql);
-      await pool.query("INSERT INTO schema_migrations (filename) VALUES ($1)", [file]);
+      await pool.query(SQL_QUERIES.migrations.insertSchemaMigration, [file]);
       await pool.query("COMMIT");
       console.log(`Applied migration: ${file}`);
     } catch (error) {
@@ -51,14 +56,21 @@ async function migrate() {
   await pool.end();
 }
 
+async function resetSchema() {
+  await pool.query("BEGIN");
+  try {
+    await pool.query(`DROP TABLE IF EXISTS ${resetTables.join(", ")} CASCADE`);
+    await pool.query("COMMIT");
+    console.log(`Reset development schema: ${resetTables.join(", ")}`);
+  } catch (error) {
+    await pool.query("ROLLBACK");
+    throw error;
+  }
+}
+
 async function verifyRequiredTables() {
   const result = await pool.query<{ table_name: string }>(
-    `
-      SELECT table_name
-      FROM information_schema.tables
-      WHERE table_schema = 'public'
-        AND table_name = ANY($1::text[])
-    `,
+    SQL_QUERIES.migrations.verifyRequiredTables,
     [requiredTables]
   );
 

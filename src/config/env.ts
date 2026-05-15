@@ -23,6 +23,7 @@ const envSchema = z.object({
   RATE_LIMIT_SAME_DOMAIN_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
   PROVIDER_TIMEOUT_MS: z.coerce.number().int().positive().default(60000),
   PROVIDER_MAX_RETRIES: z.coerce.number().int().positive().default(3),
+  SCHEDULER_TICK_MS: z.coerce.number().int().positive().default(60000),
   USE_MOCK_PROVIDERS: booleanFromEnv.default(true),
   ALLOW_MISSING_PROVIDER_KEYS: booleanFromEnv.default(false),
   OPENAI_API_KEY: z.string().optional(),

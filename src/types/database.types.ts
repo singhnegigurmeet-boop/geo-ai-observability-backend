@@ -128,3 +128,39 @@ export type AnalysisDiffInput = {
   newValue: unknown;
   severity: AnalysisDiffSeverity;
 };
+
+export type DomainScheduleCadence = "weekly";
+
+export type DomainScheduleRow = {
+  id: number;
+  domain_id: number;
+  domain: string;
+  cadence: DomainScheduleCadence;
+  enabled: boolean;
+  last_enqueued_at: Date | null;
+  next_run_at: Date;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type NotificationChannel = "log";
+export type NotificationStatus = "pending" | "sent" | "failed";
+
+export type NotificationRow = {
+  id: number;
+  domain_id: number;
+  analysis_diff_id: number;
+  channel: NotificationChannel;
+  status: NotificationStatus;
+  payload: unknown;
+  error_message: string | null;
+  created_at: Date;
+  sent_at: Date | null;
+};
+
+export type NotificationInput = {
+  domainId: number;
+  analysisDiffId: number;
+  channel: NotificationChannel;
+  payload: unknown;
+};

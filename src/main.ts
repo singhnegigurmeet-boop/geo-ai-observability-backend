@@ -5,6 +5,9 @@ import {
   analysisCommandService,
   analysisJobService,
   analysisStatusService,
+  domainSchedulerService,
+  notificationService,
+  observabilityIndexService,
   providerScoresService,
   visibilityScoreReadService
 } from "./container.js";
@@ -12,7 +15,11 @@ import { elasticsearch } from "./lib/elasticsearch.js";
 import { pool } from "./lib/postgres.js";
 import { redisConnection } from "./lib/redis.js";
 import { analysisQueue } from "./queue/analysis.queue.js";
+import { notificationQueue } from "./queue/notification.queue.js";
+import { ensureDomainSchedulerRepeatableJob, schedulerQueue } from "./queue/scheduler.queue.js";
 import { createAnalysisWorker } from "./runtime/analysis-worker.js";
+import { createNotificationWorker } from "./runtime/notification-worker.js";
+import { createSchedulerWorker } from "./runtime/scheduler-worker.js";
 
 const app = createApp({
   analysisCommandService,
@@ -20,11 +27,18 @@ const app = createApp({
   providerScoresService,
   visibilityScoreReadService
 });
+
+await observabilityIndexService.initialize();
+
 const worker = createAnalysisWorker(analysisJobService);
+const schedulerWorker = createSchedulerWorker(domainSchedulerService);
+const notificationWorker = createNotificationWorker(notificationService);
+
+await ensureDomainSchedulerRepeatableJob();
 
 const server = app.listen(env.PORT, () => {
   console.log(`GEO observability API listening on port ${env.PORT}`);
-  console.log("Analysis worker started in the same process.");
+  console.log("Analysis, scheduler, and notification workers started in the same process.");
 });
 
 let shuttingDown = false;
@@ -35,11 +49,15 @@ async function shutdown(signal: string) {
   }
 
   shuttingDown = true;
-  console.log(`Received ${signal}. Shutting down API and worker...`);
+  console.log(`Received ${signal}. Shutting down API and workers...`);
 
   await closeServer(server);
   await worker.close();
+  await schedulerWorker.close();
+  await notificationWorker.close();
   await analysisQueue.close();
+  await schedulerQueue.close();
+  await notificationQueue.close();
   await redisConnection.quit();
   await pool.end();
   await elasticsearch.close();

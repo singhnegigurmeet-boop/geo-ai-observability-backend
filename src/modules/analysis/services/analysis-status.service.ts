@@ -15,15 +15,15 @@ type AnalysisStatusServiceDependencies = {
 export class AnalysisStatusService {
   constructor(private readonly dependencies: AnalysisStatusServiceDependencies) {}
 
-  async getAnalysisJobStatus(jobId: number) {
-    const analysisRun = await this.dependencies.analysisRunsRepository.findById(jobId);
+  async getAnalysisJobStatus(analysisRunId: number) {
+    const analysisRun = await this.dependencies.analysisRunsRepository.findById(analysisRunId);
 
     if (!analysisRun) {
       return {
         statusCode: 404,
         body: {
           status: "not_found",
-          job_id: jobId,
+          analysis_run_id: analysisRunId,
           error: "Analysis job not found"
         }
       };
@@ -43,7 +43,7 @@ export class AnalysisStatusService {
           statusCode: 202,
           body: {
             status: "processing",
-            job_id: jobId,
+            analysis_run_id: analysisRunId,
             domain,
             run_status: analysisRun.status,
             providers,
@@ -56,7 +56,7 @@ export class AnalysisStatusService {
         statusCode: 200,
         body: {
           status: analysisRun.status,
-          job_id: jobId,
+          analysis_run_id: analysisRunId,
           domain,
           providers,
           completed_at: analysisRun.completed_at,
@@ -72,7 +72,7 @@ export class AnalysisStatusService {
         statusCode: 200,
         body: {
           status: "failed",
-          job_id: jobId,
+          analysis_run_id: analysisRunId,
           domain,
           providers,
           completed_at: analysisRun.completed_at,
@@ -85,7 +85,7 @@ export class AnalysisStatusService {
       statusCode: 202,
       body: {
         status: "processing",
-        job_id: jobId,
+        analysis_run_id: analysisRunId,
         domain,
         run_status: analysisRun.status,
         started_at: analysisRun.started_at
@@ -93,29 +93,29 @@ export class AnalysisStatusService {
     };
   }
 
-  async getAnalysisJobDiffs(jobId: number) {
-    const analysisRun = await this.dependencies.analysisRunsRepository.findById(jobId);
+  async getAnalysisJobDiffs(analysisRunId: number) {
+    const analysisRun = await this.dependencies.analysisRunsRepository.findById(analysisRunId);
 
     if (!analysisRun) {
       return {
         statusCode: 404,
         body: {
           status: "not_found",
-          job_id: jobId,
+          analysis_run_id: analysisRunId,
           error: "Analysis job not found"
         }
       };
     }
 
     const domainRow = await this.dependencies.domainsRepository.findDomainById(analysisRun.domain_id);
-    const diffs = await this.dependencies.analysisDiffsRepository.findDiffsByRunId(jobId);
+    const diffs = await this.dependencies.analysisDiffsRepository.findDiffsByRunId(analysisRunId);
 
     return {
       statusCode: 200,
       body: {
         status: "found",
         source: "analysis_diffs",
-        job_id: jobId,
+        analysis_run_id: analysisRunId,
         domain_id: analysisRun.domain_id,
         domain: domainRow?.domain ?? null,
         diffs

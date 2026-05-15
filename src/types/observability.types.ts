@@ -1,4 +1,5 @@
 import { ProviderName, TopKValue } from "../config/constants.js";
+import type { DomainScheduleCadence, NotificationChannel, NotificationStatus } from "./database.types.js";
 
 export type TraceDocument = {
   provider_analysis_id: number;
@@ -23,5 +24,30 @@ export type TraceDocument = {
   error_type: string | null;
   error_message: string | null;
   retry_count: number;
+  timestamp: string;
+};
+
+export type ScheduledRunDocument = {
+  event: "scheduled_run_enqueued";
+  schedule_id: number;
+  domain_id: number;
+  domain: string;
+  analysis_run_id: number;
+  bullmq_job_id: string;
+  cadence: DomainScheduleCadence;
+  previous_next_run_at: string;
+  next_run_at: string;
+  timestamp: string;
+};
+
+export type NotificationDocument = {
+  event: "notification_queued" | "notification_sent" | "notification_failed";
+  notification_id: number;
+  domain_id: number;
+  analysis_diff_id: number;
+  channel: NotificationChannel;
+  status: NotificationStatus;
+  payload: unknown;
+  error_message: string | null;
   timestamp: string;
 };
