@@ -262,6 +262,39 @@ export const SQL_QUERIES = {
     `
   },
   domainSchedules: {
+    upsert: `
+      INSERT INTO domain_schedules (
+        domain_id,
+        cadence,
+        enabled,
+        next_run_at
+      )
+      VALUES ($1, $2, $3, coalesce($4::timestamptz, now()))
+      ON CONFLICT (domain_id)
+      DO UPDATE SET
+        cadence = EXCLUDED.cadence,
+        enabled = EXCLUDED.enabled,
+        next_run_at = EXCLUDED.next_run_at,
+        updated_at = now()
+      RETURNING *
+    `,
+    findAll: `
+      SELECT
+        s.*,
+        d.domain
+      FROM domain_schedules s
+      JOIN domains d ON d.id = s.domain_id
+      ORDER BY s.enabled DESC, s.next_run_at ASC, s.id ASC
+      LIMIT $1 OFFSET $2
+    `,
+    setEnabled: `
+      UPDATE domain_schedules
+      SET
+        enabled = $2,
+        updated_at = now()
+      WHERE id = $1
+      RETURNING *
+    `,
     findDue: `
       SELECT
         s.*,

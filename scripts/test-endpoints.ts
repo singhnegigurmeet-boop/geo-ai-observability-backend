@@ -4,8 +4,10 @@ import dotenv from "dotenv";
 import { Redis } from "ioredis";
 import pg from "pg";
 
-process.env.REDIS_URL ??= "redis://localhost:6379/15";
 dotenv.config();
+process.env.DATABASE_URL ??= "postgres://geo_user:geo_pass_123@localhost:5432/geo_observability";
+process.env.REDIS_URL ??= "redis://localhost:6379/15";
+process.env.ELASTICSEARCH_NODE ??= "http://localhost:9200";
 
 const BASE_URL = process.env.API_BASE_URL ?? "http://127.0.0.1:4000";
 const PROVIDER = process.env.TEST_PROVIDER ?? "openai";
@@ -393,6 +395,19 @@ async function runDomainSmoke(domain: string, index: number) {
   await request("GET", `/v1/domains/${domainId}/visibility-score`, [200], undefined, clientIp);
   await request("GET", `/v1/domains/${domainId}/visibility-score/history`, [200], undefined, clientIp);
   await request("GET", `/v1/domains/${domainId}/visibility-score/trend`, [200], undefined, clientIp);
+
+  const scheduleResponse = await request("POST", "/v1/schedules", [200], {
+    domain,
+    cadence: "weekly",
+    enabled: true
+  }, clientIp);
+  const scheduleId = scheduleResponse.schedule?.id;
+
+  assertJson("schedule response has schedule id", typeof scheduleId === "number", scheduleResponse);
+
+  await request("GET", "/v1/schedules", [200], undefined, clientIp);
+  await request("PATCH", `/v1/schedules/${scheduleId}`, [200], { enabled: false }, clientIp);
+  await request("PATCH", `/v1/schedules/${scheduleId}`, [200], { enabled: true }, clientIp);
 }
 
 async function main() {

@@ -142,6 +142,58 @@ const fakeVisibilityScoreReadService = {
   }
 };
 
+const fakeScheduleManagementService = {
+  async upsertSchedule(input: { domain: string; enabled: boolean }) {
+    return {
+      statusCode: 200,
+      body: {
+        status: "scheduled",
+        source: "domain_schedules",
+        schedule: {
+          id: 7,
+          domain_id: domainId,
+          domain: input.domain,
+          cadence: "weekly",
+          enabled: input.enabled
+        }
+      }
+    };
+  },
+
+  async listSchedules() {
+    return {
+      statusCode: 200,
+      body: {
+        status: "found",
+        source: "domain_schedules",
+        schedules: [
+          {
+            id: 7,
+            domain_id: domainId,
+            domain: "nike.com",
+            cadence: "weekly",
+            enabled: true
+          }
+        ]
+      }
+    };
+  },
+
+  async setScheduleEnabled(scheduleId: number, enabled: boolean) {
+    return {
+      statusCode: 200,
+      body: {
+        status: enabled ? "enabled" : "disabled",
+        source: "domain_schedules",
+        schedule: {
+          id: scheduleId,
+          enabled
+        }
+      }
+    };
+  }
+};
+
 describe("routes", () => {
   let server: Server;
   let baseUrl: string;
@@ -151,6 +203,7 @@ describe("routes", () => {
       analysisCommandService: fakeAnalysisCommandService,
       analysisStatusService: fakeAnalysisStatusService,
       providerScoresService: fakeProviderScoresService,
+      scheduleManagementService: fakeScheduleManagementService,
       visibilityScoreReadService: fakeVisibilityScoreReadService
     });
     server = app.listen(0);
@@ -224,6 +277,40 @@ describe("routes", () => {
     assert.equal(body.source, "analysis_diffs");
     assert.equal(body.analysis_run_id, jobId);
     assert.equal(body.diffs[0].diff_type, "visibility_score_dropped");
+  });
+
+  it("POST /v1/schedules creates or updates a schedule", async () => {
+    const response = await fetch(`${baseUrl}/v1/schedules`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ domain: "nike.com", enabled: true })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.source, "domain_schedules");
+    assert.equal(body.schedule.domain, "nike.com");
+  });
+
+  it("GET /v1/schedules lists schedules", async () => {
+    const response = await fetch(`${baseUrl}/v1/schedules`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.schedules[0].domain, "nike.com");
+  });
+
+  it("PATCH /v1/schedules/:scheduleId enables or disables a schedule", async () => {
+    const response = await fetch(`${baseUrl}/v1/schedules/7`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.status, "disabled");
+    assert.equal(body.schedule.id, 7);
   });
 
   it("GET /v1/domains/:domainId/providers/:llmName/scores returns one provider", async () => {

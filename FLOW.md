@@ -191,6 +191,14 @@ Job diffs endpoint:
 GET /v1/analysis/jobs/:jobId/diffs
 ```
 
+Schedule management endpoints:
+
+```http
+POST  /v1/schedules
+GET   /v1/schedules
+PATCH /v1/schedules/:scheduleId
+```
+
 Latest provider score endpoint:
 
 ```http
@@ -623,7 +631,7 @@ scripts/test-endpoints.ts
   -> wait for /health
   -> choose TEST_DOMAIN or the curated development domain list
   -> delete analysis:{domain} and age existing visibility_scores rows for each domain
-  -> call docs, analysis, status, diffs, provider, and visibility endpoints for each domain
+  -> call docs, analysis, status, diffs, provider, visibility, and schedule endpoints for each domain
   -> stop the started server process
 ```
 

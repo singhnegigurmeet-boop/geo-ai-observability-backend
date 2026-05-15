@@ -22,6 +22,7 @@ import { NotificationService } from "./modules/notifications/services/notificati
 import { ProviderExecutionService } from "./modules/providers/services/provider-execution.service.js";
 import { ProviderScoresService } from "./modules/providers/services/provider-scores.service.js";
 import { RateLimitService } from "./services/rate-limit.service.js";
+import { ScheduleManagementService } from "./modules/scheduler/services/schedule-management.service.js";
 import { VisibilityScoreReadService } from "./modules/visibility/services/visibility-score-read.service.js";
 import { VisibilityScoreService } from "./modules/visibility/services/visibility-score.service.js";
 
@@ -42,6 +43,10 @@ export const domainSchedulerService = new DomainSchedulerService({
   domainSchedulesRepository,
   analysisQueue,
   observabilityIndexService
+});
+export const scheduleManagementService = new ScheduleManagementService({
+  domainsRepository,
+  domainSchedulesRepository
 });
 const diffEngineService = new DiffEngineService({
   analysisDiffsRepository,

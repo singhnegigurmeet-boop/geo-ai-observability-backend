@@ -419,6 +419,36 @@ Current diff types:
 - `provider_mention_disappeared`
 - `provider_recovered`
 
+### `POST /v1/schedules`
+
+Creates or updates one explicit weekly domain schedule in `domain_schedules`.
+
+Example:
+
+```json
+{
+  "domain": "nike.com",
+  "cadence": "weekly",
+  "enabled": true
+}
+```
+
+### `GET /v1/schedules`
+
+Lists domain schedules with their domain names.
+
+### `PATCH /v1/schedules/:scheduleId`
+
+Enables or disables a schedule.
+
+Example:
+
+```json
+{
+  "enabled": false
+}
+```
+
 ### `GET /v1/domains/:domainId/providers/:llmName/scores`
 
 Returns the latest top-k score rows for one provider from `provider_analysis`.
@@ -485,13 +515,12 @@ Notification behavior:
 3. Jobs are enqueued on `analysis-notifications`.
 4. The notification worker currently uses only the `log` channel and marks notifications as `sent`.
 
-Enable a weekly schedule manually:
+Create or update a weekly schedule:
 
-```sql
-INSERT INTO domain_schedules (domain_id, cadence, enabled, next_run_at)
-VALUES (1, 'weekly', true, now())
-ON CONFLICT (domain_id)
-DO UPDATE SET enabled = true, next_run_at = excluded.next_run_at, updated_at = now();
+```bash
+curl -X POST http://127.0.0.1:4000/v1/schedules \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"nike.com","cadence":"weekly","enabled":true}'
 ```
 
 This intentionally requires an explicit schedule row. The backend does not automatically rerun every analyzed domain.

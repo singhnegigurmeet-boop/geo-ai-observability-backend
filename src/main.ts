@@ -9,6 +9,7 @@ import {
   notificationService,
   observabilityIndexService,
   providerScoresService,
+  scheduleManagementService,
   visibilityScoreReadService
 } from "./container.js";
 import { elasticsearch } from "./lib/elasticsearch.js";
@@ -25,6 +26,7 @@ const app = createApp({
   analysisCommandService,
   analysisStatusService,
   providerScoresService,
+  scheduleManagementService,
   visibilityScoreReadService
 });
 

@@ -15,6 +15,7 @@ export const openApiDocument = {
     { name: "Health" },
     { name: "Analysis" },
     { name: "Provider Scores" },
+    { name: "Schedules" },
     { name: "Visibility Scores" }
   ],
   paths: {
@@ -94,6 +95,56 @@ export const openApiDocument = {
           "200": {
             description: "Analysis diffs returned"
           },
+          "400": { $ref: "#/components/responses/ValidationError" },
+          "404": { $ref: "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/v1/schedules": {
+      post: {
+        tags: ["Schedules"],
+        summary: "Create or update a weekly domain schedule",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ScheduleRequest" },
+              examples: {
+                nike: {
+                  value: { domain: "nike.com", cadence: "weekly", enabled: true }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          "200": { description: "Schedule created or updated" },
+          "400": { $ref: "#/components/responses/ValidationError" }
+        }
+      },
+      get: {
+        tags: ["Schedules"],
+        summary: "List domain schedules",
+        responses: {
+          "200": { description: "Schedules returned" }
+        }
+      }
+    },
+    "/v1/schedules/{scheduleId}": {
+      patch: {
+        tags: ["Schedules"],
+        summary: "Enable or disable a domain schedule",
+        parameters: [{ $ref: "#/components/parameters/ScheduleId" }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ScheduleUpdateRequest" }
+            }
+          }
+        },
+        responses: {
+          "200": { description: "Schedule updated" },
           "400": { $ref: "#/components/responses/ValidationError" },
           "404": { $ref: "#/components/responses/NotFound" }
         }
@@ -186,6 +237,12 @@ export const openApiDocument = {
         required: true,
         schema: { type: "integer", minimum: 1 }
       },
+      ScheduleId: {
+        name: "scheduleId",
+        in: "path",
+        required: true,
+        schema: { type: "integer", minimum: 1 }
+      },
       LlmName: {
         name: "llmName",
         in: "path",
@@ -239,6 +296,23 @@ export const openApiDocument = {
           bullmq_job_id: { type: "string", example: "analysis-run-1-1778841898167" },
           message: { type: "string", example: "Analysis started" },
           domain: { type: "string", example: "nike.com" }
+        }
+      },
+      ScheduleRequest: {
+        type: "object",
+        required: ["domain"],
+        properties: {
+          domain: { type: "string", example: "nike.com", maxLength: 253 },
+          cadence: { type: "string", enum: ["weekly"], example: "weekly" },
+          enabled: { type: "boolean", example: true },
+          next_run_at: { type: "string", format: "date-time" }
+        }
+      },
+      ScheduleUpdateRequest: {
+        type: "object",
+        required: ["enabled"],
+        properties: {
+          enabled: { type: "boolean", example: false }
         }
       },
       ErrorResponse: {

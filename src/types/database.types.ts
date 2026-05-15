@@ -143,6 +143,13 @@ export type DomainScheduleRow = {
   updated_at: Date;
 };
 
+export type DomainScheduleInput = {
+  domainId: number;
+  cadence: DomainScheduleCadence;
+  enabled: boolean;
+  nextRunAt: Date | null;
+};
+
 export type NotificationChannel = "log";
 export type NotificationStatus = "pending" | "sent" | "failed";
 
