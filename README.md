@@ -707,6 +707,8 @@ SHOW_RESPONSES=false npm run test:endpoints
 MAX_RESPONSE_CHARS=8000 npm run test:endpoints
 ```
 
+By default the script runs the curated website set: Nike, Adidas, Puma, Apple, Samsung, Sony, Figma, Notion, Slack, HubSpot, Salesforce, Shopify, Stripe, Airbnb, and Booking. Set `TEST_DOMAIN=nike.com` to run one domain. Before each domain is submitted, the script clears `analysis:{domain}` from Redis and ages any existing visibility score so repeated dev runs create new history for trend/diff checks.
+
 Docker scripts are present, but Docker was not available in the current WSL environment:
 
 ```bash

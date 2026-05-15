@@ -621,11 +621,13 @@ scripts/test-endpoints.ts
   -> Redis FLUSHDB for REDIS_URL, unless RESET_REDIS=false
   -> start dist/main.js
   -> wait for /health
-  -> call docs, analysis, status, diffs, provider, and visibility endpoints
+  -> choose TEST_DOMAIN or the curated development domain list
+  -> delete analysis:{domain} and age existing visibility_scores rows for each domain
+  -> call docs, analysis, status, diffs, provider, and visibility endpoints for each domain
   -> stop the started server process
 ```
 
-By default `REDIS_URL` is set to `redis://localhost:6379/15` inside the script so smoke-test queue, cache, and rate-limit state do not collide with normal local development. Set `USE_EXISTING_SERVER=true` only when intentionally testing an already-running API.
+By default `REDIS_URL` is set to `redis://localhost:6379/15` inside the script so smoke-test queue, cache, and rate-limit state do not collide with normal local development. Curated domain mode uses a different synthetic `X-Forwarded-For` IP per domain unless `TEST_CLIENT_IP` is set. Set `USE_EXISTING_SERVER=true` only when intentionally testing an already-running API.
 
 ## Visibility Score Flow
 

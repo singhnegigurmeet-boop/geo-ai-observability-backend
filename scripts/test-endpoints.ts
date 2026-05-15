@@ -1,24 +1,48 @@
 // scripts/test-endpoints.ts
 import { spawn, ChildProcess } from "node:child_process";
+import dotenv from "dotenv";
 import { Redis } from "ioredis";
+import pg from "pg";
+
+process.env.REDIS_URL ??= "redis://localhost:6379/15";
+dotenv.config();
 
 const BASE_URL = process.env.API_BASE_URL ?? "http://127.0.0.1:4000";
-const DOMAIN = process.env.TEST_DOMAIN ?? `smoke-${Date.now()}.com`;
 const PROVIDER = process.env.TEST_PROVIDER ?? "openai";
 const POLL_TIMEOUT_SECONDS = Number(process.env.TEST_POLL_TIMEOUT_SECONDS ?? 90);
 const POLL_INTERVAL_SECONDS = Number(process.env.TEST_POLL_INTERVAL_SECONDS ?? 2);
 const SHOW_RESPONSES = process.env.SHOW_RESPONSES ?? "true";
 const MAX_RESPONSE_CHARS = Number(process.env.MAX_RESPONSE_CHARS ?? 4000);
 const USE_EXISTING_SERVER = process.env.USE_EXISTING_SERVER === "true";
-const CLIENT_IP =
-  process.env.TEST_CLIENT_IP ??
-  `127.0.0.${Math.floor(Math.random() * 200) + 20}`;
-
-process.env.REDIS_URL ??= "redis://localhost:6379/15";
+const TEST_DOMAINS = [
+  "nike.com",
+  "adidas.com",
+  "puma.com",
+  "apple.com",
+  "samsung.com",
+  "sony.com",
+  "figma.com",
+  "notion.so",
+  "slack.com",
+  "hubspot.com",
+  "salesforce.com",
+  "shopify.com",
+  "stripe.com",
+  "airbnb.com",
+  "booking.com"
+] as const;
 
 let serverProcess: ChildProcess | null = null;
 
 type Json = Record<string, any>;
+
+function getTestDomains() {
+  return process.env.TEST_DOMAIN ? [process.env.TEST_DOMAIN] : [...TEST_DOMAINS];
+}
+
+function getClientIp(index: number) {
+  return process.env.TEST_CLIENT_IP ?? `127.0.1.${(index % 200) + 20}`;
+}
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -67,12 +91,13 @@ async function request(
   method: string,
   path: string,
   expected: number[],
-  body?: Json
+  body?: Json,
+  clientIp = getClientIp(0)
 ): Promise<Json> {
   const response = await fetch(`${BASE_URL}${path}`, {
     method,
     headers: {
-      "X-Forwarded-For": CLIENT_IP,
+      "X-Forwarded-For": clientIp,
       ...(body ? { "Content-Type": "application/json" } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -189,6 +214,36 @@ async function resetRedisState() {
   }
 }
 
+async function prepareDomainForAnalysis(domain: string) {
+  console.log(`Preparing ${domain} for a fresh analysis run`);
+
+  const redis = new Redis(process.env.REDIS_URL!, {
+    maxRetriesPerRequest: null
+  });
+  const pool = new pg.Pool({
+    connectionString: process.env.DATABASE_URL
+  });
+
+  try {
+    await redis.del(`analysis:${domain}`);
+    await pool.query(
+      `
+        UPDATE visibility_scores
+        SET created_at = now() - interval '48 hours'
+        WHERE domain_id = (
+          SELECT id
+          FROM domains
+          WHERE domain = $1
+        )
+      `,
+      [domain]
+    );
+  } finally {
+    await redis.quit();
+    await pool.end();
+  }
+}
+
 async function startServer() {
   if (await isServerRunning()) {
     if (USE_EXISTING_SERVER) {
@@ -222,16 +277,13 @@ async function startServer() {
   await waitForHealth();
 }
 
-async function waitForJob(jobId: number): Promise<Json> {
+async function waitForJob(jobId: number, clientIp: string): Promise<Json> {
   let elapsed = 0;
 
   console.error(`Polling analysis job ${jobId}`);
 
   while (elapsed <= POLL_TIMEOUT_SECONDS) {
-    const response = await request("GET", `/v1/analysis/jobs/${jobId}`, [
-      200,
-      202,
-    ]);
+    const response = await request("GET", `/v1/analysis/jobs/${jobId}`, [200, 202], undefined, clientIp);
 
     const status = response.status;
 
@@ -276,19 +328,16 @@ process.on("SIGINT", () => {
   process.exit(1);
 });
 
-async function main() {
-  await startServer();
+async function runDomainSmoke(domain: string, index: number) {
+  const clientIp = getClientIp(index);
 
-  console.log("\nChecking documentation endpoints");
-  await request("GET", "/health", [200]);
-  await request("GET", "/openapi.json", [200]);
-  await request("GET", "/docs", [200]);
+  await prepareDomainForAnalysis(domain);
 
-  console.log(`\nSubmitting analysis for ${DOMAIN}`);
+  console.log(`\nSubmitting analysis for ${domain}`);
 
   const analysisResponse = await request("POST", "/v1/analysis", [200, 202], {
-    domain: DOMAIN,
-  });
+    domain
+  }, clientIp);
 
   assertJson(
     "analysis response has status",
@@ -303,7 +352,7 @@ async function main() {
     analysisResponse.domain_id ?? analysisResponse.data?.domain_id;
 
   if (jobId) {
-    const jobResponse = await waitForJob(jobId);
+    const jobResponse = await waitForJob(jobId, clientIp);
     domainId =
       domainId ?? jobResponse.domain_id ?? jobResponse.data?.domain_id;
   }
@@ -315,13 +364,15 @@ async function main() {
 
   console.log(`\nChecking read endpoints for domain_id=${domainId}, provider=${PROVIDER}`);
 
-  await request("GET", `/v1/analysis/jobs/${jobId ?? 1}`, [200, 202, 404]);
+  await request("GET", `/v1/analysis/jobs/${jobId ?? 1}`, [200, 202, 404], undefined, clientIp);
 
   if (jobId) {
     const diffsResponse = await request(
       "GET",
       `/v1/analysis/jobs/${jobId}/diffs`,
-      [200]
+      [200],
+      undefined,
+      clientIp
     );
 
     assertJson(
@@ -333,15 +384,31 @@ async function main() {
       diffsResponse
     );
   } else {
-    await request("GET", "/v1/analysis/jobs/1/diffs", [200, 404]);
+    await request("GET", "/v1/analysis/jobs/1/diffs", [200, 404], undefined, clientIp);
   }
 
-  await request("GET", `/v1/domains/${domainId}/providers/${PROVIDER}/scores`, [200]);
-  await request("GET", `/v1/domains/${domainId}/providers/${PROVIDER}/history`, [200]);
-  await request("GET", `/v1/domains/${domainId}/provider-scores`, [200]);
-  await request("GET", `/v1/domains/${domainId}/visibility-score`, [200]);
-  await request("GET", `/v1/domains/${domainId}/visibility-score/history`, [200]);
-  await request("GET", `/v1/domains/${domainId}/visibility-score/trend`, [200]);
+  await request("GET", `/v1/domains/${domainId}/providers/${PROVIDER}/scores`, [200], undefined, clientIp);
+  await request("GET", `/v1/domains/${domainId}/providers/${PROVIDER}/history`, [200], undefined, clientIp);
+  await request("GET", `/v1/domains/${domainId}/provider-scores`, [200], undefined, clientIp);
+  await request("GET", `/v1/domains/${domainId}/visibility-score`, [200], undefined, clientIp);
+  await request("GET", `/v1/domains/${domainId}/visibility-score/history`, [200], undefined, clientIp);
+  await request("GET", `/v1/domains/${domainId}/visibility-score/trend`, [200], undefined, clientIp);
+}
+
+async function main() {
+  await startServer();
+
+  console.log("\nChecking documentation endpoints");
+  await request("GET", "/health", [200]);
+  await request("GET", "/openapi.json", [200]);
+  await request("GET", "/docs", [200]);
+
+  const domains = getTestDomains();
+  console.log(`\nRunning endpoint checks for ${domains.length} domain(s)`);
+
+  for (const [index, domain] of domains.entries()) {
+    await runDomainSmoke(domain, index);
+  }
 
   console.log("\nAll endpoint checks passed.");
 }
