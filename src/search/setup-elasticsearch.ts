@@ -1,5 +1,5 @@
 import { elasticsearch } from "../lib/elasticsearch.js";
-import { ObservabilityIndexService } from "../services/observability-index.service.js";
+import { ObservabilityIndexService } from "../modules/observability/services/observability-index.service.js";
 
 const observabilityIndexService = new ObservabilityIndexService({ elasticsearch });
 

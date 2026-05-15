@@ -11,6 +11,7 @@ const requiredTables = [
   "provider_analysis",
   "provider_snapshots",
   "visibility_scores",
+  "analysis_diffs",
   "analysis_runs",
   "schema_migrations"
 ];

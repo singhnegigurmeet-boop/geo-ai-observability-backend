@@ -1,16 +1,16 @@
 import express from "express";
 import swaggerUi from "swagger-ui-express";
-import { AnalysisController } from "./controllers/analysis.controller.js";
-import { ProviderScoresController } from "./controllers/provider-scores.controller.js";
-import { VisibilityScoresController } from "./controllers/visibility-scores.controller.js";
+import { AnalysisController } from "./modules/analysis/controllers/analysis.controller.js";
+import { ProviderScoresController } from "./modules/providers/controllers/provider-scores.controller.js";
+import { VisibilityScoresController } from "./modules/visibility/controllers/visibility-scores.controller.js";
 import { openApiDocument } from "./docs/openapi.js";
 import { errorMiddleware } from "./middleware/error.middleware.js";
-import { createAnalysisRouter } from "./routes/analysis.routes.js";
-import { createProviderScoresRouter } from "./routes/provider-scores.routes.js";
-import { createVisibilityScoresRouter } from "./routes/visibility-scores.routes.js";
-import type { AnalysisCommandPort, AnalysisStatusPort } from "./controllers/analysis.controller.js";
-import type { ProviderScoresPort } from "./controllers/provider-scores.controller.js";
-import type { VisibilityScoreReadPort } from "./controllers/visibility-scores.controller.js";
+import { createAnalysisRouter } from "./modules/analysis/routes/analysis.routes.js";
+import { createProviderScoresRouter } from "./modules/providers/routes/provider-scores.routes.js";
+import { createVisibilityScoresRouter } from "./modules/visibility/routes/visibility-scores.routes.js";
+import type { AnalysisCommandPort, AnalysisStatusPort } from "./modules/analysis/controllers/analysis.controller.js";
+import type { ProviderScoresPort } from "./modules/providers/controllers/provider-scores.controller.js";
+import type { VisibilityScoreReadPort } from "./modules/visibility/controllers/visibility-scores.controller.js";
 
 export type AppDependencies = {
   analysisCommandService: AnalysisCommandPort;

@@ -16,6 +16,59 @@ This project is intentionally focused on backend infrastructure:
 
 It is not a chatbot, prompt playground, dashboard, vector search app, or recommendation engine.
 
+The codebase is a modular monolith. It stays one app and one deployment unit while domain code is grouped under `src/modules/*`:
+
+```text
+src/modules/
+  analysis/
+    controllers/
+    routes/
+    services/
+    repositories/
+  providers/
+    controllers/
+    routes/
+    services/
+    repositories/
+    adapters/
+  visibility/
+    controllers/
+    routes/
+    services/
+    repositories/
+  diffs/
+    services/
+    repositories/
+  observability/
+    services/
+```
+
+Workers can become separate processes later if needed, but they should continue sharing this codebase and domain model until there is a concrete reason to split services.
+
+## Core Terms
+
+- **Domain**: The website being analyzed, for example `nike.com`.
+- **Analysis**: One request to evaluate a domain's visibility across OpenAI, Gemini, and Claude.
+- **Analysis run**: A tracked execution row in `analysis_runs`. The frontend polls this with `job_id`.
+- **Job**: A BullMQ queue item stored in Redis. The API returns quickly while the worker processes the job in the background.
+- **Worker**: Code that listens to a queue and performs background work. The current app starts the API and analysis worker in one Node process.
+- **Provider**: One LLM source: `openai`, `gemini`, or `claude`.
+- **Provider analysis**: Latest provider/top-k result for a domain, stored in `provider_analysis`.
+- **Provider snapshot**: Historical provider/top-k result for a specific run, stored in `provider_snapshots`.
+- **Visibility score**: Final aggregate GEO score for a domain/run, stored in `visibility_scores`.
+- **Diff**: A detected change between the current run and the previous successful run, stored in `analysis_diffs`.
+- **Observability trace**: Prompt/response debugging data written to Elasticsearch. It is not used as the ranking source of truth.
+
+## Module Responsibilities
+
+- `analysis`: Owns analysis request routing, job status polling, analysis run state, queue enqueueing, and worker orchestration.
+- `providers`: Owns provider adapters, provider prompt execution, provider latest scores, and provider history reads.
+- `visibility`: Owns aggregate visibility score calculation and visibility score read APIs.
+- `diffs`: Owns run-over-run change detection and `analysis_diffs` persistence.
+- `observability`: Owns Elasticsearch index setup and best-effort provider trace indexing.
+- Shared `src/repositories/domains.repository.ts`: Owns the cross-module `domains` table.
+- Shared `src/services/rate-limit.service.ts`: Owns Redis-backed request rate limits.
+
 ## Current Status
 
 The backend is runnable locally with deterministic mock providers or real provider APIs.
@@ -42,6 +95,7 @@ API
   -> Elasticsearch provider trace documents
   -> Redis final result cache
   -> analysis_runs final status update
+  -> analysis_diffs run-over-run changes
 ```
 
 Provider failures are isolated. One failed provider should not fail the full workflow.
@@ -55,6 +109,7 @@ PostgreSQL is the structured source of truth.
 - `provider_snapshots`: append-only provider/top-k historical scoring
 - `visibility_scores`: final aggregated GEO scores
 - `analysis_runs`: async run status for frontend polling
+- `analysis_diffs`: detected run-over-run changes after completed or partial-success runs
 
 Elasticsearch is for observability only.
 
@@ -139,7 +194,7 @@ Mock mode:
 USE_MOCK_PROVIDERS=true
 ```
 
-This uses deterministic local provider responses from `src/providers/mock-provider-adapter.ts`.
+This uses deterministic local provider responses from `src/modules/providers/adapters/mock-provider-adapter.ts`.
 
 Real provider mode:
 
@@ -201,6 +256,7 @@ select count(*) as domains from domains;
 select count(*) as provider_analysis from provider_analysis;
 select count(*) as provider_snapshots from provider_snapshots;
 select count(*) as visibility_scores from visibility_scores;
+select count(*) as analysis_diffs from analysis_diffs;
 '
 ```
 
@@ -270,6 +326,121 @@ Open the interactive docs at:
 http://127.0.0.1:4000/docs
 ```
 
+## API Reference
+
+### `GET /health`
+
+Checks whether the Express API process is running.
+
+Typical response:
+
+```json
+{"status":"ok"}
+```
+
+### `GET /openapi.json`
+
+Returns the OpenAPI specification used by Swagger UI. Use this for API clients, docs tooling, or quick route inspection.
+
+### `GET /docs`
+
+Serves Swagger UI for interactive API exploration in the browser.
+
+### `POST /v1/analysis`
+
+Starts or retrieves analysis for a domain.
+
+What it does:
+
+1. Validates the request body.
+2. Normalizes the domain.
+3. Checks same-domain Redis rate limit.
+4. Checks Redis cache.
+5. Checks the latest PostgreSQL visibility score.
+6. Checks unique-domain Redis rate limit if the domain is uncached/stale.
+7. Creates an `analysis_runs` row and enqueues a BullMQ job when fresh data is unavailable.
+
+Possible outcomes:
+
+- `200`: existing cached or fresh PostgreSQL result returned.
+- `202`: new analysis job queued.
+- `400`: invalid body.
+- `429`: rate limited.
+
+### `GET /v1/analysis/jobs/:jobId`
+
+Polls an analysis run by numeric `analysis_runs.id`.
+
+What it returns:
+
+- `202 processing` while the run is queued or processing.
+- `200 completed` when all providers succeeded.
+- `200 partial_success` when at least one provider succeeded and at least one failed.
+- `200 failed` when all providers failed.
+- `404` when the job id does not exist.
+
+Completed and partial-success responses include the latest `visibility_scores` row.
+
+### `GET /v1/analysis/jobs/:jobId/diffs`
+
+Returns run-over-run changes detected for one analysis job.
+
+Diffs are calculated after a completed or partial-success run by comparing it to the previous completed or partial-success run for the same domain.
+
+Current diff types:
+
+- `visibility_score_dropped`
+- `brand_rank_changed`
+- `provider_mention_disappeared`
+- `provider_recovered`
+
+### `GET /v1/domains/:domainId/providers/:llmName/scores`
+
+Returns the latest top-k score rows for one provider from `provider_analysis`.
+
+Allowed `llmName` values:
+
+- `openai`
+- `gemini`
+- `claude`
+
+Use this when the frontend needs the latest provider-specific state.
+
+### `GET /v1/domains/:domainId/providers/:llmName/history`
+
+Returns historical provider/top-k rows from `provider_snapshots`.
+
+Use this when the frontend needs provider history, run history, or debugging information over time.
+
+### `GET /v1/domains/:domainId/provider-scores`
+
+Returns the latest provider comparison across OpenAI, Gemini, and Claude from `provider_analysis`.
+
+Use this for side-by-side provider score comparison.
+
+### `GET /v1/domains/:domainId/visibility-score`
+
+Returns the latest aggregate GEO visibility score from `visibility_scores`.
+
+Use this as the main final score endpoint for a domain.
+
+### `GET /v1/domains/:domainId/visibility-score/history`
+
+Returns historical aggregate visibility score rows from `visibility_scores`.
+
+Use this to plot score history over time.
+
+### `GET /v1/domains/:domainId/visibility-score/trend`
+
+Compares the latest and previous visibility scores.
+
+Trend values:
+
+- `improved`
+- `dropped`
+- `stable`
+- `insufficient_history`
+
 ## Submit Analysis
 
 ```bash
@@ -312,6 +483,19 @@ curl http://127.0.0.1:4000/v1/analysis/jobs/1
 ```
 
 Use the numeric `job_id` returned by the submit endpoint, not the internal `bullmq_job_id`.
+
+Read detected run-over-run diffs for a job:
+
+```bash
+curl http://127.0.0.1:4000/v1/analysis/jobs/1/diffs
+```
+
+Diffs currently cover:
+
+- `visibility_score_dropped`
+- `brand_rank_changed`
+- `provider_mention_disappeared`
+- `provider_recovered`
 
 Possible job responses:
 
@@ -475,6 +659,8 @@ npm run docker:logs
 - `provider_snapshots` should remain append-only.
 - `provider_analysis` stores latest provider/top-k state.
 - `visibility_scores` stores final aggregate GEO scoring.
+- `analysis_diffs` stores detected changes between run-linked histories.
+- `new_competitor_appeared` is intentionally not implemented until competitor data is stored structurally.
 - Provider responses are deterministic mocks only when `USE_MOCK_PROVIDERS=true`.
 - Real adapters use direct HTTP calls through the existing provider interface.
 

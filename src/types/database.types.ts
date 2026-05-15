@@ -8,12 +8,14 @@ export type DomainRow = {
 };
 
 export type AnalysisRunStatus = "queued" | "processing" | "completed" | "partial_success" | "failed";
+export type AnalysisRunSource = "manual" | "scheduled" | "retry";
 
 export type AnalysisRunRow = {
   id: number;
   domain_id: number;
   bullmq_job_id: string | null;
   status: AnalysisRunStatus;
+  source: AnalysisRunSource;
   started_at: Date | null;
   completed_at: Date | null;
   error_message: string | null;
@@ -22,6 +24,7 @@ export type AnalysisRunRow = {
 };
 
 export type ProviderAnalysisInput = {
+  analysisRunId?: number;
   domainId: number;
   llmName: ProviderName;
   topK: TopKValue;
@@ -64,6 +67,7 @@ export type ProviderLatestScoreRow = {
 export type ProviderSnapshotRow = {
   id: number;
   domain_id: number;
+  analysis_run_id: number | null;
   llm_name: ProviderName;
   top_k: TopKValue;
   rank_position: number | null;
@@ -82,6 +86,7 @@ export type LatestProviderSnapshotRow = Pick<
 export type VisibilityScoreRow = {
   id: number;
   domain_id: number;
+  analysis_run_id: number | null;
   openai_score: number;
   gemini_score: number;
   claude_score: number;
@@ -90,4 +95,36 @@ export type VisibilityScoreRow = {
   mention_frequency_score: number;
   overall_geo_score: number;
   created_at: Date;
+};
+
+export type AnalysisDiffType =
+  | "visibility_score_dropped"
+  | "brand_rank_changed"
+  | "provider_mention_disappeared"
+  | "provider_recovered";
+
+export type AnalysisDiffSeverity = "info" | "warning" | "critical";
+
+export type AnalysisDiffRow = {
+  id: number;
+  domain_id: number;
+  analysis_run_id: number;
+  previous_analysis_run_id: number | null;
+  diff_type: AnalysisDiffType;
+  provider: ProviderName | null;
+  old_value: unknown;
+  new_value: unknown;
+  severity: AnalysisDiffSeverity;
+  created_at: Date;
+};
+
+export type AnalysisDiffInput = {
+  domainId: number;
+  analysisRunId: number;
+  previousAnalysisRunId: number | null;
+  diffType: AnalysisDiffType;
+  provider: ProviderName | null;
+  oldValue: unknown;
+  newValue: unknown;
+  severity: AnalysisDiffSeverity;
 };

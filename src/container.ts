@@ -1,22 +1,24 @@
 import { env } from "./config/env.js";
 import { elasticsearch } from "./lib/elasticsearch.js";
 import { redisConnection } from "./lib/redis.js";
-import { providerAdapters } from "./providers/provider-registry.js";
+import { providerAdapters } from "./modules/providers/adapters/provider-registry.js";
 import { analysisQueue } from "./queue/analysis.queue.js";
-import { analysisRunsRepository } from "./repositories/analysis-runs.repository.js";
+import { analysisDiffsRepository } from "./modules/diffs/repositories/analysis-diffs.repository.js";
+import { analysisRunsRepository } from "./modules/analysis/repositories/analysis-runs.repository.js";
 import { domainsRepository } from "./repositories/domains.repository.js";
-import { providerAnalysisRepository } from "./repositories/provider-analysis.repository.js";
-import { providerSnapshotsRepository } from "./repositories/provider-snapshots.repository.js";
-import { visibilityScoresRepository } from "./repositories/visibility-scores.repository.js";
-import { AnalysisCommandService } from "./services/analysis-command.service.js";
-import { AnalysisJobService } from "./services/analysis-job.service.js";
-import { AnalysisStatusService } from "./services/analysis-status.service.js";
-import { ObservabilityIndexService } from "./services/observability-index.service.js";
-import { ProviderExecutionService } from "./services/provider-execution.service.js";
-import { ProviderScoresService } from "./services/provider-scores.service.js";
+import { providerAnalysisRepository } from "./modules/providers/repositories/provider-analysis.repository.js";
+import { providerSnapshotsRepository } from "./modules/providers/repositories/provider-snapshots.repository.js";
+import { visibilityScoresRepository } from "./modules/visibility/repositories/visibility-scores.repository.js";
+import { AnalysisCommandService } from "./modules/analysis/services/analysis-command.service.js";
+import { AnalysisJobService } from "./modules/analysis/services/analysis-job.service.js";
+import { AnalysisStatusService } from "./modules/analysis/services/analysis-status.service.js";
+import { DiffEngineService } from "./modules/diffs/services/diff-engine.service.js";
+import { ObservabilityIndexService } from "./modules/observability/services/observability-index.service.js";
+import { ProviderExecutionService } from "./modules/providers/services/provider-execution.service.js";
+import { ProviderScoresService } from "./modules/providers/services/provider-scores.service.js";
 import { RateLimitService } from "./services/rate-limit.service.js";
-import { VisibilityScoreReadService } from "./services/visibility-score-read.service.js";
-import { VisibilityScoreService } from "./services/visibility-score.service.js";
+import { VisibilityScoreReadService } from "./modules/visibility/services/visibility-score-read.service.js";
+import { VisibilityScoreService } from "./modules/visibility/services/visibility-score.service.js";
 
 const visibilityScoreService = new VisibilityScoreService({
   providerAnalysisRepository,
@@ -25,6 +27,12 @@ const visibilityScoreService = new VisibilityScoreService({
 
 const providerExecutionService = new ProviderExecutionService();
 const observabilityIndexService = new ObservabilityIndexService({ elasticsearch });
+const diffEngineService = new DiffEngineService({
+  analysisDiffsRepository,
+  analysisRunsRepository,
+  providerSnapshotsRepository,
+  visibilityScoresRepository
+});
 const rateLimitService = new RateLimitService({
   redis: redisConnection,
   uniqueDomainsPerIpLimit: env.RATE_LIMIT_UNIQUE_DOMAINS_PER_IP_PER_DAY,
@@ -47,6 +55,7 @@ export const analysisCommandService = new AnalysisCommandService({
 export const analysisStatusService = new AnalysisStatusService({
   analysisRunsRepository,
   domainsRepository,
+  analysisDiffsRepository,
   providerAnalysisRepository,
   visibilityScoresRepository
 });
@@ -68,6 +77,7 @@ export const analysisJobService = new AnalysisJobService({
   providerSnapshotsRepository,
   providerExecutionService,
   visibilityScoreService,
+  diffEngineService,
   observabilityIndexService,
   providerAdapters,
   redis: redisConnection,

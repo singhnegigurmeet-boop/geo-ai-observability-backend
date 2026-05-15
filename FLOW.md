@@ -10,6 +10,45 @@ Markdown files are the project source of truth. Any change to architecture, rout
 
 The backend runs as one combined process.
 
+## Modular Monolith Structure
+
+The backend remains one codebase and one application. Domain-specific code is grouped by module:
+
+```text
+src/modules/
+  analysis/
+  providers/
+  visibility/
+  diffs/
+  observability/
+```
+
+Inside each module, files are grouped by layer:
+
+```text
+controllers/
+routes/
+services/
+repositories/
+```
+
+Provider adapters live under `src/modules/providers/adapters`.
+
+Shared runtime and infrastructure code stays outside modules:
+
+```text
+src/config
+src/db
+src/lib
+src/middleware
+src/queue
+src/runtime
+src/types
+src/utils
+```
+
+Do not convert this into microservices without a clear operational reason such as separate scaling, team ownership, deployment cycle, workload isolation, or security boundary.
+
 Start command:
 
 ```bash
@@ -96,9 +135,9 @@ Key files:
 - `src/container.ts`
 - `src/app.ts`
 - `src/docs/openapi.ts`
-- `src/routes/analysis.routes.ts`
-- `src/routes/provider-scores.routes.ts`
-- `src/routes/visibility-scores.routes.ts`
+- `src/modules/analysis/routes/analysis.routes.ts`
+- `src/modules/providers/routes/provider-scores.routes.ts`
+- `src/modules/visibility/routes/visibility-scores.routes.ts`
 
 ## API Request Flow
 
@@ -130,6 +169,12 @@ Job polling endpoint:
 
 ```http
 GET /v1/analysis/jobs/:jobId
+```
+
+Job diffs endpoint:
+
+```http
+GET /v1/analysis/jobs/:jobId/diffs
 ```
 
 Latest provider score endpoint:
@@ -224,6 +269,7 @@ Polling behavior:
 4. If some providers failed and some succeeded, return `200 partial_success`.
 5. If all providers succeeded, return `200 completed`.
 6. Completed and partial-success responses include the latest `visibility_scores` row.
+7. Job diffs can be read from `GET /v1/analysis/jobs/:jobId/diffs`.
 
 Score read behavior:
 
@@ -233,23 +279,26 @@ Score read behavior:
 4. `GET /v1/domains/:domainId/visibility-score` returns the final aggregated latest score from `visibility_scores`.
 5. `GET /v1/domains/:domainId/visibility-score/history` returns historical final scores from `visibility_scores`.
 6. `GET /v1/domains/:domainId/visibility-score/trend` compares the latest and previous `visibility_scores` rows.
+7. `GET /v1/analysis/jobs/:jobId/diffs` returns detected run-over-run changes from `analysis_diffs`.
 
 Key files:
 
-- `src/routes/analysis.routes.ts`
-- `src/routes/provider-scores.routes.ts`
-- `src/routes/visibility-scores.routes.ts`
-- `src/controllers/analysis.controller.ts`
-- `src/controllers/provider-scores.controller.ts`
-- `src/controllers/visibility-scores.controller.ts`
-- `src/services/analysis-command.service.ts`
-- `src/services/analysis-status.service.ts`
-- `src/services/provider-scores.service.ts`
-- `src/services/visibility-score-read.service.ts`
+- `src/modules/analysis/routes/analysis.routes.ts`
+- `src/modules/providers/routes/provider-scores.routes.ts`
+- `src/modules/visibility/routes/visibility-scores.routes.ts`
+- `src/modules/analysis/controllers/analysis.controller.ts`
+- `src/modules/providers/controllers/provider-scores.controller.ts`
+- `src/modules/visibility/controllers/visibility-scores.controller.ts`
+- `src/modules/analysis/services/analysis-command.service.ts`
+- `src/modules/analysis/services/analysis-status.service.ts`
+- `src/modules/diffs/services/diff-engine.service.ts`
+- `src/modules/providers/services/provider-scores.service.ts`
+- `src/modules/visibility/services/visibility-score-read.service.ts`
 - `src/queue/analysis.queue.ts`
 - `src/repositories/domains.repository.ts`
-- `src/repositories/provider-analysis.repository.ts`
-- `src/repositories/visibility-scores.repository.ts`
+- `src/modules/diffs/repositories/analysis-diffs.repository.ts`
+- `src/modules/providers/repositories/provider-analysis.repository.ts`
+- `src/modules/visibility/repositories/visibility-scores.repository.ts`
 
 ## Queue Layer
 
@@ -307,7 +356,7 @@ Key files:
 - `src/main.ts`
 - `src/container.ts`
 - `src/runtime/analysis-worker.ts`
-- `src/services/analysis-job.service.ts`
+- `src/modules/analysis/services/analysis-job.service.ts`
 
 ## Job Processing Flow
 
@@ -320,7 +369,7 @@ analysisJobService.processAnalysisJob(job)
 Source:
 
 ```text
-src/services/analysis-job.service.ts
+src/modules/analysis/services/analysis-job.service.ts
 ```
 
 Call flow:
@@ -331,9 +380,11 @@ analysisJobService.processAnalysisJob(job)
   -> Promise.allSettled(providerAdapters.map(executeProvider))
   -> persistProviderSuccess(...) for successful providers
   -> persistProviderFailure(...) for failed providers
-  -> visibilityScoreService.calculateAndStoreVisibilityScore(domainId)
+  -> visibilityScoreService.calculateAndStoreVisibilityScore(domainId, analysisRunId)
   -> observabilityIndexService.indexProviderTraces(...)
   -> Redis SET analysis:{domain}
+  -> mark analysis_runs completed / partial_success
+  -> diffEngineService.calculateAndStoreDiffs(domainId, analysisRunId)
 ```
 
 Important behavior:
@@ -346,13 +397,14 @@ Important behavior:
 6. Aggregated GEO scoring happens after provider rows are written.
 7. Elasticsearch indexing happens after aggregation.
 8. Redis is updated with the final result.
+9. Completed and partial-success runs calculate run-over-run diffs after the final status is stored.
 
 ## Provider Registry
 
 Source:
 
 ```text
-src/providers/provider-registry.ts
+src/modules/providers/adapters/provider-registry.ts
 ```
 
 Provider list:
@@ -382,12 +434,12 @@ For local provider-isolation testing, `ALLOW_MISSING_PROVIDER_KEYS=true` allows 
 Key files:
 
 - `src/config/constants.ts`
-- `src/providers/provider-registry.ts`
-- `src/providers/mock-provider-adapter.ts`
-- `src/providers/openai-provider-adapter.ts`
-- `src/providers/gemini-provider-adapter.ts`
-- `src/providers/anthropic-provider-adapter.ts`
-- `src/providers/unavailable-provider-adapter.ts`
+- `src/modules/providers/adapters/provider-registry.ts`
+- `src/modules/providers/adapters/mock-provider-adapter.ts`
+- `src/modules/providers/adapters/openai-provider-adapter.ts`
+- `src/modules/providers/adapters/gemini-provider-adapter.ts`
+- `src/modules/providers/adapters/anthropic-provider-adapter.ts`
+- `src/modules/providers/adapters/unavailable-provider-adapter.ts`
 - `src/types/provider.types.ts`
 
 ## Provider Execution Flow
@@ -401,7 +453,7 @@ executeProvider(adapter, domain)
 Source:
 
 ```text
-src/services/provider-execution.service.ts
+src/modules/providers/services/provider-execution.service.ts
 ```
 
 Call flow:
@@ -434,7 +486,7 @@ Prompts:
 
 Key files:
 
-- `src/services/provider-execution.service.ts`
+- `src/modules/providers/services/provider-execution.service.ts`
 - `src/prompts/geo.prompts.ts`
 - `src/services/base.service.ts`
 
@@ -445,7 +497,7 @@ Successful provider result:
 ```text
 persistProviderSuccess(...)
   -> upsertProviderAnalysis(...)
-  -> insertProviderSnapshot(...)
+  -> insertProviderSnapshot(..., analysisRunId)
   -> prepare Elasticsearch trace document
 ```
 
@@ -454,7 +506,7 @@ Failed provider result:
 ```text
 persistProviderFailure(...)
   -> upsertProviderAnalysis(status = failed)
-  -> insertProviderSnapshot(status = failed)
+  -> insertProviderSnapshot(status = failed, analysisRunId)
   -> prepare Elasticsearch failure trace document
 ```
 
@@ -466,40 +518,45 @@ analysis_runs
 provider_analysis
 provider_snapshots
 visibility_scores
+analysis_diffs
 ```
 
 Responsibilities:
 
 - `analysis_runs`: async run status for frontend polling
 - `provider_analysis`: latest provider + top-k state
-- `provider_snapshots`: append-only provider + top-k history
-- `visibility_scores`: aggregated final GEO score
+- `provider_snapshots`: append-only provider + top-k history linked to `analysis_runs`
+- `visibility_scores`: aggregated final GEO score linked to `analysis_runs`
+- `analysis_diffs`: detected changes between the current successful run and previous successful run
 
 Key files:
 
-- `src/repositories/provider-analysis.repository.ts`
-- `src/repositories/provider-snapshots.repository.ts`
-- `src/repositories/visibility-scores.repository.ts`
+- `src/modules/diffs/services/diff-engine.service.ts`
+- `src/modules/providers/repositories/provider-analysis.repository.ts`
+- `src/modules/providers/repositories/provider-snapshots.repository.ts`
+- `src/modules/visibility/repositories/visibility-scores.repository.ts`
+- `src/modules/diffs/repositories/analysis-diffs.repository.ts`
 - `src/db/migrations/001_initial_schema.sql`
+- `src/db/migrations/003_run_linked_diffs.sql`
 
 ## Visibility Score Flow
 
 Main service method:
 
 ```text
-visibilityScoreService.calculateAndStoreVisibilityScore(domainId)
+visibilityScoreService.calculateAndStoreVisibilityScore(domainId, analysisRunId)
 ```
 
 Source:
 
 ```text
-src/services/visibility-score.service.ts
+src/modules/visibility/services/visibility-score.service.ts
 ```
 
 Call flow:
 
 ```text
-visibilityScoreService.calculateAndStoreVisibilityScore(domainId)
+visibilityScoreService.calculateAndStoreVisibilityScore(domainId, analysisRunId)
   -> providerAnalysisRepository.findLatestScoringRowsForDomain(domainId)
   -> filter completed latest provider_analysis rows
   -> calculate weighted provider scores
@@ -507,7 +564,7 @@ visibilityScoreService.calculateAndStoreVisibilityScore(domainId)
   -> calculate mention frequency score
   -> calculate consistency score
   -> calculate overall GEO score
-  -> insertVisibilityScore(...)
+  -> insertVisibilityScore(..., analysisRunId)
 ```
 
 Provider score formula:
@@ -577,6 +634,49 @@ overall_geo_score =
 
 This is intentionally simple for now. Do not add complicated ranking math until provider execution and observability are stable.
 
+## Diff Engine Flow
+
+Main service method:
+
+```text
+diffEngineService.calculateAndStoreDiffs(domainId, analysisRunId)
+```
+
+Source:
+
+```text
+src/modules/diffs/services/diff-engine.service.ts
+```
+
+Call flow:
+
+```text
+diffEngineService.calculateAndStoreDiffs(domainId, analysisRunId)
+  -> find previous completed or partial_success analysis_run for the domain
+  -> find current visibility_scores row by analysis_run_id
+  -> find previous visibility_scores row by previous analysis_run_id
+  -> find current provider_snapshots rows by analysis_run_id
+  -> find previous provider_snapshots rows by previous analysis_run_id
+  -> calculate visibility_score_dropped diffs
+  -> calculate brand_rank_changed diffs
+  -> calculate provider_mention_disappeared diffs
+  -> calculate provider_recovered diffs
+  -> insert analysis_diffs rows
+```
+
+Diffs are stored after completed and partial-success runs. Diff calculation failures are logged and do not change the completed analysis result.
+
+Current diff types:
+
+```text
+visibility_score_dropped
+brand_rank_changed
+provider_mention_disappeared
+provider_recovered
+```
+
+`new_competitor_appeared` is intentionally not implemented yet because competitor extraction is not stored as structured source-of-truth data.
+
 ## Provider API Keys
 
 Provider API keys come from environment variables:
@@ -642,7 +742,7 @@ observabilityIndexService.indexProviderTraces(documents)
 Source:
 
 ```text
-src/services/observability-index.service.ts
+src/modules/observability/services/observability-index.service.ts
 ```
 
 Call flow:

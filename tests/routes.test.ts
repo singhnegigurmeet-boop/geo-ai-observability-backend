@@ -31,6 +31,25 @@ const fakeAnalysisStatusService = {
         domain: "nike.com"
       }
     };
+  },
+
+  async getAnalysisJobDiffs(requestedJobId: number) {
+    return {
+      statusCode: 200,
+      body: {
+        status: "found",
+        source: "analysis_diffs",
+        job_id: requestedJobId,
+        domain_id: domainId,
+        domain: "nike.com",
+        diffs: [
+          {
+            diff_type: "visibility_score_dropped",
+            severity: "warning"
+          }
+        ]
+      }
+    };
   }
 };
 
@@ -195,6 +214,16 @@ describe("routes", () => {
     assert.equal(response.status, 200);
     assert.equal(body.status, "completed");
     assert.equal(body.job_id, jobId);
+  });
+
+  it("GET /v1/analysis/jobs/:jobId/diffs returns analysis diffs", async () => {
+    const response = await fetch(`${baseUrl}/v1/analysis/jobs/${jobId}/diffs`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.source, "analysis_diffs");
+    assert.equal(body.job_id, jobId);
+    assert.equal(body.diffs[0].diff_type, "visibility_score_dropped");
   });
 
   it("GET /v1/domains/:domainId/providers/:llmName/scores returns one provider", async () => {

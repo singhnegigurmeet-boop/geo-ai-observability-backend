@@ -85,6 +85,20 @@ export const openApiDocument = {
         }
       }
     },
+    "/v1/analysis/jobs/{jobId}/diffs": {
+      get: {
+        tags: ["Analysis"],
+        summary: "Get analysis diffs detected for a job",
+        parameters: [{ $ref: "#/components/parameters/JobId" }],
+        responses: {
+          "200": {
+            description: "Analysis diffs returned"
+          },
+          "400": { $ref: "#/components/responses/ValidationError" },
+          "404": { $ref: "#/components/responses/NotFound" }
+        }
+      }
+    },
     "/v1/domains/{domainId}/providers/{llmName}/scores": {
       get: {
         tags: ["Provider Scores"],

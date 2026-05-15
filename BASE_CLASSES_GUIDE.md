@@ -31,10 +31,55 @@ Infrastructure objects are created once and reused:
 - Redis connection: `src/lib/redis.ts`
 - BullMQ queue: `src/queue/analysis.queue.ts`
 - Elasticsearch client: `src/lib/elasticsearch.ts`
-- Repositories: singleton exports in `src/repositories`
+- Shared repositories: singleton exports in `src/repositories`
+- Domain repositories/services/controllers/routes: colocated in `src/modules/*`
 - Services: wired once in `src/container.ts`
 
 Do not create database pools, Redis clients, BullMQ queues, repositories, or core services inside request handlers or job handlers.
+
+## Modular Monolith
+
+This is intentionally one application and one codebase. Domain-specific HTTP, service, and repository code is grouped by module:
+
+```text
+src/modules/
+  analysis/
+    controllers/
+    routes/
+    services/
+    repositories/
+  providers/
+    controllers/
+    routes/
+    services/
+    repositories/
+    adapters/
+  visibility/
+    controllers/
+    routes/
+    services/
+    repositories/
+  diffs/
+    services/
+    repositories/
+  observability/
+    services/
+```
+
+Shared infrastructure and small base classes remain outside modules:
+
+```text
+src/config
+src/db
+src/lib
+src/middleware
+src/queue
+src/runtime
+src/types
+src/utils
+```
+
+Do not split these modules into microservices without a concrete scaling, ownership, deployment, workload isolation, or security reason.
 
 ## API Documentation
 
@@ -170,6 +215,7 @@ AnalysisRouter
   -> AnalysisController
   -> AnalysisCommandService
   -> AnalysisStatusService
+  -> AnalysisJobService
 
 ProviderScoresRouter
   -> ProviderScoresController
@@ -178,6 +224,9 @@ ProviderScoresRouter
 VisibilityScoresRouter
   -> VisibilityScoresController
   -> VisibilityScoreReadService
+
+DiffEngineService
+  -> AnalysisDiffsRepository
 ```
 
 Keep this split unless a service has a clear reason to own the dependency. Do not put all repositories, Redis, and BullMQ into one API facade.
@@ -203,11 +252,13 @@ Worker flow:
 
 ```text
 runtime/analysis-worker.ts
-  -> AnalysisJobService
-  -> ProviderExecutionService
-  -> repositories + VisibilityScoreService + ObservabilityIndexService
+  -> modules/analysis/AnalysisJobService
+  -> modules/providers/ProviderExecutionService
+  -> module repositories + VisibilityScoreService + ObservabilityIndexService + DiffEngineService
 ```
 
 `ObservabilityIndexService` owns Elasticsearch index setup and trace writes. Elasticsearch is observability-only, so index setup or trace write failures are logged and must not fail the PostgreSQL scoring workflow.
 
 `ProviderExecutionService` owns provider prompt execution and uses `BaseService.withRetries`; retry count comes from `PROVIDER_MAX_RETRIES`.
+
+`DiffEngineService` compares the current run-linked `visibility_scores` and `provider_snapshots` rows against the previous successful run for the same domain, then stores changes in `analysis_diffs`.

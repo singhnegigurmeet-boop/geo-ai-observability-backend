@@ -1,7 +1,7 @@
 import { Worker } from "bullmq";
 import { redisConnection } from "../lib/redis.js";
 import { ANALYSIS_QUEUE_NAME } from "../queue/analysis.queue.js";
-import { AnalysisJobService } from "../services/analysis-job.service.js";
+import { AnalysisJobService } from "../modules/analysis/services/analysis-job.service.js";
 import type { AnalysisJobData } from "../types/queue.types.js";
 
 export function createAnalysisWorker(jobService: AnalysisJobService) {

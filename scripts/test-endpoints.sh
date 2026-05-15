@@ -9,6 +9,7 @@ POLL_INTERVAL_SECONDS="${TEST_POLL_INTERVAL_SECONDS:-2}"
 SERVER_LOG="${SERVER_LOG:-/tmp/geo-api-smoke-test.log}"
 SHOW_RESPONSES="${SHOW_RESPONSES:-true}"
 MAX_RESPONSE_CHARS="${MAX_RESPONSE_CHARS:-4000}"
+CLIENT_IP="${TEST_CLIENT_IP:-127.0.0.$((RANDOM % 200 + 20))}"
 
 SERVER_PID=""
 
@@ -36,6 +37,7 @@ request() {
   if [[ -n "${body}" ]]; then
     status="$(
       curl -sS -L -X "${method}" "${BASE_URL}${path}" \
+        -H "X-Forwarded-For: ${CLIENT_IP}" \
         -H "Content-Type: application/json" \
         -d "${body}" \
         -o "${output_file}" \
@@ -44,6 +46,7 @@ request() {
   else
     status="$(
       curl -sS -L -X "${method}" "${BASE_URL}${path}" \
+        -H "X-Forwarded-For: ${CLIENT_IP}" \
         -o "${output_file}" \
         -w "%{http_code}"
     )"
@@ -112,6 +115,22 @@ if (value !== undefined && value !== null) process.stdout.write(String(value));
 "
 }
 
+assert_json() {
+  local label="$1"
+  local expression="$2"
+
+  node -e "
+const fs = require('node:fs');
+const input = fs.readFileSync(0, 'utf8');
+const data = input ? JSON.parse(input) : {};
+if (!(${expression})) {
+  console.error('FAIL ${label}');
+  console.error(JSON.stringify(data, null, 2));
+  process.exit(1);
+}
+"
+}
+
 wait_for_health() {
   echo "Waiting for API health at ${BASE_URL}/health"
 
@@ -143,6 +162,7 @@ wait_for_job() {
     status="$(printf '%s' "${response}" | json_field "data.status")"
 
     if [[ "${status}" == "completed" || "${status}" == "partial_success" ]]; then
+      printf '%s' "${response}" | assert_json "job ${job_id} completed response has run-linked visibility score" "data.data && data.data.analysis_run_id === data.job_id"
       echo "Job ${job_id} finished with status ${status}" >&2
       printf '%s\n' "${response}"
       return
@@ -189,6 +209,7 @@ echo
 echo "Submitting analysis for ${DOMAIN}"
 analysis_response="$(request POST "/v1/analysis" "200,202" "{\"domain\":\"${DOMAIN}\"}")"
 printf '%s\n' "${analysis_response}"
+printf '%s' "${analysis_response}" | assert_json "analysis response has status" "typeof data.status === 'string'"
 
 job_id="$(printf '%s' "${analysis_response}" | json_field "data.job_id")"
 domain_id="$(printf '%s' "${analysis_response}" | json_field "data.domain_id ?? (data.data && data.data.domain_id)")"
@@ -206,6 +227,12 @@ fi
 echo
 echo "Checking read endpoints for domain_id=${domain_id}, provider=${PROVIDER}"
 request GET "/v1/analysis/jobs/${job_id:-1}" "200,202,404" >/dev/null
+if [[ -n "${job_id}" ]]; then
+  diffs_response="$(request GET "/v1/analysis/jobs/${job_id}/diffs" "200")"
+  printf '%s' "${diffs_response}" | assert_json "diff response has expected shape" "data.status === 'found' && data.source === 'analysis_diffs' && data.job_id === ${job_id} && Array.isArray(data.diffs)"
+else
+  request GET "/v1/analysis/jobs/1/diffs" "200,404" >/dev/null
+fi
 request GET "/v1/domains/${domain_id}/providers/${PROVIDER}/scores" "200" >/dev/null
 request GET "/v1/domains/${domain_id}/providers/${PROVIDER}/history" "200" >/dev/null
 request GET "/v1/domains/${domain_id}/provider-scores" "200" >/dev/null
