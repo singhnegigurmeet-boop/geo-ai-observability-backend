@@ -157,6 +157,23 @@ describe("routes", () => {
     assert.deepEqual(body, { status: "ok" });
   });
 
+  it("GET /openapi.json returns the API spec", async () => {
+    const response = await fetch(`${baseUrl}/openapi.json`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.openapi, "3.0.3");
+    assert.ok(body.paths["/v1/analysis"]);
+  });
+
+  it("GET /docs serves Swagger UI", async () => {
+    const response = await fetch(`${baseUrl}/docs/`);
+    const body = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(body, /swagger-ui/i);
+  });
+
   it("POST /v1/analysis queues an analysis", async () => {
     const response = await fetch(`${baseUrl}/v1/analysis`, {
       method: "POST",

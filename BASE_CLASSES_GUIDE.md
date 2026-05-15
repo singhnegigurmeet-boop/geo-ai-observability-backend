@@ -36,6 +36,16 @@ Infrastructure objects are created once and reused:
 
 Do not create database pools, Redis clients, BullMQ queues, repositories, or core services inside request handlers or job handlers.
 
+## API Documentation
+
+OpenAPI documentation lives in:
+
+```text
+src/docs/openapi.ts
+```
+
+`src/app.ts` serves the raw spec at `GET /openapi.json` and Swagger UI at `/docs`. Keep the OpenAPI document in sync when routes, request params, status codes, or response contracts change.
+
 ## BaseRepository
 
 Location:

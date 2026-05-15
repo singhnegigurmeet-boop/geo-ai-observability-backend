@@ -249,6 +249,20 @@ Expected:
 {"status":"ok"}
 ```
 
+## API Documentation
+
+Swagger UI is served by the API process:
+
+```bash
+curl http://127.0.0.1:4000/openapi.json
+```
+
+Open the interactive docs at:
+
+```text
+http://127.0.0.1:4000/docs
+```
+
 ## Submit Analysis
 
 ```bash
@@ -421,10 +435,19 @@ limit 20;
 npm run dev          # API and worker in one process with tsx watch
 npm run migrate      # apply raw SQL migrations
 npm run elasticsearch:setup # create Elasticsearch observability indexes
+npm run test:endpoints # start the API and smoke test all HTTP endpoints with curl
 npm run typecheck    # TypeScript check
 npm run build        # compile to dist
 npm start            # run compiled API and worker together
 ```
+
+Endpoint smoke test:
+
+```bash
+npm run test:endpoints
+```
+
+The script builds the project, optionally runs migrations, starts `npm start`, waits for `/health`, submits `POST /v1/analysis`, polls the returned job when a new job is queued, and then calls every read endpoint with curl. It prints each response body so payload shape can be checked, truncating large Swagger responses by default. By default it uses a timestamped smoke-test domain so it normally exercises the queue path. Set `RUN_MIGRATIONS=false` to skip migrations, `TEST_DOMAIN=nike.com` to test a known cached/fresh-domain path, `SHOW_RESPONSES=false` to hide response bodies, or `MAX_RESPONSE_CHARS=8000` to show longer previews.
 
 Docker scripts are present, but Docker was not available in the current WSL environment:
 

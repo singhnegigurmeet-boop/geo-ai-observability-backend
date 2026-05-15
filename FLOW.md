@@ -81,25 +81,46 @@ What happens:
 3. `createApp(...)` builds the Express app with focused route services.
 4. Express registers JSON parsing.
 5. Express registers `GET /health`.
-6. Express registers `/v1/analysis`.
-7. Express registers `/v1/domains`.
-8. Express registers the error handler.
-9. `main.ts` starts the BullMQ worker with `analysisJobService`.
-10. `app.listen()` opens the API port.
-11. Shutdown handlers close the API, worker, Redis, Postgres, and Elasticsearch clients.
+6. Express registers `GET /openapi.json`.
+7. Express registers Swagger UI at `/docs`.
+8. Express registers `/v1/analysis`.
+9. Express registers `/v1/domains`.
+10. Express registers the error handler.
+11. `main.ts` starts the BullMQ worker with `analysisJobService`.
+12. `app.listen()` opens the API port.
+13. Shutdown handlers close the API, worker, Redis, Postgres, and Elasticsearch clients.
 
 Key files:
 
 - `src/main.ts`
 - `src/container.ts`
 - `src/app.ts`
+- `src/docs/openapi.ts`
 - `src/routes/analysis.routes.ts`
 - `src/routes/provider-scores.routes.ts`
 - `src/routes/visibility-scores.routes.ts`
 
 ## API Request Flow
 
-Endpoint:
+Health endpoint:
+
+```http
+GET /health
+```
+
+OpenAPI JSON endpoint:
+
+```http
+GET /openapi.json
+```
+
+Swagger UI endpoint:
+
+```http
+GET /docs
+```
+
+Analysis endpoint:
 
 ```http
 POST /v1/analysis
