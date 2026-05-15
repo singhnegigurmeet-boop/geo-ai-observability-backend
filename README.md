@@ -86,7 +86,13 @@ Optional:
 
 ## Environment
 
-The local `.env` currently uses:
+The local `.env` file is **not committed** to version control for security. Copy `.env.example` to `.env` and update the values:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` with your configuration:
 
 ```env
 NODE_ENV=development
@@ -94,25 +100,26 @@ PORT=4000
 DATABASE_URL=postgres://geo_user:geo_pass_123@localhost:5432/geo_observability
 REDIS_URL=redis://localhost:6379
 ELASTICSEARCH_NODE=http://localhost:9200
+
 CACHE_TTL_SECONDS=3600
 ANALYSIS_STALE_HOURS=24
-RATE_LIMIT_UNIQUE_DOMAINS_PER_IP_PER_DAY=5
-RATE_LIMIT_UNIQUE_DOMAINS_TTL_SECONDS=86400
-RATE_LIMIT_SAME_DOMAIN_PER_IP_PER_HOUR=20
-RATE_LIMIT_SAME_DOMAIN_TTL_SECONDS=3600
-USE_MOCK_PROVIDERS=true
-ALLOW_MISSING_PROVIDER_KEYS=false
 PROVIDER_TIMEOUT_MS=60000
 PROVIDER_MAX_RETRIES=3
+
+USE_MOCK_PROVIDERS=true
+ALLOW_MISSING_PROVIDER_KEYS=false
+
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
+
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
+
 ANTHROPIC_API_KEY=
 ANTHROPIC_MODEL=claude-3-5-haiku-latest
 ```
 
-Do not commit real provider API keys when real adapters are added.
+**Important:** The `.env` file is ignored by Git (see `.gitignore`). Never commit real API keys or sensitive credentials.
 
 Provider API keys should come from environment variables or deployment secrets:
 
