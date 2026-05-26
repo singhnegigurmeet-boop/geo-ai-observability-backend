@@ -68,7 +68,7 @@ Workers can become separate processes later if needed, but they should continue 
 
 ## Module Responsibilities
 
-- `analysis`: Owns analysis request routing, job status polling, analysis run state, queue enqueueing, and worker orchestration.
+- `analysis`: Owns analysis request routing, run status polling, analysis run state, queue enqueueing, and worker orchestration.
 - `providers`: Owns provider adapters, provider prompt execution, provider latest scores, and provider history reads.
 - `visibility`: Owns aggregate visibility score calculation and visibility score read APIs.
 - `diffs`: Owns run-over-run change detection and `analysis_diffs` persistence.
@@ -388,11 +388,11 @@ What it does:
 Possible outcomes:
 
 - `200`: existing cached or fresh PostgreSQL result returned.
-- `202`: new analysis job queued.
+- `202`: new analysis run queued.
 - `400`: invalid body.
 - `429`: rate limited.
 
-### `GET /v1/analysis/jobs/:jobId`
+### `GET /v1/analysis/runs/:analysisRunId`
 
 Polls an analysis run by numeric `analysis_runs.id`.
 
@@ -406,9 +406,9 @@ What it returns:
 
 Completed and partial-success responses include the latest `visibility_scores` row.
 
-### `GET /v1/analysis/jobs/:jobId/diffs`
+### `GET /v1/analysis/runs/:analysisRunId/diffs`
 
-Returns run-over-run changes detected for one analysis job.
+Returns run-over-run changes detected for one analysis run.
 
 Diffs are calculated after a completed or partial-success run by comparing it to the previous completed or partial-success run for the same domain.
 
@@ -560,18 +560,18 @@ If rate limited, the API returns `429`:
 
 Run the same request again after a few seconds. It should return the stored score from PostgreSQL or Redis.
 
-Or poll the job directly:
+Or poll the run directly:
 
 ```bash
-curl http://127.0.0.1:4000/v1/analysis/jobs/1
+curl http://127.0.0.1:4000/v1/analysis/runs/1
 ```
 
 Use the numeric `analysis_run_id` returned by the submit endpoint, not the internal `bullmq_job_id`.
 
-Read detected run-over-run diffs for a job:
+Read detected run-over-run diffs for a run:
 
 ```bash
-curl http://127.0.0.1:4000/v1/analysis/jobs/1/diffs
+curl http://127.0.0.1:4000/v1/analysis/runs/1/diffs
 ```
 
 Diffs currently cover:

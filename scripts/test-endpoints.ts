@@ -279,31 +279,31 @@ async function startServer() {
   await waitForHealth();
 }
 
-async function waitForJob(jobId: number, clientIp: string): Promise<Json> {
+async function waitForRun(analysisRunId: number, clientIp: string): Promise<Json> {
   let elapsed = 0;
 
-  console.error(`Polling analysis job ${jobId}`);
+  console.error(`Polling analysis run ${analysisRunId}`);
 
   while (elapsed <= POLL_TIMEOUT_SECONDS) {
-    const response = await request("GET", `/v1/analysis/jobs/${jobId}`, [200, 202], undefined, clientIp);
+    const response = await request("GET", `/v1/analysis/runs/${analysisRunId}`, [200, 202], undefined, clientIp);
 
     const status = response.status;
 
     if (status === "completed" || status === "partial_success") {
-      assertCurrentStatusContract(response, jobId);
+      assertCurrentStatusContract(response, analysisRunId);
 
       assertJson(
-        `job ${jobId} completed response has run-linked visibility score`,
+        `analysis run ${analysisRunId} completed response has run-linked visibility score`,
         response.data?.analysis_run_id === response.analysis_run_id,
         response
       );
 
-      console.error(`Job ${jobId} finished with status ${status}`);
+      console.error(`Analysis run ${analysisRunId} finished with status ${status}`);
       return response;
     }
 
     if (status === "failed") {
-      console.error(`Job ${jobId} failed`);
+      console.error(`Analysis run ${analysisRunId} failed`);
       console.error(JSON.stringify(response, null, 2));
       process.exit(1);
     }
@@ -312,7 +312,7 @@ async function waitForJob(jobId: number, clientIp: string): Promise<Json> {
     elapsed += POLL_INTERVAL_SECONDS;
   }
 
-  console.error(`Timed out waiting for job ${jobId}`);
+  console.error(`Timed out waiting for analysis run ${analysisRunId}`);
   process.exit(1);
 }
 
@@ -349,14 +349,14 @@ async function runDomainSmoke(domain: string, index: number) {
 
   assertCurrentAnalysisContract(analysisResponse);
 
-  const jobId = analysisResponse.analysis_run_id;
+  const analysisRunId = analysisResponse.analysis_run_id;
   let domainId =
     analysisResponse.domain_id ?? analysisResponse.data?.domain_id;
 
-  if (jobId) {
-    const jobResponse = await waitForJob(jobId, clientIp);
+  if (analysisRunId) {
+    const runResponse = await waitForRun(analysisRunId, clientIp);
     domainId =
-      domainId ?? jobResponse.domain_id ?? jobResponse.data?.domain_id;
+      domainId ?? runResponse.domain_id ?? runResponse.data?.domain_id;
   }
 
   if (!domainId) {
@@ -366,12 +366,12 @@ async function runDomainSmoke(domain: string, index: number) {
 
   console.log(`\nChecking read endpoints for domain_id=${domainId}, provider=${PROVIDER}`);
 
-  await request("GET", `/v1/analysis/jobs/${jobId ?? 1}`, [200, 202, 404], undefined, clientIp);
+  await request("GET", `/v1/analysis/runs/${analysisRunId ?? 1}`, [200, 202, 404], undefined, clientIp);
 
-  if (jobId) {
+  if (analysisRunId) {
     const diffsResponse = await request(
       "GET",
-      `/v1/analysis/jobs/${jobId}/diffs`,
+      `/v1/analysis/runs/${analysisRunId}/diffs`,
       [200],
       undefined,
       clientIp
@@ -381,12 +381,12 @@ async function runDomainSmoke(domain: string, index: number) {
       "diff response has expected shape",
       diffsResponse.status === "found" &&
         diffsResponse.source === "analysis_diffs" &&
-        diffsResponse.analysis_run_id === jobId &&
+        diffsResponse.analysis_run_id === analysisRunId &&
         Array.isArray(diffsResponse.diffs),
       diffsResponse
     );
   } else {
-    await request("GET", "/v1/analysis/jobs/1/diffs", [200, 404], undefined, clientIp);
+    await request("GET", "/v1/analysis/runs/1/diffs", [200, 404], undefined, clientIp);
   }
 
   await request("GET", `/v1/domains/${domainId}/providers/${PROVIDER}/scores`, [200], undefined, clientIp);

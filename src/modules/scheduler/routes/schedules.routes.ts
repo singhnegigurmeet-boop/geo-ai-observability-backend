@@ -36,17 +36,17 @@ export class SchedulesRouter extends BaseRouter {
     this.router.post(
       "/",
       validateBody(createScheduleSchema),
-      this.asyncHandler((req, res) => this.schedulesController.handleCreateScheduleRequest(req, res))
+      this.apiHandler((req) => this.schedulesController.handleCreateScheduleRequest(req))
     );
     this.router.get(
       "/",
-      this.asyncHandler((req, res) => this.schedulesController.handleListSchedulesRequest(req, res))
+      this.apiHandler((req) => this.schedulesController.handleListSchedulesRequest(req))
     );
     this.router.patch(
       "/:scheduleId",
       validateParams(scheduleParamsSchema),
       validateBody(updateScheduleSchema),
-      this.asyncHandler((req, res) => this.schedulesController.handleSetScheduleEnabledRequest(req, res))
+      this.apiHandler((req) => this.schedulesController.handleSetScheduleEnabledRequest(req))
     );
   }
 }

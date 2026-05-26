@@ -3,7 +3,7 @@ export const openApiDocument = {
   info: {
     title: "GEO AI Observability Backend API",
     version: "0.1.0",
-    description: "Domain-only GEO visibility analysis API with async job polling and provider score reads."
+    description: "Domain-only GEO visibility analysis API with async run polling and provider score reads."
   },
   servers: [
     {
@@ -69,28 +69,28 @@ export const openApiDocument = {
         }
       }
     },
-    "/v1/analysis/jobs/{jobId}": {
+    "/v1/analysis/runs/{analysisRunId}": {
       get: {
         tags: ["Analysis"],
-        summary: "Poll analysis job status",
-        parameters: [{ $ref: "#/components/parameters/JobId" }],
+        summary: "Poll analysis run status",
+        parameters: [{ $ref: "#/components/parameters/AnalysisRunId" }],
         responses: {
           "200": {
-            description: "Terminal job status returned"
+            description: "Terminal run status returned"
           },
           "202": {
-            description: "Job is queued or processing"
+            description: "Run is queued or processing"
           },
           "400": { $ref: "#/components/responses/ValidationError" },
           "404": { $ref: "#/components/responses/NotFound" }
         }
       }
     },
-    "/v1/analysis/jobs/{jobId}/diffs": {
+    "/v1/analysis/runs/{analysisRunId}/diffs": {
       get: {
         tags: ["Analysis"],
-        summary: "Get analysis diffs detected for a job",
-        parameters: [{ $ref: "#/components/parameters/JobId" }],
+        summary: "Get analysis diffs detected for a run",
+        parameters: [{ $ref: "#/components/parameters/AnalysisRunId" }],
         responses: {
           "200": {
             description: "Analysis diffs returned"
@@ -231,8 +231,8 @@ export const openApiDocument = {
         required: true,
         schema: { type: "integer", minimum: 1 }
       },
-      JobId: {
-        name: "jobId",
+      AnalysisRunId: {
+        name: "analysisRunId",
         in: "path",
         required: true,
         schema: { type: "integer", minimum: 1 }

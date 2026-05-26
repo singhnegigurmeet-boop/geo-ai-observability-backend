@@ -1,7 +1,6 @@
-import { Request, Response } from "express";
+import { Request } from "express";
 import { PROVIDERS } from "../../../config/constants.js";
 import { BaseController } from "../../../controllers/base.controller.js";
-import { sendApiResult } from "../../../utils/api-response.js";
 import type { ApiResult } from "../../../types/api-response.types.js";
 import type { ProviderName } from "../../../config/constants.js";
 
@@ -16,33 +15,33 @@ export class ProviderScoresController extends BaseController {
     super();
   }
 
-  async handleProviderScoresRequest(req: Request, res: Response): Promise<void> {
+  async handleProviderScoresRequest(req: Request): Promise<ApiResult> {
     this.logRequest(req);
 
     const params = req.params as unknown as { domainId: number; llmName: (typeof PROVIDERS)[number] };
     const result = await this.providerScoresService.getLatestProviderScores(params.domainId, params.llmName);
 
     this.logResponse(req, result.statusCode);
-    sendApiResult(res, result);
+    return result;
   }
 
-  async handleProviderHistoryRequest(req: Request, res: Response): Promise<void> {
+  async handleProviderHistoryRequest(req: Request): Promise<ApiResult> {
     this.logRequest(req);
 
     const params = req.params as unknown as { domainId: number; llmName: (typeof PROVIDERS)[number] };
     const result = await this.providerScoresService.getProviderScoreHistory(params.domainId, params.llmName);
 
     this.logResponse(req, result.statusCode);
-    sendApiResult(res, result);
+    return result;
   }
 
-  async handleProviderComparisonRequest(req: Request, res: Response): Promise<void> {
+  async handleProviderComparisonRequest(req: Request): Promise<ApiResult> {
     this.logRequest(req);
 
     const params = req.params as unknown as { domainId: number };
     const result = await this.providerScoresService.getLatestProviderScoreComparison(params.domainId);
 
     this.logResponse(req, result.statusCode);
-    sendApiResult(res, result);
+    return result;
   }
 }

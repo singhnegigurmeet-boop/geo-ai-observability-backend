@@ -1,6 +1,5 @@
-import { Request, Response } from "express";
+import { Request } from "express";
 import { BaseController } from "../../../controllers/base.controller.js";
-import { sendApiResult } from "../../../utils/api-response.js";
 import type { ApiResult } from "../../../types/api-response.types.js";
 
 export type VisibilityScoreReadPort = {
@@ -14,33 +13,33 @@ export class VisibilityScoresController extends BaseController {
     super();
   }
 
-  async handleVisibilityScoreHistoryRequest(req: Request, res: Response): Promise<void> {
+  async handleVisibilityScoreHistoryRequest(req: Request): Promise<ApiResult> {
     this.logRequest(req);
 
     const params = req.params as unknown as { domainId: number };
     const result = await this.visibilityScoreReadService.getVisibilityScoreHistory(params.domainId);
 
     this.logResponse(req, result.statusCode);
-    sendApiResult(res, result);
+    return result;
   }
 
-  async handleVisibilityScoreTrendRequest(req: Request, res: Response): Promise<void> {
+  async handleVisibilityScoreTrendRequest(req: Request): Promise<ApiResult> {
     this.logRequest(req);
 
     const params = req.params as unknown as { domainId: number };
     const result = await this.visibilityScoreReadService.getVisibilityScoreTrend(params.domainId);
 
     this.logResponse(req, result.statusCode);
-    sendApiResult(res, result);
+    return result;
   }
 
-  async handleVisibilityScoreRequest(req: Request, res: Response): Promise<void> {
+  async handleVisibilityScoreRequest(req: Request): Promise<ApiResult> {
     this.logRequest(req);
 
     const params = req.params as unknown as { domainId: number };
     const result = await this.visibilityScoreReadService.getLatestVisibilityScore(params.domainId);
 
     this.logResponse(req, result.statusCode);
-    sendApiResult(res, result);
+    return result;
   }
 }

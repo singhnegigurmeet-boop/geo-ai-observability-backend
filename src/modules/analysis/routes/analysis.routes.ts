@@ -8,8 +8,8 @@ const requestSchema = z.object({
   domain: z.string().trim().min(1).max(253)
 });
 
-const jobParamsSchema = z.object({
-  jobId: z.coerce.number().int().positive()
+const runParamsSchema = z.object({
+  analysisRunId: z.coerce.number().int().positive()
 });
 
 export class AnalysisRouter extends BaseRouter {
@@ -29,17 +29,17 @@ export class AnalysisRouter extends BaseRouter {
     this.router.post(
       "/",
       validateBody(requestSchema),
-      this.asyncHandler((req, res) => this.analysisController.handleAnalysisRequest(req, res))
+      this.apiHandler((req) => this.analysisController.handleAnalysisRequest(req))
     );
     this.router.get(
-      "/jobs/:jobId",
-      validateParams(jobParamsSchema),
-      this.asyncHandler((req, res) => this.analysisController.handleJobStatusRequest(req, res))
+      "/runs/:analysisRunId",
+      validateParams(runParamsSchema),
+      this.apiHandler((req) => this.analysisController.handleRunStatusRequest(req))
     );
     this.router.get(
-      "/jobs/:jobId/diffs",
-      validateParams(jobParamsSchema),
-      this.asyncHandler((req, res) => this.analysisController.handleJobDiffsRequest(req, res))
+      "/runs/:analysisRunId/diffs",
+      validateParams(runParamsSchema),
+      this.apiHandler((req) => this.analysisController.handleRunDiffsRequest(req))
     );
   }
 }

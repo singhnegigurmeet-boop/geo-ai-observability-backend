@@ -4,7 +4,7 @@ import type { Server } from "node:http";
 import { createApp } from "../src/app.js";
 
 const domainId = 1;
-const jobId = 10;
+const analysisRunId = 10;
 
 const fakeAnalysisCommandService = {
   async enqueueOrReturnCachedAnalysis(domain: string) {
@@ -12,7 +12,7 @@ const fakeAnalysisCommandService = {
       statusCode: 202,
       body: {
         status: "queued",
-        analysis_run_id: jobId,
+        analysis_run_id: analysisRunId,
         domain_id: domainId,
         message: "Analysis started",
         domain
@@ -22,24 +22,24 @@ const fakeAnalysisCommandService = {
 };
 
 const fakeAnalysisStatusService = {
-  async getAnalysisJobStatus(requestedJobId: number) {
+  async getAnalysisRunStatus(requestedAnalysisRunId: number) {
     return {
       statusCode: 200,
       body: {
         status: "completed",
-        analysis_run_id: requestedJobId,
+        analysis_run_id: requestedAnalysisRunId,
         domain: "nike.com"
       }
     };
   },
 
-  async getAnalysisJobDiffs(requestedJobId: number) {
+  async getAnalysisRunDiffs(requestedAnalysisRunId: number) {
     return {
       statusCode: 200,
       body: {
         status: "found",
         source: "analysis_diffs",
-        analysis_run_id: requestedJobId,
+        analysis_run_id: requestedAnalysisRunId,
         domain_id: domainId,
         domain: "nike.com",
         diffs: [
@@ -256,26 +256,26 @@ describe("routes", () => {
 
     assert.equal(response.status, 202);
     assert.equal(body.status, "queued");
-    assert.equal(body.analysis_run_id, jobId);
+    assert.equal(body.analysis_run_id, analysisRunId);
     assert.equal(body.domain_id, domainId);
   });
 
-  it("GET /v1/analysis/jobs/:jobId returns job status", async () => {
-    const response = await fetch(`${baseUrl}/v1/analysis/jobs/${jobId}`);
+  it("GET /v1/analysis/runs/:analysisRunId returns run status", async () => {
+    const response = await fetch(`${baseUrl}/v1/analysis/runs/${analysisRunId}`);
     const body = await response.json();
 
     assert.equal(response.status, 200);
     assert.equal(body.status, "completed");
-    assert.equal(body.analysis_run_id, jobId);
+    assert.equal(body.analysis_run_id, analysisRunId);
   });
 
-  it("GET /v1/analysis/jobs/:jobId/diffs returns analysis diffs", async () => {
-    const response = await fetch(`${baseUrl}/v1/analysis/jobs/${jobId}/diffs`);
+  it("GET /v1/analysis/runs/:analysisRunId/diffs returns analysis diffs", async () => {
+    const response = await fetch(`${baseUrl}/v1/analysis/runs/${analysisRunId}/diffs`);
     const body = await response.json();
 
     assert.equal(response.status, 200);
     assert.equal(body.source, "analysis_diffs");
-    assert.equal(body.analysis_run_id, jobId);
+    assert.equal(body.analysis_run_id, analysisRunId);
     assert.equal(body.diffs[0].diff_type, "visibility_score_dropped");
   });
 

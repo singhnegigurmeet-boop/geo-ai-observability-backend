@@ -30,17 +30,17 @@ export class ProviderScoresRouter extends BaseRouter {
     this.router.get(
       "/:domainId/providers/:llmName/scores",
       validateParams(providerParamsSchema),
-      this.asyncHandler((req, res) => this.providerScoresController.handleProviderScoresRequest(req, res))
+      this.apiHandler((req) => this.providerScoresController.handleProviderScoresRequest(req))
     );
     this.router.get(
       "/:domainId/providers/:llmName/history",
       validateParams(providerParamsSchema),
-      this.asyncHandler((req, res) => this.providerScoresController.handleProviderHistoryRequest(req, res))
+      this.apiHandler((req) => this.providerScoresController.handleProviderHistoryRequest(req))
     );
     this.router.get(
       "/:domainId/provider-scores",
       validateParams(domainParamsSchema),
-      this.asyncHandler((req, res) => this.providerScoresController.handleProviderComparisonRequest(req, res))
+      this.apiHandler((req) => this.providerScoresController.handleProviderComparisonRequest(req))
     );
   }
 }

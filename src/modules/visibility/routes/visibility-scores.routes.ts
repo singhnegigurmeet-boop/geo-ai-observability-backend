@@ -25,17 +25,17 @@ export class VisibilityScoresRouter extends BaseRouter {
     this.router.get(
       "/:domainId/visibility-score/history",
       validateParams(domainParamsSchema),
-      this.asyncHandler((req, res) => this.visibilityScoresController.handleVisibilityScoreHistoryRequest(req, res))
+      this.apiHandler((req) => this.visibilityScoresController.handleVisibilityScoreHistoryRequest(req))
     );
     this.router.get(
       "/:domainId/visibility-score/trend",
       validateParams(domainParamsSchema),
-      this.asyncHandler((req, res) => this.visibilityScoresController.handleVisibilityScoreTrendRequest(req, res))
+      this.apiHandler((req) => this.visibilityScoresController.handleVisibilityScoreTrendRequest(req))
     );
     this.router.get(
       "/:domainId/visibility-score",
       validateParams(domainParamsSchema),
-      this.asyncHandler((req, res) => this.visibilityScoresController.handleVisibilityScoreRequest(req, res))
+      this.apiHandler((req) => this.visibilityScoresController.handleVisibilityScoreRequest(req))
     );
   }
 }

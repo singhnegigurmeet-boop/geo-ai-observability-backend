@@ -182,13 +182,13 @@ POST /v1/analysis
 Job polling endpoint:
 
 ```http
-GET /v1/analysis/jobs/:jobId
+GET /v1/analysis/runs/:analysisRunId
 ```
 
-Job diffs endpoint:
+Run diffs endpoint:
 
 ```http
-GET /v1/analysis/jobs/:jobId/diffs
+GET /v1/analysis/runs/:analysisRunId/diffs
 ```
 
 Schedule management endpoints:
@@ -248,9 +248,12 @@ Call flow:
 ```text
 analysis.routes.ts
   -> validateBody(requestSchema)
-  -> AnalysisController.handleAnalysisRequest(req, res)
+  -> BaseRouter.apiHandler(...)
+  -> AnalysisController.handleAnalysisRequest(req)
   -> getClientIp(req)
   -> AnalysisCommandService.enqueueOrReturnCachedAnalysis(domain, ipAddress)
+  -> return ApiResult
+  -> sendApiResult(res, result)
 ```
 
 Inside `enqueueOrReturnCachedAnalysis()`:
@@ -270,28 +273,30 @@ normalizeDomain(rawDomain)
 Detailed behavior:
 
 1. The request body is validated with Zod.
-2. The input domain is normalized.
-3. Redis same-domain spam protection is checked using IP + domain.
-4. Redis cache is checked using key `analysis:{domain}`.
-5. If Redis has a cached result, API returns `200`.
-6. If Redis misses, PostgreSQL `domains` is upserted.
-7. PostgreSQL `visibility_scores` is checked for latest score.
-8. If the score exists and is fresh, it is cached in Redis and returned.
-9. If missing or stale, Redis unique-domain rate limiting is checked.
-10. If allowed, a BullMQ job is queued.
-11. API returns `202 queued` with numeric `analysis_runs.id` as `analysis_run_id`, numeric `domains.id` as `domain_id`, and BullMQ infrastructure id as `bullmq_job_id`.
+2. `BaseRouter.apiHandler(...)` awaits the controller and sends its `ApiResult`.
+3. The controller logs the request, calls one service method, logs the response status, and returns the service result.
+4. The input domain is normalized.
+5. Redis same-domain spam protection is checked using IP + domain.
+6. Redis cache is checked using key `analysis:{domain}`.
+7. If Redis has a cached result, API returns `200`.
+8. If Redis misses, PostgreSQL `domains` is upserted.
+9. PostgreSQL `visibility_scores` is checked for latest score.
+10. If the score exists and is fresh, it is cached in Redis and returned.
+11. If missing or stale, Redis unique-domain rate limiting is checked.
+12. If allowed, a BullMQ job is queued.
+13. API returns `202 queued` with numeric `analysis_runs.id` as `analysis_run_id`, numeric `domains.id` as `domain_id`, and BullMQ infrastructure id as `bullmq_job_id`.
 
-The client can then poll `GET /v1/analysis/jobs/:jobId`.
+The client can then poll `GET /v1/analysis/runs/:analysisRunId`.
 
 Polling behavior:
 
-1. If the job does not exist, return `404`.
+1. If the analysis run does not exist, return `404`.
 2. If the analysis run is `queued` or `processing`, return `202 processing`.
 3. If all providers failed, return `200 failed`.
 4. If some providers failed and some succeeded, return `200 partial_success`.
 5. If all providers succeeded, return `200 completed`.
 6. Completed and partial-success responses include the latest `visibility_scores` row.
-7. Job diffs can be read from `GET /v1/analysis/jobs/:jobId/diffs`.
+7. Run diffs can be read from `GET /v1/analysis/runs/:analysisRunId/diffs`.
 
 Score read behavior:
 
@@ -301,7 +306,7 @@ Score read behavior:
 4. `GET /v1/domains/:domainId/visibility-score` returns the final aggregated latest score from `visibility_scores`.
 5. `GET /v1/domains/:domainId/visibility-score/history` returns historical final scores from `visibility_scores`.
 6. `GET /v1/domains/:domainId/visibility-score/trend` compares the latest and previous `visibility_scores` rows.
-7. `GET /v1/analysis/jobs/:jobId/diffs` returns detected run-over-run changes from `analysis_diffs`.
+7. `GET /v1/analysis/runs/:analysisRunId/diffs` returns detected run-over-run changes from `analysis_diffs`.
 
 Key files:
 

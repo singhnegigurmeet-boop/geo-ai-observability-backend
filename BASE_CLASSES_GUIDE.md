@@ -156,8 +156,9 @@ src/routes/base.router.ts
 Kept methods:
 
 - `asyncHandler`
+- `apiHandler`
 
-Routes only map URL patterns to controller methods.
+Routes only map URL patterns to validation middleware and controller methods. `apiHandler` is the common async controller wrapper: it awaits a controller `ApiResult`, sends it with `sendApiResult`, and forwards thrown errors to Express with `next(error)`.
 
 ## BaseController
 
@@ -204,7 +205,7 @@ Kept helpers:
 - `apiError`
 - `sendApiResult`
 
-All controllers should send service results through `sendApiResult`.
+Controllers return `ApiResult` values. Routes use `BaseRouter.apiHandler(...)` to send those results through `sendApiResult`.
 
 Do not change existing success response payloads into a new envelope unless the endpoint explicitly requires it. Error responses use the shared shape:
 
@@ -220,6 +221,7 @@ Do not change existing success response payloads into a new envelope unless the 
 ```text
 routes
   -> validation middleware
+  -> apiHandler response wrapper
   -> controllers
   -> services
   -> repositories

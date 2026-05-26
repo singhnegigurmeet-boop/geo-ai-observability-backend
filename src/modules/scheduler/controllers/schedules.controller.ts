@@ -1,6 +1,5 @@
-import type { Request, Response } from "express";
+import type { Request } from "express";
 import { BaseController } from "../../../controllers/base.controller.js";
-import { sendApiResult } from "../../../utils/api-response.js";
 import type { ApiResult } from "../../../types/api-response.types.js";
 import type { DomainScheduleCadence } from "../../../types/database.types.js";
 
@@ -20,7 +19,7 @@ export class SchedulesController extends BaseController {
     super();
   }
 
-  async handleCreateScheduleRequest(req: Request, res: Response): Promise<void> {
+  async handleCreateScheduleRequest(req: Request): Promise<ApiResult> {
     this.logRequest(req);
     const body = req.body as {
       domain: string;
@@ -36,10 +35,10 @@ export class SchedulesController extends BaseController {
     });
 
     this.logResponse(req, result.statusCode);
-    sendApiResult(res, result);
+    return result;
   }
 
-  async handleListSchedulesRequest(req: Request, res: Response): Promise<void> {
+  async handleListSchedulesRequest(req: Request): Promise<ApiResult> {
     this.logRequest(req);
     const query = req.query as { limit?: string; offset?: string };
     const limit = query.limit ? Number(query.limit) : undefined;
@@ -47,16 +46,16 @@ export class SchedulesController extends BaseController {
     const result = await this.scheduleManagementService.listSchedules(limit, offset);
 
     this.logResponse(req, result.statusCode);
-    sendApiResult(res, result);
+    return result;
   }
 
-  async handleSetScheduleEnabledRequest(req: Request, res: Response): Promise<void> {
+  async handleSetScheduleEnabledRequest(req: Request): Promise<ApiResult> {
     this.logRequest(req);
     const params = req.params as unknown as { scheduleId: number };
     const body = req.body as { enabled: boolean };
     const result = await this.scheduleManagementService.setScheduleEnabled(params.scheduleId, body.enabled);
 
     this.logResponse(req, result.statusCode);
-    sendApiResult(res, result);
+    return result;
   }
 }

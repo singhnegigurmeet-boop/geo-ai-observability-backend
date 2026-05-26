@@ -15,7 +15,7 @@ type AnalysisStatusServiceDependencies = {
 export class AnalysisStatusService {
   constructor(private readonly dependencies: AnalysisStatusServiceDependencies) {}
 
-  async getAnalysisJobStatus(analysisRunId: number) {
+  async getAnalysisRunStatus(analysisRunId: number) {
     const analysisRun = await this.dependencies.analysisRunsRepository.findById(analysisRunId);
 
     if (!analysisRun) {
@@ -24,7 +24,7 @@ export class AnalysisStatusService {
         body: {
           status: "not_found",
           analysis_run_id: analysisRunId,
-          error: "Analysis job not found"
+          error: "Analysis run not found"
         }
       };
     }
@@ -93,7 +93,7 @@ export class AnalysisStatusService {
     };
   }
 
-  async getAnalysisJobDiffs(analysisRunId: number) {
+  async getAnalysisRunDiffs(analysisRunId: number) {
     const analysisRun = await this.dependencies.analysisRunsRepository.findById(analysisRunId);
 
     if (!analysisRun) {
@@ -102,7 +102,7 @@ export class AnalysisStatusService {
         body: {
           status: "not_found",
           analysis_run_id: analysisRunId,
-          error: "Analysis job not found"
+          error: "Analysis run not found"
         }
       };
     }
