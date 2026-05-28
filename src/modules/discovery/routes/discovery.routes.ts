@@ -5,10 +5,12 @@ import { BaseRouter } from "../../../routes/base.router.js";
 import type { DiscoveryController } from "../controllers/discovery.controller.js";
 
 const baseDiscoverySchema = {
-  domain: z.string().trim().min(1).max(253),
-  categoryId: z.number().int().positive().optional(),
+  requestedValue: z.string().trim().min(1).max(253),
+  contextCategoryId: z.number().int().positive().optional(),
   notes: z.string().trim().max(2000).optional()
 };
+
+const contextDomainSchema = z.string().trim().min(1).max(253);
 
 const discoveryRequestSchema = z.discriminatedUnion("kind", [
   z
@@ -21,15 +23,15 @@ const discoveryRequestSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("brand"),
       ...baseDiscoverySchema,
-      brandName: z.string().trim().min(1).max(200)
+      contextDomain: contextDomainSchema
     })
     .strict(),
   z
     .object({
       kind: z.literal("product"),
       ...baseDiscoverySchema,
-      brandId: z.number().int().positive().optional(),
-      productName: z.string().trim().min(1).max(200)
+      contextDomain: contextDomainSchema,
+      contextBrandId: z.number().int().positive().optional()
     })
     .strict()
 ]);

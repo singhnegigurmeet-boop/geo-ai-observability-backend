@@ -64,20 +64,37 @@ CREATE TABLE IF NOT EXISTS entity_paths (
 CREATE TABLE IF NOT EXISTS discovery_requests (
   request_id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   kind text NOT NULL CHECK (kind IN ('domain', 'brand', 'product')),
-  domain text NOT NULL,
-  category_id integer REFERENCES categories(category_id) ON DELETE RESTRICT,
-  brand_id integer REFERENCES brands(brand_id) ON DELETE RESTRICT,
-  brand_name text,
-  product_name text,
+  requested_value text NOT NULL,
+  context_domain text,
+  context_category_id integer REFERENCES categories(category_id) ON DELETE RESTRICT,
+  context_brand_id integer REFERENCES brands(brand_id) ON DELETE RESTRICT,
   notes text,
-  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'resolved')),
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'rejected', 'resolved')),
+  resolved_domain_id integer REFERENCES domains(domain_id) ON DELETE SET NULL,
+  resolved_brand_id integer REFERENCES brands(brand_id) ON DELETE SET NULL,
+  resolved_product_id integer REFERENCES products(product_id) ON DELETE SET NULL,
+  resolved_path_id integer REFERENCES entity_paths(path_id) ON DELETE SET NULL,
   created_on timestamptz NOT NULL DEFAULT now(),
   updated_on timestamptz NOT NULL DEFAULT now(),
   is_active boolean NOT NULL DEFAULT true,
   CHECK (
-    (kind = 'domain' AND brand_name IS NULL AND product_name IS NULL AND brand_id IS NULL)
-    OR (kind = 'brand' AND brand_name IS NOT NULL AND product_name IS NULL)
-    OR (kind = 'product' AND product_name IS NOT NULL AND brand_name IS NULL)
+    (
+      kind = 'domain'
+      AND context_domain IS NULL
+      AND context_brand_id IS NULL
+      AND resolved_brand_id IS NULL
+      AND resolved_product_id IS NULL
+    )
+    OR (
+      kind = 'brand'
+      AND context_domain IS NOT NULL
+      AND context_brand_id IS NULL
+      AND resolved_product_id IS NULL
+    )
+    OR (
+      kind = 'product'
+      AND context_domain IS NOT NULL
+    )
   )
 );
 

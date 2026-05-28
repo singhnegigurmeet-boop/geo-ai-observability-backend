@@ -1,23 +1,22 @@
 export type DiscoveryRequest =
   | {
       kind: "domain";
-      domain: string;
-      categoryId?: number;
+      requestedValue: string;
+      contextCategoryId?: number;
       notes?: string;
     }
   | {
       kind: "brand";
-      domain: string;
-      brandName: string;
-      categoryId?: number;
+      requestedValue: string;
+      contextDomain: string;
+      contextCategoryId?: number;
       notes?: string;
     }
   | {
       kind: "product";
-      domain: string;
-      brandId?: number;
-      productName: string;
-      categoryId?: number;
+      requestedValue: string;
+      contextDomain: string;
+      contextCategoryId?: number;
+      contextBrandId?: number;
       notes?: string;
     };
-

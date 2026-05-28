@@ -201,9 +201,9 @@ describe("routes", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         kind: "product",
-        domain: "nike.com",
-        productName: "Pegasus 41",
-        categoryId: 1
+        requestedValue: "Pegasus 41",
+        contextDomain: "nike.com",
+        contextCategoryId: 1
       })
     });
     const body = await response.json();
@@ -212,7 +212,93 @@ describe("routes", () => {
     assert.equal(body.status, "created");
     assert.equal(body.analysis_started, false);
     assert.equal(body.discovery_request.kind, "product");
-    assert.equal(body.discovery_request.productName, "Pegasus 41");
+    assert.equal(body.discovery_request.requestedValue, "Pegasus 41");
+  });
+
+  it("POST /v1/discovery accepts domain discovery without contextDomain", async () => {
+    const response = await fetch(`${baseUrl}/v1/discovery`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "domain",
+        requestedValue: "nike.com"
+      })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 201);
+    assert.equal(body.discovery_request.kind, "domain");
+    assert.equal(body.discovery_request.requestedValue, "nike.com");
+    assert.equal(body.discovery_request.contextDomain, undefined);
+    assert.equal(body.analysis_started, false);
+  });
+
+  it("POST /v1/discovery requires contextDomain for brand and product discovery", async () => {
+    const responses = await Promise.all([
+      fetch(`${baseUrl}/v1/discovery`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "brand", requestedValue: "Jordan" })
+      }),
+      fetch(`${baseUrl}/v1/discovery`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "product", requestedValue: "Air Jordan 4" })
+      })
+    ]);
+
+    assert.deepEqual(
+      responses.map((response) => response.status),
+      [400, 400]
+    );
+  });
+
+  it("POST /v1/discovery accepts optional product context IDs", async () => {
+    const response = await fetch(`${baseUrl}/v1/discovery`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "product",
+        requestedValue: "Air Jordan 4",
+        contextDomain: "nike.com",
+        contextCategoryId: 1,
+        contextBrandId: 2
+      })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 201);
+    assert.equal(body.discovery_request.contextCategoryId, 1);
+    assert.equal(body.discovery_request.contextBrandId, 2);
+  });
+
+  it("POST /v1/discovery rejects the old brandName/productName request shape", async () => {
+    const responses = await Promise.all([
+      fetch(`${baseUrl}/v1/discovery`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "brand",
+          domain: "nike.com",
+          brandName: "Jordan"
+        })
+      }),
+      fetch(`${baseUrl}/v1/discovery`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "product",
+          domain: "nike.com",
+          productName: "Air Jordan 4",
+          brandId: 2
+        })
+      })
+    ]);
+
+    assert.deepEqual(
+      responses.map((response) => response.status),
+      [400, 400]
+    );
   });
 
   it("GET /v1/analysis/runs/:analysisRunId returns V6 run status with items", async () => {

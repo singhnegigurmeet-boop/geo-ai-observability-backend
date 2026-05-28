@@ -1,153 +1,345 @@
 # GEO AI Observability Backend
 
-> V6 rebuild note: this repository is being migrated from V5 domain-only GEO to V6 hierarchy-aware GEO. Runtime code now exposes only V6 placeholder analysis/discovery contracts; older domain-only sections below are historical reference until this README is rewritten.
+V6 hierarchy-aware backend for GEO analysis orchestration.
 
-Production-oriented backend for domain-only GEO visibility analysis across multiple LLM providers.
+The active runtime is intentionally a scaffold: it validates V6 analysis requests, persists runs and run items in PostgreSQL, queues run and item jobs with ID-only payloads, and exposes run status APIs. Provider execution, scoring, Elasticsearch analysis traces, scheduler business logic, crawler behavior, taxonomy bootstrap, and notifications from analysis completion are not active analysis features yet.
 
-This project is intentionally focused on backend infrastructure:
+PostgreSQL is the business source of truth. Redis is used by BullMQ queues. Elasticsearch is initialized if configured, but V6 analysis does not write provider traces or scoring data yet.
+
+## Current Scope
+
+Implemented:
 
 - Express API
-- PostgreSQL structured analytics
-- Redis caching
-- BullMQ async job orchestration
-- Elasticsearch prompt/response observability
-- Raw SQL repositories
-- Central SQL query registry in `src/db/sql-queries.ts`
-- Provider-isolated execution
-- Constructor-based dependency wiring from `src/container.ts`
-- Shared contracts in `src/types`
+- V6 `AnalysisRequest` validation
+- Transactional `analysis_runs` and `analysis_run_items` creation
+- `analysis_runs -> analysis_run_items -> entity_paths` status/read model
+- BullMQ two-queue analysis scaffold
+- Placeholder item execution that marks items `skipped`
+- Run status aggregation from item statuses
+- Discovery request intake
+- V6 scheduler placeholder tick that enqueues no analysis work
+- Log notification infrastructure, currently not wired into analysis completion
 
-It is not a chatbot, prompt playground, dashboard, vector search app, or recommendation engine.
+Not implemented:
 
-The codebase is a modular monolith. It stays one app and one deployment unit while domain code is grouped under `src/modules/*`:
+- LLM prompt execution
+- Provider analysis for V6 run items
+- Provider scoring
+- Final GEO score calculation for V6 runs
+- Analysis-result Redis cache
+- Analysis scheduler behavior
+- Crawler
+- Taxonomy bootstrap
+- V5 domain-only analysis behavior
 
-```text
-src/modules/
-  analysis/
-    controllers/
-    routes/
-    services/
-    repositories/
-  providers/
-    controllers/
-    routes/
-    services/
-    repositories/
-    adapters/
-  visibility/
-    controllers/
-    routes/
-    services/
-    repositories/
-  diffs/
-    services/
-    repositories/
-  scheduler/
-    services/
-    repositories/
-  notifications/
-    services/
-    repositories/
-  observability/
-    services/
-```
+## Active API
 
-Workers can become separate processes later if needed, but they should continue sharing this codebase and domain model until there is a concrete reason to split services.
-
-## Core Terms
-
-- **Domain**: The website being analyzed, for example `nike.com`.
-- **Analysis**: One request to evaluate a domain's visibility across OpenAI, Gemini, and Claude.
-- **Analysis run**: A tracked execution row in `analysis_runs`. The frontend polls this with `analysis_run_id`.
-- **Job**: A BullMQ queue item stored in Redis. The API returns quickly while the worker processes the job in the background.
-- **Worker**: Code that listens to a queue and performs background work. The current app starts the API, analysis worker, scheduler worker, and notification worker in one Node process.
-- **Provider**: One LLM source: `openai`, `gemini`, or `claude`.
-- **Provider analysis**: Latest provider/top-k result for a domain, stored in `provider_analysis`.
-- **Provider snapshot**: Historical provider/top-k result for a specific run, stored in `provider_snapshots`.
-- **Visibility score**: Final aggregate GEO score for a domain/run, stored in `visibility_scores`.
-- **Diff**: A detected change between the current run and the previous successful run, stored in `analysis_diffs`.
-- **Observability trace**: Prompt/response debugging data written to Elasticsearch. It is not used as the ranking source of truth.
-
-## Module Responsibilities
-
-- `analysis`: Owns analysis request routing, run status polling, analysis run state, queue enqueueing, and worker orchestration.
-- `providers`: Owns provider adapters, provider prompt execution, provider latest scores, and provider history reads.
-- `visibility`: Owns aggregate visibility score calculation and visibility score read APIs.
-- `diffs`: Owns run-over-run change detection and `analysis_diffs` persistence.
-- `scheduler`: Owns recurring due-domain scans and scheduled analysis enqueueing.
-- `notifications`: Owns notification records and the log-channel notification worker.
-- `observability`: Owns Elasticsearch index setup and best-effort provider trace indexing.
-- Shared `src/repositories/domains.repository.ts`: Owns the cross-module `domains` table.
-- Shared `src/services/rate-limit.service.ts`: Owns Redis-backed request rate limits.
-
-## Current Status
-
-The backend is runnable locally with deterministic mock providers or real provider APIs.
-
-Mock providers let the full API, Redis, BullMQ, worker, PostgreSQL, and scoring pipeline run without paid LLM credentials. Real OpenAI, Gemini, and Claude adapters are available behind the same provider interface.
-
-Elasticsearch is optional for the current local run. If Elasticsearch is not running, trace indexing logs a failure, but PostgreSQL scoring still completes.
-
-## Architecture Flow
-
-For a function-by-function startup and execution walkthrough, see [FLOW.md](./FLOW.md).
+Mounted routes:
 
 ```text
-API
-  -> Redis cache lookup
-  -> PostgreSQL latest score lookup
-  -> BullMQ job enqueue when missing or stale
-  -> Worke
-  -> analysis_runs processing update
-  -> Parallel provider execution
-  -> PostgreSQL provider_analysis latest state
-  -> PostgreSQL provider_snapshots history
-  -> PostgreSQL visibility_scores aggregate score
-  -> Elasticsearch provider trace documents
-  -> Redis final result cache
-  -> analysis_runs final status update
-  -> analysis_diffs run-over-run changes
-  -> notifications log-channel jobs for detected diffs
+GET  /health
+GET  /openapi.json
+GET  /docs
+POST /v1/analysis
+GET  /v1/analysis/runs/:analysisRunId
+GET  /v1/analysis/runs/:analysisRunId/diffs
+POST /v1/discovery
 ```
 
-Provider failures are isolated. One failed provider should not fail the full workflow.
+Provider score, visibility score, and schedule routes exist in source for rebuild work, but they are not mounted in the active Express app.
 
-## Data Stores
+## V6 Analysis Request
 
-PostgreSQL is the structured source of truth.
+```ts
+type AnalysisRequest = {
+  domain: string;
+  categories?: Array<{
+    categoryId: number;
+    brands?: Array<{
+      brandId: number;
+      products?: Array<{
+        productId: number;
+        useContextIds?: number[];
+      }>;
+    }>;
+  }>;
+};
+```
 
-- `domains`: unique analyzed domains
-- `provider_analysis`: latest provider/top-k scoring state
-- `provider_snapshots`: append-only provider/top-k historical scoring
-- `visibility_scores`: final aggregated GEO scores
-- `analysis_runs`: async run status for frontend polling
-- `analysis_diffs`: detected run-over-run changes after completed or partial-success runs
-- `domain_schedules`: explicit weekly rerun schedules for domains
-- `notifications`: pending/sent/failed notification records for detected diffs
+`POST /v1/analysis` validates this shape only. Flat V5 free-text analysis fields are rejected.
 
-Elasticsearch is for observability only.
+Example:
 
-- `openai-responses`
-- `gemini-responses`
-- `claude-responses`
-- `scheduled-runs`
-- `notifications`
+```bash
+curl -X POST http://127.0.0.1:4000/v1/analysis \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"nike.com","categories":[{"categoryId":1}]}'
+```
 
-For index setup and search examples, see [ELASTICSEARCH.md](./ELASTICSEARCH.md).
+Typical response:
 
-Elasticsearch index names and mappings live in `src/modules/observability/elasticsearch/observability-index-definitions.ts`. The server prepares these indexes once during startup; runtime writes are best-effort observability events.
+```json
+{
+  "status": "queued",
+  "code": "V6_ANALYSIS_RUN_QUEUED",
+  "message": "V6 analysis run queued; provider execution not implemented yet.",
+  "analysisRunId": 100,
+  "domain": "nike.com",
+  "runItemCount": 1,
+  "queueStatus": "enqueued",
+  "runItems": [],
+  "providerExecutionStarted": false
+}
+```
 
-Redis is used for:
+## Run Status
 
-- BullMQ queue state
-- final analysis result cache
-- analysis request rate limiting
+Poll a run:
 
-BullMQ queues:
+```bash
+curl http://127.0.0.1:4000/v1/analysis/runs/100
+```
 
-- `domain-analysis`: runs domain analyses.
-- `domain-scheduler`: scans `domain_schedules` for due reruns.
-- `analysis-notifications`: sends log-channel notifications for diffs.
+The response includes the analysis run, item status summary, and joined entity path details:
+
+```json
+{
+  "analysisRunId": 100,
+  "domain": "nike.com",
+  "requestPayload": { "domain": "nike.com" },
+  "status": "processing",
+  "itemStatusSummary": {
+    "queued": 0,
+    "processing": 0,
+    "completed": 0,
+    "failed": 0,
+    "skipped": 1,
+    "cancelled": 0
+  },
+  "items": [
+    {
+      "runItemId": 1,
+      "status": "skipped",
+      "pathId": 10,
+      "pathType": "category",
+      "domainId": 1,
+      "domain": "nike.com",
+      "categoryId": 1,
+      "category": "Shoes",
+      "brandId": null,
+      "brandName": null,
+      "productId": null,
+      "productName": null,
+      "contextId": null,
+      "context": null
+    }
+  ]
+}
+```
+
+Unknown runs return `404`.
+
+`GET /v1/analysis/runs/:analysisRunId/diffs` currently returns `501`; V6 diffs are not rebuilt yet.
+
+## Data Model
+
+Core V6 tables:
+
+- `domains`
+- `categories`
+- `brands`
+- `products`
+- `use_contexts`
+- `entity_paths`
+- `discovery_requests`
+- `analysis_runs`
+- `analysis_run_items`
+
+Relationship:
+
+```text
+analysis_runs
+  -> analysis_run_items
+      -> entity_paths
+```
+
+`entity_paths` stores reusable DB-controlled hierarchy paths:
+
+- category path
+- brand path
+- product + use context path
+
+`analysis_runs` is one submitted `AnalysisRequest`.
+
+`analysis_run_items` are concrete expanded `entity_paths` selected for that run.
+
+Legacy/provider-related tables still exist in the schema for future rebuild work, but V6 analysis queue scaffolding does not write provider results or visibility scores.
+
+### Discovery Requests
+
+Discovery requests are for missing data only. They create pending verification work for an admin, crawler, or future LLM verification step. They do not run analysis and do not directly insert canonical entities into the analysis flow.
+
+Public request shape:
+
+```ts
+type DiscoveryRequest =
+  | {
+      kind: "domain";
+      requestedValue: string;
+      contextCategoryId?: number;
+      notes?: string;
+    }
+  | {
+      kind: "brand";
+      requestedValue: string;
+      contextDomain: string;
+      contextCategoryId?: number;
+      notes?: string;
+    }
+  | {
+      kind: "product";
+      requestedValue: string;
+      contextDomain: string;
+      contextCategoryId?: number;
+      contextBrandId?: number;
+      notes?: string;
+    };
+```
+
+`discovery_requests` stores `requested_value` separately from optional context fields and later resolution fields:
+
+```text
+request_id
+kind
+requested_value
+context_domain
+context_category_id
+context_brand_id
+notes
+status
+resolved_domain_id
+resolved_brand_id
+resolved_product_id
+resolved_path_id
+created_on
+updated_on
+is_active
+```
+
+Allowed statuses are `pending`, `rejected`, and `resolved`. The old `approved` status is not used.
+
+Examples:
+
+```bash
+curl -X POST http://127.0.0.1:4000/v1/discovery \
+  -H "Content-Type: application/json" \
+  -d '{"kind":"domain","requestedValue":"nike.com"}'
+
+curl -X POST http://127.0.0.1:4000/v1/discovery \
+  -H "Content-Type: application/json" \
+  -d '{"kind":"brand","requestedValue":"Jordan","contextDomain":"nike.com"}'
+
+curl -X POST http://127.0.0.1:4000/v1/discovery \
+  -H "Content-Type: application/json" \
+  -d '{"kind":"product","requestedValue":"Air Jordan 4","contextDomain":"nike.com","contextBrandId":2}'
+```
+
+## Queue Model
+
+Active analysis queues:
+
+```text
+analysis_run_queue
+analysis_run_item_queue
+```
+
+Payloads carry IDs only:
+
+```ts
+type AnalysisRunJobPayload = {
+  analysisRunId: number;
+};
+
+type AnalysisRunItemJobPayload = {
+  analysisRunId: number;
+  runItemId: number;
+};
+```
+
+No domain, category, brand, product, or use context names are placed in analysis queue payloads.
+
+Run queue behavior:
+
+1. Load `analysis_runs` by `analysisRunId`.
+2. Load `analysis_run_items` from PostgreSQL.
+3. Mark the run `processing`.
+4. Enqueue one item job per queued run item.
+5. If no items exist, mark the run `failed`.
+6. Do not call providers.
+
+Item queue behavior:
+
+1. Load `analysis_run_item` and joined `entity_path` by `runItemId`.
+2. Verify the item belongs to `analysisRunId`.
+3. Mark item `processing`.
+4. Log `Provider execution not implemented yet`.
+5. Mark item `skipped`.
+6. Aggregate parent run status.
+7. Do not write provider analysis, visibility scores, or Elasticsearch traces.
+
+Status aggregation:
+
+- Any `queued` or `processing` item -> run `processing`
+- All `completed` or scaffold `skipped` items -> run `completed`
+- Some failed and some terminal non-failed items -> run `partial_success`
+- All failed -> run `failed`
+- All cancelled -> run `cancelled`
+- No items -> run `failed`
+
+## Project Structure
+
+```text
+src/
+  app.ts
+  main.ts
+  container.ts
+  db/
+  lib/
+  queue/
+  runtime/
+  modules/
+    analysis/
+    discovery/
+    providers/
+    visibility/
+    diffs/
+    scheduler/
+    notifications/
+    observability/
+  repositories/
+  services/
+  types/
+```
+
+Important active files:
+
+- `src/modules/analysis/routes/analysis.routes.ts`
+- `src/modules/analysis/controllers/analysis.controller.ts`
+- `src/modules/analysis/services/analysis-command.service.ts`
+- `src/modules/analysis/services/analysis-status.service.ts`
+- `src/modules/analysis/services/analysis-run-orchestrator.service.ts`
+- `src/modules/analysis/services/analysis-run-item-execution.service.ts`
+- `src/modules/analysis/services/analysis-run-status-aggregator.service.ts`
+- `src/modules/analysis/repositories/analysis-runs.repository.ts`
+- `src/modules/analysis/repositories/analysis-run-items.repository.ts`
+- `src/queue/analysis-run.queue.ts`
+- `src/queue/analysis-run-item.queue.ts`
+- `src/runtime/analysis-run-worker.ts`
+- `src/runtime/analysis-run-item-worker.ts`
+- `src/types/queue.types.ts`
+- `src/db/sql-queries.ts`
+- `src/db/migrations/001_initial_schema.sql`
 
 ## Requirements
 
@@ -155,8 +347,8 @@ Tested from WSL:
 
 - Node.js
 - npm
-- PostgreSQL running on `localhost:5432`
-- Redis running on `localhost:6379`
+- PostgreSQL on `localhost:5432`
+- Redis on `localhost:6379`
 
 Optional:
 
@@ -165,13 +357,13 @@ Optional:
 
 ## Environment
 
-The local `.env` file is **not committed** to version control for security. Copy `.env.example` to `.env` and update the values:
+Copy `.env.example` to `.env`:
 
 ```bash
 cp .env.example .env
 ```
 
-Then edit `.env` with your configuration:
+Minimum local values:
 
 ```env
 NODE_ENV=development
@@ -179,122 +371,16 @@ PORT=4000
 DATABASE_URL=postgres://geo_user:geo_pass_123@localhost:5432/geo_observability
 REDIS_URL=redis://localhost:6379
 ELASTICSEARCH_NODE=http://localhost:9200
-
-CACHE_TTL_SECONDS=3600
-ANALYSIS_STALE_HOURS=24
-PROVIDER_TIMEOUT_MS=60000
-PROVIDER_MAX_RETRIES=3
 SCHEDULER_TICK_MS=60000
-
-USE_MOCK_PROVIDERS=true
-ALLOW_MISSING_PROVIDER_KEYS=false
-
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-4.1-mini
-
-GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.5-flash
-
-ANTHROPIC_API_KEY=
-ANTHROPIC_MODEL=claude-3-5-haiku-latest
 ```
 
-**Important:** The `.env` file is ignored by Git (see `.gitignore`). Never commit real API keys or sensitive credentials.
-
-Provider API keys should come from environment variables or deployment secrets:
-
-```env
-OPENAI_API_KEY=
-GEMINI_API_KEY=
-ANTHROPIC_API_KEY=
-```
-
-Do not store provider API keys in PostgreSQL in this version. Rotate real provider keys at least every 3 months.
-
-## Provider Modes
-
-Mock mode:
-
-```env
-USE_MOCK_PROVIDERS=true
-```
-
-This uses deterministic local provider responses from `src/modules/providers/adapters/mock-provider-adapter.ts`.
-
-Real provider mode:
-
-```env
-USE_MOCK_PROVIDERS=false
-OPENAI_API_KEY=your_openai_key
-GEMINI_API_KEY=your_gemini_key
-ANTHROPIC_API_KEY=your_anthropic_key
-```
-
-All three keys are required when mock mode is disabled. If one key is missing, the app fails fast at startup instead of running in a confusing half-real state.
-
-OpenAI-only local test mode:
-
-```env
-USE_MOCK_PROVIDERS=false
-ALLOW_MISSING_PROVIDER_KEYS=true
-OPENAI_API_KEY=your_openai_key
-GEMINI_API_KEY=
-ANTHROPIC_API_KEY=
-```
-
-In this mode OpenAI runs for real, while Gemini and Claude are recorded as failed providers. This is useful for testing provider isolation, but production should use all provider keys.
+Provider keys may remain empty for the current V6 scaffold because provider execution is not active.
 
 ## Install
-
-From WSL:
 
 ```bash
 cd /mnt/d/geo-ai-observability-backend
 npm install
-```
-
-## Test PostgreSQL
-
-Check Postgres is available:
-
-```bash
-pg_isready -h localhost -p 5432
-```
-
-Check project database login:
-
-```bash
-PGPASSWORD='geo_pass_123' psql -h localhost -U geo_user -d geo_observability -c 'select current_user, current_database();'
-```
-
-List tables:
-
-```bash
-PGPASSWORD='geo_pass_123' psql -h localhost -U geo_user -d geo_observability -c '\dt'
-```
-
-Check row counts:
-
-```bash
-PGPASSWORD='geo_pass_123' psql -h localhost -U geo_user -d geo_observability -c '
-select count(*) as domains from domains;
-select count(*) as provider_analysis from provider_analysis;
-select count(*) as provider_snapshots from provider_snapshots;
-select count(*) as visibility_scores from visibility_scores;
-select count(*) as analysis_diffs from analysis_diffs;
-'
-```
-
-## Test Redis
-
-```bash
-redis-cli ping
-```
-
-Expected:
-
-```text
-PONG
 ```
 
 ## Run Migrations
@@ -303,29 +389,37 @@ PONG
 npm run migrate
 ```
 
-Local migrations are reset-style. The command drops the known application tables, recreates the current schema from `src/db/migrations/001_initial_schema.sql`, and verifies the required tables. This project does not preserve backward-compatible migration history during local development.
+Local migrations are reset-style. The command drops known application tables, recreates the current schema from `src/db/migrations/001_initial_schema.sql`, and verifies required tables.
 
-## Build And Typecheck
+## Build And Test
 
 ```bash
-npm test
-npm run typecheck
 npm run build
+npm test
+```
+
+Or from Windows PowerShell through WSL:
+
+```powershell
+wsl bash -lc "cd /mnt/d/geo-ai-observability-backend && npm run build && npm test"
 ```
 
 ## Run The API And Workers
 
-For a clean checkout:
-
 ```bash
-cd /mnt/d/geo-ai-observability-backend
-npm install
-npm run migrate
 npm run build
 npm start
 ```
 
-This starts the API plus the analysis, scheduler, and notification BullMQ workers in the same Node process. When the process receives `Ctrl+C` or `SIGTERM`, it closes the HTTP server, workers, BullMQ queues, Redis connection, PostgreSQL pool, and Elasticsearch client.
+This starts one Node process containing:
+
+- Express API
+- Analysis run worker
+- Analysis run item worker
+- V6 scheduler placeholder worker
+- Notification worker
+
+Shutdown closes the HTTP server, BullMQ workers, queues, Redis connection, PostgreSQL pool, and Elasticsearch client.
 
 Health check:
 
@@ -339,435 +433,24 @@ Expected:
 {"status":"ok"}
 ```
 
-## API Documentation
-
-Swagger UI is served by the API process:
-
-```bash
-curl http://127.0.0.1:4000/openapi.json
-```
-
-Open the interactive docs at:
-
-```text
-http://127.0.0.1:4000/docs
-```
-
-## API Reference
-
-### `GET /health`
-
-Checks whether the Express API process is running.
-
-Typical response:
-
-```json
-{"status":"ok"}
-```
-
-### `GET /openapi.json`
-
-Returns the OpenAPI specification used by Swagger UI. Use this for API clients, docs tooling, or quick route inspection.
-
-### `GET /docs`
-
-Serves Swagger UI for interactive API exploration in the browser.
-
-### `POST /v1/analysis`
-
-Starts or retrieves analysis for a domain.
-
-What it does:
-
-1. Validates the request body.
-2. Normalizes the domain.
-3. Checks same-domain Redis rate limit.
-4. Checks Redis cache.
-5. Checks the latest PostgreSQL visibility score.
-6. Checks unique-domain Redis rate limit if the domain is uncached/stale.
-7. Creates an `analysis_runs` row and enqueues a BullMQ job when fresh data is unavailable.
-
-Possible outcomes:
-
-- `200`: existing cached or fresh PostgreSQL result returned.
-- `202`: new analysis run queued.
-- `400`: invalid body.
-- `429`: rate limited.
-
-### `GET /v1/analysis/runs/:analysisRunId`
-
-Polls an analysis run by numeric `analysis_runs.id`.
-
-What it returns:
-
-- `202 processing` while the run is queued or processing.
-- `200 completed` when all providers succeeded.
-- `200 partial_success` when at least one provider succeeded and at least one failed.
-- `200 failed` when all providers failed.
-- `404` when the job id does not exist.
-
-Completed and partial-success responses include the latest `visibility_scores` row.
-
-### `GET /v1/analysis/runs/:analysisRunId/diffs`
-
-Returns run-over-run changes detected for one analysis run.
-
-Diffs are calculated after a completed or partial-success run by comparing it to the previous completed or partial-success run for the same domain.
-
-Current diff types:
-
-- `visibility_score_dropped`
-- `brand_rank_changed`
-- `provider_mention_disappeared`
-- `provider_recovered`
-
-### `POST /v1/schedules`
-
-Creates or updates one explicit weekly domain schedule in `domain_schedules`.
-
-Example:
-
-```json
-{
-  "domain": "nike.com",
-  "cadence": "weekly",
-  "enabled": true
-}
-```
-
-### `GET /v1/schedules`
-
-Lists domain schedules with their domain names.
-
-### `PATCH /v1/schedules/:scheduleId`
-
-Enables or disables a schedule.
-
-Example:
-
-```json
-{
-  "enabled": false
-}
-```
-
-### `GET /v1/domains/:domainId/providers/:llmName/scores`
-
-Returns the latest top-k score rows for one provider from `provider_analysis`.
-
-Allowed `llmName` values:
-
-- `openai`
-- `gemini`
-- `claude`
-
-Use this when the frontend needs the latest provider-specific state.
-
-### `GET /v1/domains/:domainId/providers/:llmName/history`
-
-Returns historical provider/top-k rows from `provider_snapshots`.
-
-Use this when the frontend needs provider history, run history, or debugging information over time.
-
-### `GET /v1/domains/:domainId/provider-scores`
-
-Returns the latest provider comparison across OpenAI, Gemini, and Claude from `provider_analysis`.
-
-Use this for side-by-side provider score comparison.
-
-### `GET /v1/domains/:domainId/visibility-score`
-
-Returns the latest aggregate GEO visibility score from `visibility_scores`.
-
-Use this as the main final score endpoint for a domain.
-
-### `GET /v1/domains/:domainId/visibility-score/history`
-
-Returns historical aggregate visibility score rows from `visibility_scores`.
-
-Use this to plot score history over time.
-
-### `GET /v1/domains/:domainId/visibility-score/trend`
-
-Compares the latest and previous visibility scores.
-
-Trend values:
-
-- `improved`
-- `dropped`
-- `stable`
-- `insufficient_history`
-
-## Scheduler And Notifications
-
-The scheduler and notification workers run inside the same Node process for now. They are separate BullMQ workers, not microservices.
-
-Scheduler behavior:
-
-1. A repeatable BullMQ job runs on `domain-scheduler`.
-2. Each tick scans enabled rows in `domain_schedules` where `next_run_at <= now()`.
-3. For every due schedule, it creates an `analysis_runs` row with `source = scheduled`.
-4. It enqueues a normal `domain-analysis` job.
-5. It moves that schedule's `next_run_at` forward by 7 days.
-
-Notification behavior:
-
-1. The analysis worker runs the diff engine after completed or partial-success runs.
-2. If diffs are detected, notification records are inserted into `notifications`.
-3. Jobs are enqueued on `analysis-notifications`.
-4. The notification worker currently uses only the `log` channel and marks notifications as `sent`.
-
-Create or update a weekly schedule:
-
-```bash
-curl -X POST http://127.0.0.1:4000/v1/schedules \
-  -H "Content-Type: application/json" \
-  -d '{"domain":"nike.com","cadence":"weekly","enabled":true}'
-```
-
-This intentionally requires an explicit schedule row. The backend does not automatically rerun every analyzed domain.
-
-## Submit Analysis
-
-```bash
-curl -X POST http://127.0.0.1:4000/v1/analysis \
-  -H "Content-Type: application/json" \
-  -d '{"domain":"nike.com"}'
-```
-
-First response usually returns:
-
-```json
-{
-  "status": "queued",
-  "analysis_run_id": 1,
-  "domain_id": 1,
-  "bullmq_job_id": "analysis-run-1-1778841898167",
-  "message": "Analysis started",
-  "domain": "nike.com"
-}
-```
-
-If rate limited, the API returns `429`:
-
-```json
-{
-  "status": "rate_limited",
-  "error": "Same domain request limit exceeded",
-  "limit": 20,
-  "current": 21,
-  "retry_after_seconds": 3600
-}
-```
-
-Run the same request again after a few seconds. It should return the stored score from PostgreSQL or Redis.
-
-Or poll the run directly:
-
-```bash
-curl http://127.0.0.1:4000/v1/analysis/runs/1
-```
-
-Use the numeric `analysis_run_id` returned by the submit endpoint, not the internal `bullmq_job_id`.
-
-Read detected run-over-run diffs for a run:
-
-```bash
-curl http://127.0.0.1:4000/v1/analysis/runs/1/diffs
-```
-
-Diffs currently cover:
-
-- `visibility_score_dropped`
-- `brand_rank_changed`
-- `provider_mention_disappeared`
-- `provider_recovered`
-
-Possible job responses:
-
-```json
-{
-  "status": "processing",
-  "analysis_run_id": 1,
-  "domain": "nike.com",
-  "run_status": "processing"
-}
-```
-
-```json
-{
-  "status": "partial_success",
-  "analysis_run_id": 1,
-  "domain": "nike.com",
-  "providers": {
-    "openai": { "status": "completed", "error_message": null },
-    "gemini": { "status": "failed", "error_message": "provider error" },
-    "claude": { "status": "completed", "error_message": null }
-  },
-  "data": {
-    "overall_geo_score": "42.10"
-  }
-}
-```
-
-```json
-{
-  "status": "failed",
-  "analysis_run_id": 1,
-  "domain": "nike.com",
-  "error": "Analysis failed. All providers failed after retries."
-}
-```
-
-## Read Domain Scores
-
-Score read routes are separate from `POST /v1/analysis`.
-
-Single provider scores read from `provider_analysis`, the latest-state table:
-
-```bash
-curl "http://127.0.0.1:4000/v1/domains/1/providers/openai/scores"
-```
-
-Allowed provider names:
-
-- `openai`
-- `gemini`
-- `claude`
-
-Example response:
-
-```json
-{
-  "status": "found",
-  "source": "provider_analysis",
-  "domain_id": 1,
-  "domain": "nike.com",
-  "provider": "openai",
-  "scores": [
-    {
-      "top_k": 5,
-      "rank_position": 2,
-      "mention_count": 3,
-      "score": "92.00",
-      "status": "completed",
-      "error_message": null
-    }
-  ]
-}
-```
-
-All provider comparison also reads from `provider_analysis`:
-
-```bash
-curl "http://127.0.0.1:4000/v1/domains/1/provider-scores"
-```
-
-Final aggregated GEO score reads from `visibility_scores`:
-
-```bash
-curl "http://127.0.0.1:4000/v1/domains/1/visibility-score"
-```
-
-## Inspect Results
-
-Latest GEO scores:
-
-```bash
-PGPASSWORD='geo_pass_123' psql -h localhost -U geo_user -d geo_observability -c '
-select d.domain, v.openai_score, v.gemini_score, v.claude_score, v.overall_geo_score, v.created_at
-from visibility_scores v
-join domains d on d.id = v.domain_id
-order by v.created_at desc
-limit 10;
-'
-```
-
-Provider latest state:
-
-```bash
-PGPASSWORD='geo_pass_123' psql -h localhost -U geo_user -d geo_observability -c '
-select d.domain, p.llm_name, p.top_k, p.rank_position, p.mention_count, p.score, p.status, p.last_run
-from provider_analysis p
-join domains d on d.id = p.domain_id
-order by p.llm_name, p.top_k;
-'
-```
-
-Historical snapshots:
-
-```bash
-PGPASSWORD='geo_pass_123' psql -h localhost -U geo_user -d geo_observability -c '
-select d.domain, s.llm_name, s.top_k, s.score, s.status, s.created_at
-from provider_snapshots s
-join domains d on d.id = s.domain_id
-order by s.created_at desc
-limit 20;
-'
-```
-
 ## Scripts
 
 ```bash
-npm run dev          # API and worker in one process with tsx watch
-npm run migrate      # reset local app tables and apply the current raw SQL schema
-npm run elasticsearch:setup # create Elasticsearch observability indexes
-npm run test:endpoints # reset local state, start the API, and smoke test HTTP endpoints
-npm run typecheck    # TypeScript check
-npm run build        # compile to dist
-npm start            # run compiled API and worker togethe
+npm run dev                 # tsx watch src/main.ts
+npm run migrate             # reset local app tables and apply current SQL schema
+npm run build               # compile TypeScript
+npm test                    # run node:test suite
+npm run typecheck           # TypeScript no-emit check
+npm start                   # run compiled app
+npm run elasticsearch:setup # create observability indexes
 ```
 
-Endpoint smoke test:
+Docker helper scripts are present in `package.json`, but are optional for local WSL development.
 
-```bash
-npm run test:endpoints
-```
+## Development Rules
 
-The script builds the project, optionally runs migrations, flushes the selected Redis database, starts `dist/main.js`, waits for `/health`, submits `POST /v1/analysis`, polls the returned `analysis_run_id`, and then calls every read endpoint. It stops the server process that it started when the smoke test finishes.
-
-By default the smoke test uses `REDIS_URL=redis://localhost:6379/15` so test queue/cache/rate-limit state is isolated from normal local development. It also refuses to reuse an already-running API at `API_BASE_URL`; stop the old process first so the script can start the current build. Set `USE_EXISTING_SERVER=true` only when intentionally testing a server you started yourself.
-
-Useful options:
-
-```bash
-RUN_MIGRATIONS=false npm run test:endpoints
-RESET_REDIS=false npm run test:endpoints
-TEST_DOMAIN=nike.com npm run test:endpoints
-SHOW_RESPONSES=false npm run test:endpoints
-MAX_RESPONSE_CHARS=8000 npm run test:endpoints
-```
-
-By default the script runs the curated website set: Nike, Adidas, Puma, Apple, Samsung, Sony, Figma, Notion, Slack, HubSpot, Salesforce, Shopify, Stripe, Airbnb, and Booking. Set `TEST_DOMAIN=nike.com` to run one domain. Before each domain is submitted, the script clears `analysis:{domain}` from Redis and ages any existing visibility score so repeated dev runs create new history for trend/diff checks.
-
-Docker scripts are present, but Docker was not available in the current WSL environment:
-
-```bash
-npm run infra:up
-npm run infra:down
-npm run docker:migrate
-npm run docker:up
-npm run docker:logs
-```
-
-## Important Notes
-
-- Markdown files are the project source of truth. Any architecture, route, workflow, scoring, database, cache, queue, or provider behavior change must update the relevant `.md` file in the same change.
-- BullMQ is not a separate server. It is an npm package and uses Redis.
-- PostgreSQL remains the business source of truth.
-- Elasticsearch is not the ranking engine.
-- `provider_snapshots` should remain append-only.
-- `provider_analysis` stores latest provider/top-k state.
-- `visibility_scores` stores final aggregate GEO scoring.
-- `analysis_diffs` stores detected changes between run-linked histories.
-- `new_competitor_appeared` is intentionally not implemented until competitor data is stored structurally.
-- Provider responses are deterministic mocks only when `USE_MOCK_PROVIDERS=true`.
-- Real adapters use direct HTTP calls through the existing provider interface.
-
-## Stop Local Processes
-
-If you started the compiled app manually:
-
-```bash
-pkill -f 'node dist/main.js'
-```
+- Keep V5 domain-only analysis behavior inactive.
+- Keep PostgreSQL as the source of truth.
+- Keep analysis queue payloads ID-only.
+- Do not add provider calls, scoring, cache semantics, Elasticsearch writes, scheduler behavior, crawler behavior, or taxonomy bootstrap as part of queue/status scaffolding.
+- Update this README and `FLOW.md` whenever route, queue, DB, worker, or runtime behavior changes.

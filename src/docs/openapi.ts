@@ -76,7 +76,7 @@ export const openApiDocument = {
       post: {
         tags: ["Discovery"],
         summary: "Create a pending V6 discovery request",
-        description: "Discovery can carry missing free-text brand/product names, but only creates pending verification work and does not run analysis.",
+        description: "Discovery captures missing free-text domain, brand, or product values as pending verification work. It does not run analysis or insert canonical analysis entities.",
         requestBody: {
           required: true,
           content: {
@@ -175,34 +175,34 @@ export const openApiDocument = {
       },
       DomainDiscoveryRequest: {
         type: "object",
-        required: ["kind", "domain"],
+        required: ["kind", "requestedValue"],
         properties: {
           kind: { type: "string", enum: ["domain"] },
-          domain: { type: "string", example: "nike.com" },
-          categoryId: { type: "integer", minimum: 1 },
+          requestedValue: { type: "string", example: "nike.com" },
+          contextCategoryId: { type: "integer", minimum: 1 },
           notes: { type: "string", maxLength: 2000 }
         }
       },
       BrandDiscoveryRequest: {
         type: "object",
-        required: ["kind", "domain", "brandName"],
+        required: ["kind", "requestedValue", "contextDomain"],
         properties: {
           kind: { type: "string", enum: ["brand"] },
-          domain: { type: "string", example: "nike.com" },
-          brandName: { type: "string", example: "Nike" },
-          categoryId: { type: "integer", minimum: 1 },
+          requestedValue: { type: "string", example: "Jordan" },
+          contextDomain: { type: "string", example: "nike.com" },
+          contextCategoryId: { type: "integer", minimum: 1 },
           notes: { type: "string", maxLength: 2000 }
         }
       },
       ProductDiscoveryRequest: {
         type: "object",
-        required: ["kind", "domain", "productName"],
+        required: ["kind", "requestedValue", "contextDomain"],
         properties: {
           kind: { type: "string", enum: ["product"] },
-          domain: { type: "string", example: "nike.com" },
-          brandId: { type: "integer", minimum: 1 },
-          productName: { type: "string", example: "Pegasus 41" },
-          categoryId: { type: "integer", minimum: 1 },
+          requestedValue: { type: "string", example: "Air Jordan 4" },
+          contextDomain: { type: "string", example: "nike.com" },
+          contextBrandId: { type: "integer", minimum: 1 },
+          contextCategoryId: { type: "integer", minimum: 1 },
           notes: { type: "string", maxLength: 2000 }
         }
       },

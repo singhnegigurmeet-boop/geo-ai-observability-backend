@@ -711,16 +711,21 @@ describe("focused services", () => {
     const service = new DiscoveryCommandService({
       async createDiscoveryRequest(input) {
         assert.equal(input.kind, "product");
+        assert.equal(input.requestedValue, "Pegasus 41");
+        assert.equal(input.contextDomain, "nike.com");
         return {
           request_id: 7,
           kind: "product",
-          domain: "nike.com",
-          category_id: 1,
-          brand_id: null,
-          brand_name: null,
-          product_name: "Pegasus 41",
+          requested_value: "Pegasus 41",
+          context_domain: "nike.com",
+          context_category_id: 1,
+          context_brand_id: null,
           notes: null,
           status: "pending",
+          resolved_domain_id: null,
+          resolved_brand_id: null,
+          resolved_product_id: null,
+          resolved_path_id: null,
           created_on: now,
           updated_on: now,
           is_active: true
@@ -736,15 +741,137 @@ describe("focused services", () => {
 
     const result = await service.createDiscoveryRequest({
       kind: "product",
-      domain: "nike.com",
-      productName: "Pegasus 41",
-      categoryId: 1
+      requestedValue: "Pegasus 41",
+      contextDomain: "nike.com",
+      contextCategoryId: 1
     });
 
     assert.equal(result.statusCode, 201);
     assert.equal(result.body.discovery_request.status, "pending");
     assert.equal(result.body.analysis_started, false);
     assert.equal(analysisWasRun, false);
+  });
+
+  it("discovery repository writes domain requests with requestedValue and no contextDomain", async () => {
+    process.env.DATABASE_URL ??= "postgres://user:password@127.0.0.1:5432/test";
+    process.env.REDIS_URL ??= "redis://127.0.0.1:6379";
+    process.env.ELASTICSEARCH_NODE ??= "http://127.0.0.1:9200";
+
+    const { DiscoveryRequestsRepository } = await import(
+      "../src/modules/discovery/repositories/discovery-requests.repository.js"
+    );
+    const repository = new DiscoveryRequestsRepository();
+    let params: unknown[] = [];
+
+    (repository as any).executeSingleQueryOrThrow = async (_sql: string, capturedParams: unknown[]) => {
+      params = capturedParams;
+      return {
+        request_id: 1,
+        kind: "domain",
+        requested_value: capturedParams[1],
+        context_domain: capturedParams[2],
+        context_category_id: capturedParams[3],
+        context_brand_id: capturedParams[4],
+        notes: capturedParams[5],
+        status: "pending",
+        resolved_domain_id: null,
+        resolved_brand_id: null,
+        resolved_product_id: null,
+        resolved_path_id: null,
+        created_on: now,
+        updated_on: now,
+        is_active: true
+      };
+    };
+
+    const row = await repository.createDiscoveryRequest({
+      kind: "domain",
+      requestedValue: "nike.com",
+      contextCategoryId: 2
+    });
+
+    assert.deepEqual(params, ["domain", "nike.com", null, 2, null, null]);
+    assert.equal(row.context_domain, null);
+  });
+
+  it("discovery repository writes brand and product context fields clearly", async () => {
+    process.env.DATABASE_URL ??= "postgres://user:password@127.0.0.1:5432/test";
+    process.env.REDIS_URL ??= "redis://127.0.0.1:6379";
+    process.env.ELASTICSEARCH_NODE ??= "http://127.0.0.1:9200";
+
+    const { DiscoveryRequestsRepository } = await import(
+      "../src/modules/discovery/repositories/discovery-requests.repository.js"
+    );
+    const repository = new DiscoveryRequestsRepository();
+    const writes: unknown[][] = [];
+
+    (repository as any).executeSingleQueryOrThrow = async (_sql: string, params: unknown[]) => {
+      writes.push(params);
+      return {
+        request_id: writes.length,
+        kind: params[0],
+        requested_value: params[1],
+        context_domain: params[2],
+        context_category_id: params[3],
+        context_brand_id: params[4],
+        notes: params[5],
+        status: "pending",
+        resolved_domain_id: null,
+        resolved_brand_id: null,
+        resolved_product_id: null,
+        resolved_path_id: null,
+        created_on: now,
+        updated_on: now,
+        is_active: true
+      };
+    };
+
+    await repository.createDiscoveryRequest({
+      kind: "brand",
+      requestedValue: "Jordan",
+      contextDomain: "https://www.nike.com",
+      contextCategoryId: 3
+    });
+    await repository.createDiscoveryRequest({
+      kind: "product",
+      requestedValue: "Air Jordan 4",
+      contextDomain: "nike.com",
+      contextCategoryId: 3,
+      contextBrandId: 9,
+      notes: "customer requested"
+    });
+
+    assert.deepEqual(writes, [
+      ["brand", "Jordan", "nike.com", 3, null, null],
+      ["product", "Air Jordan 4", "nike.com", 3, 9, "customer requested"]
+    ]);
+  });
+
+  it("discovery repository rejects approved status and accepts pending/rejected/resolved", async () => {
+    process.env.DATABASE_URL ??= "postgres://user:password@127.0.0.1:5432/test";
+    process.env.REDIS_URL ??= "redis://127.0.0.1:6379";
+    process.env.ELASTICSEARCH_NODE ??= "http://127.0.0.1:9200";
+
+    const { DiscoveryRequestsRepository } = await import(
+      "../src/modules/discovery/repositories/discovery-requests.repository.js"
+    );
+    const repository = new DiscoveryRequestsRepository();
+    const statuses: string[] = [];
+
+    (repository as any).executeSingleQuery = async (_sql: string, params: unknown[]) => {
+      statuses.push(params[1] as string);
+      return null;
+    };
+
+    await repository.updateDiscoveryRequestStatus(1, "pending");
+    await repository.updateDiscoveryRequestStatus(1, "rejected");
+    await repository.updateDiscoveryRequestStatus(1, "resolved");
+    assert.deepEqual(statuses, ["pending", "rejected", "resolved"]);
+
+    await assert.rejects(
+      repository.updateDiscoveryRequestStatus(1, "approved" as any),
+      /Invalid discovery request status/
+    );
   });
 
   it("scheduler scaffold no longer enqueues V5 domain-only analysis jobs", async () => {

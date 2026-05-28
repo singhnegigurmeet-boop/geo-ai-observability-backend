@@ -116,14 +116,13 @@ export const SQL_QUERIES = {
     insert: `
       INSERT INTO discovery_requests (
         kind,
-        domain,
-        category_id,
-        brand_id,
-        brand_name,
-        product_name,
+        requested_value,
+        context_domain,
+        context_category_id,
+        context_brand_id,
         notes
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *
     `,
     listPending: `
@@ -132,7 +131,7 @@ export const SQL_QUERIES = {
       WHERE status = 'pending'
         AND is_active = true
         AND ($1::text IS NULL OR kind = $1)
-        AND ($2::integer IS NULL OR category_id = $2)
+        AND ($2::integer IS NULL OR context_category_id = $2)
       ORDER BY created_on ASC, request_id ASC
       LIMIT $3 OFFSET $4
     `,
@@ -142,6 +141,7 @@ export const SQL_QUERIES = {
           updated_on = now()
       WHERE request_id = $1
         AND is_active = true
+        AND $2 IN ('pending', 'rejected', 'resolved')
       RETURNING *
     `
   },

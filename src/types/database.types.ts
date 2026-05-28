@@ -65,18 +65,21 @@ export type EntityPathInput = {
 };
 
 export type DiscoveryRequestKind = "domain" | "brand" | "product";
-export type DiscoveryRequestStatus = "pending" | "approved" | "rejected" | "resolved";
+export type DiscoveryRequestStatus = "pending" | "rejected" | "resolved";
 
 export type DiscoveryRequestRow = {
   request_id: number;
   kind: DiscoveryRequestKind;
-  domain: string;
-  category_id: number | null;
-  brand_id: number | null;
-  brand_name: string | null;
-  product_name: string | null;
+  requested_value: string;
+  context_domain: string | null;
+  context_category_id: number | null;
+  context_brand_id: number | null;
   notes: string | null;
   status: DiscoveryRequestStatus;
+  resolved_domain_id: number | null;
+  resolved_brand_id: number | null;
+  resolved_product_id: number | null;
+  resolved_path_id: number | null;
   created_on: Date;
   updated_on: Date;
   is_active: boolean;
