@@ -9,68 +9,12 @@ import type { AnalysisDiffRow, ProviderSnapshotRow } from "../src/types/database
 const now = new Date("2026-05-15T12:00:00.000Z");
 
 describe("focused services", () => {
-  it("scheduler enqueues due schedules and indexes the scheduled run event", async () => {
-    const queueJobs: unknown[] = [];
-    const indexed: unknown[] = [];
-    const service = new DomainSchedulerService({
-      domainSchedulesRepository: {
-        async findDueSchedules() {
-          return [
-            {
-              id: 3,
-              domain_id: 9,
-              domain: "nike.com",
-              cadence: "weekly",
-              enabled: true,
-              last_enqueued_at: null,
-              next_run_at: now,
-              created_at: now,
-              updated_at: now
-            }
-          ];
-        },
-        async markEnqueued() {
-          return {
-            id: 3,
-            domain_id: 9,
-            domain: "nike.com",
-            cadence: "weekly",
-            enabled: true,
-            last_enqueued_at: now,
-            next_run_at: new Date("2026-05-22T12:00:00.000Z"),
-            created_at: now,
-            updated_at: now
-          };
-        }
-      } as any,
-      analysisRunsRepository: {
-        async createQueuedRun() {
-          return { id: 42, domain_id: 9 };
-        },
-        async attachBullMqJob() {
-          return {};
-        }
-      } as any,
-      analysisQueue: {
-        async add(_name: string, data: unknown, options: unknown) {
-          queueJobs.push({ data, options });
-          return { id: "analysis-run-42-test" };
-        }
-      } as any,
-      observabilityIndexService: {
-        async indexScheduledRun(document: unknown) {
-          indexed.push(document);
-        }
-      } as any
-    });
+  it("scheduler scaffold no longer enqueues V5 domain-only analysis jobs", async () => {
+    const service = new DomainSchedulerService();
 
     const result = await service.enqueueDueDomains();
 
-    assert.equal(result.length, 1);
-    assert.equal(result[0].analysisRunId, 42);
-    assert.equal(queueJobs.length, 1);
-    assert.equal(indexed.length, 1);
-    assert.equal((indexed[0] as { event: string }).event, "scheduled_run_enqueued");
+    assert.deepEqual(result, []);
   });
 
   it("notification service queues and marks log notifications sent", async () => {

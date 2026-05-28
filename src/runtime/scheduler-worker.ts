@@ -8,6 +8,7 @@ export function createSchedulerWorker(schedulerService: DomainSchedulerService) 
   const worker = new Worker<SchedulerJobData>(
     SCHEDULER_QUEUE_NAME,
     async () => {
+      // TODO: V6_REBUILD_REQUIRED keep worker scaffolding alive while scheduler business logic is rebuilt.
       await schedulerService.enqueueDueDomains();
     },
     {

@@ -1,5 +1,7 @@
 # GEO AI Observability Backend
 
+> V6 rebuild note: this repository is being migrated from V5 domain-only GEO to V6 hierarchy-aware GEO. Runtime code now exposes only V6 placeholder analysis/discovery contracts; older domain-only sections below are historical reference until this README is rewritten.
+
 Production-oriented backend for domain-only GEO visibility analysis across multiple LLM providers.
 
 This project is intentionally focused on backend infrastructure:

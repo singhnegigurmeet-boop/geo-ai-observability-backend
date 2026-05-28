@@ -2,8 +2,8 @@ export const openApiDocument = {
   openapi: "3.0.3",
   info: {
     title: "GEO AI Observability Backend API",
-    version: "0.1.0",
-    description: "Domain-only GEO visibility analysis API with async run polling and provider score reads."
+    version: "0.1.0-v6-placeholder",
+    description: "V6 hierarchy-aware GEO API placeholder. Analysis and discovery contracts are active, but execution is intentionally not implemented yet."
   },
   servers: [
     {
@@ -11,13 +11,7 @@ export const openApiDocument = {
       description: "Local development"
     }
   ],
-  tags: [
-    { name: "Health" },
-    { name: "Analysis" },
-    { name: "Provider Scores" },
-    { name: "Schedules" },
-    { name: "Visibility Scores" }
-  ],
+  tags: [{ name: "Health" }, { name: "Analysis" }, { name: "Discovery" }],
   paths: {
     "/health": {
       get: {
@@ -38,216 +32,71 @@ export const openApiDocument = {
     "/v1/analysis": {
       post: {
         tags: ["Analysis"],
-        summary: "Queue domain analysis or return cached/fresh result",
+        summary: "Accept the V6 analysis contract",
+        description: "Placeholder endpoint. It validates DB-controlled hierarchy IDs and returns 501 until V6 execution is rebuilt.",
         requestBody: {
           required: true,
           content: {
             "application/json": {
-              schema: { $ref: "#/components/schemas/AnalysisRequest" },
-              examples: {
-                nike: {
-                  value: { domain: "nike.com" }
-                }
-              }
+              schema: { $ref: "#/components/schemas/AnalysisRequest" }
             }
           }
         },
         responses: {
-          "200": {
-            description: "Cached or fresh PostgreSQL result returned"
-          },
-          "202": {
-            description: "Analysis queued",
-            content: {
-              "application/json": {
-                schema: { $ref: "#/components/schemas/QueuedAnalysisResponse" }
-              }
-            }
-          },
-          "400": { $ref: "#/components/responses/ValidationError" },
-          "429": { $ref: "#/components/responses/RateLimited" }
+          "501": { description: "V6 analysis execution is not implemented yet" },
+          "400": { $ref: "#/components/responses/ValidationError" }
         }
       }
     },
     "/v1/analysis/runs/{analysisRunId}": {
       get: {
         tags: ["Analysis"],
-        summary: "Poll analysis run status",
+        summary: "V6 analysis status placeholder",
         parameters: [{ $ref: "#/components/parameters/AnalysisRunId" }],
         responses: {
-          "200": {
-            description: "Terminal run status returned"
-          },
-          "202": {
-            description: "Run is queued or processing"
-          },
-          "400": { $ref: "#/components/responses/ValidationError" },
-          "404": { $ref: "#/components/responses/NotFound" }
+          "501": { description: "V6 run status is not implemented yet" },
+          "400": { $ref: "#/components/responses/ValidationError" }
         }
       }
     },
     "/v1/analysis/runs/{analysisRunId}/diffs": {
       get: {
         tags: ["Analysis"],
-        summary: "Get analysis diffs detected for a run",
+        summary: "V6 analysis diffs placeholder",
         parameters: [{ $ref: "#/components/parameters/AnalysisRunId" }],
         responses: {
-          "200": {
-            description: "Analysis diffs returned"
-          },
-          "400": { $ref: "#/components/responses/ValidationError" },
-          "404": { $ref: "#/components/responses/NotFound" }
-        }
-      }
-    },
-    "/v1/schedules": {
-      post: {
-        tags: ["Schedules"],
-        summary: "Create or update a weekly domain schedule",
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ScheduleRequest" },
-              examples: {
-                nike: {
-                  value: { domain: "nike.com", cadence: "weekly", enabled: true }
-                }
-              }
-            }
-          }
-        },
-        responses: {
-          "200": { description: "Schedule created or updated" },
+          "501": { description: "V6 diffs are not implemented yet" },
           "400": { $ref: "#/components/responses/ValidationError" }
         }
-      },
-      get: {
-        tags: ["Schedules"],
-        summary: "List domain schedules",
-        responses: {
-          "200": { description: "Schedules returned" }
-        }
       }
     },
-    "/v1/schedules/{scheduleId}": {
-      patch: {
-        tags: ["Schedules"],
-        summary: "Enable or disable a domain schedule",
-        parameters: [{ $ref: "#/components/parameters/ScheduleId" }],
+    "/v1/discovery": {
+      post: {
+        tags: ["Discovery"],
+        summary: "Accept the V6 discovery contract",
+        description: "Placeholder endpoint. Discovery can carry missing free-text brand/product names, but does not run analysis.",
         requestBody: {
           required: true,
           content: {
             "application/json": {
-              schema: { $ref: "#/components/schemas/ScheduleUpdateRequest" }
+              schema: { $ref: "#/components/schemas/DiscoveryRequest" }
             }
           }
         },
         responses: {
-          "200": { description: "Schedule updated" },
-          "400": { $ref: "#/components/responses/ValidationError" },
-          "404": { $ref: "#/components/responses/NotFound" }
-        }
-      }
-    },
-    "/v1/domains/{domainId}/providers/{llmName}/scores": {
-      get: {
-        tags: ["Provider Scores"],
-        summary: "Get latest scores for one provider",
-        parameters: [{ $ref: "#/components/parameters/DomainId" }, { $ref: "#/components/parameters/LlmName" }],
-        responses: {
-          "200": { description: "Latest provider scores returned" },
-          "400": { $ref: "#/components/responses/ValidationError" },
-          "404": { $ref: "#/components/responses/NotFound" }
-        }
-      }
-    },
-    "/v1/domains/{domainId}/providers/{llmName}/history": {
-      get: {
-        tags: ["Provider Scores"],
-        summary: "Get historical provider snapshots",
-        parameters: [{ $ref: "#/components/parameters/DomainId" }, { $ref: "#/components/parameters/LlmName" }],
-        responses: {
-          "200": { description: "Provider history returned" },
-          "400": { $ref: "#/components/responses/ValidationError" },
-          "404": { $ref: "#/components/responses/NotFound" }
-        }
-      }
-    },
-    "/v1/domains/{domainId}/provider-scores": {
-      get: {
-        tags: ["Provider Scores"],
-        summary: "Compare latest provider scores",
-        parameters: [{ $ref: "#/components/parameters/DomainId" }],
-        responses: {
-          "200": { description: "Provider comparison returned" },
-          "400": { $ref: "#/components/responses/ValidationError" },
-          "404": { $ref: "#/components/responses/NotFound" }
-        }
-      }
-    },
-    "/v1/domains/{domainId}/visibility-score": {
-      get: {
-        tags: ["Visibility Scores"],
-        summary: "Get latest aggregate visibility score",
-        parameters: [{ $ref: "#/components/parameters/DomainId" }],
-        responses: {
-          "200": { description: "Latest visibility score returned" },
-          "400": { $ref: "#/components/responses/ValidationError" },
-          "404": { $ref: "#/components/responses/NotFound" }
-        }
-      }
-    },
-    "/v1/domains/{domainId}/visibility-score/history": {
-      get: {
-        tags: ["Visibility Scores"],
-        summary: "Get aggregate visibility score history",
-        parameters: [{ $ref: "#/components/parameters/DomainId" }],
-        responses: {
-          "200": { description: "Visibility score history returned" },
-          "400": { $ref: "#/components/responses/ValidationError" },
-          "404": { $ref: "#/components/responses/NotFound" }
-        }
-      }
-    },
-    "/v1/domains/{domainId}/visibility-score/trend": {
-      get: {
-        tags: ["Visibility Scores"],
-        summary: "Get latest visibility score trend",
-        parameters: [{ $ref: "#/components/parameters/DomainId" }],
-        responses: {
-          "200": { description: "Visibility score trend returned" },
-          "400": { $ref: "#/components/responses/ValidationError" },
-          "404": { $ref: "#/components/responses/NotFound" }
+          "501": { description: "V6 discovery persistence is not implemented yet" },
+          "400": { $ref: "#/components/responses/ValidationError" }
         }
       }
     }
   },
   components: {
     parameters: {
-      DomainId: {
-        name: "domainId",
-        in: "path",
-        required: true,
-        schema: { type: "integer", minimum: 1 }
-      },
       AnalysisRunId: {
         name: "analysisRunId",
         in: "path",
         required: true,
         schema: { type: "integer", minimum: 1 }
-      },
-      ScheduleId: {
-        name: "scheduleId",
-        in: "path",
-        required: true,
-        schema: { type: "integer", minimum: 1 }
-      },
-      LlmName: {
-        name: "llmName",
-        in: "path",
-        required: true,
-        schema: { type: "string", enum: ["openai", "gemini", "claude"] }
       }
     },
     responses: {
@@ -258,17 +107,6 @@ export const openApiDocument = {
             schema: { $ref: "#/components/schemas/ErrorResponse" }
           }
         }
-      },
-      NotFound: {
-        description: "Resource not found",
-        content: {
-          "application/json": {
-            schema: { $ref: "#/components/schemas/ErrorResponse" }
-          }
-        }
-      },
-      RateLimited: {
-        description: "Rate limit exceeded"
       }
     },
     schemas: {
@@ -283,36 +121,87 @@ export const openApiDocument = {
         type: "object",
         required: ["domain"],
         properties: {
-          domain: { type: "string", example: "nike.com", maxLength: 253 }
-        }
-      },
-      QueuedAnalysisResponse: {
-        type: "object",
-        required: ["status", "analysis_run_id", "domain_id", "message", "domain"],
-        properties: {
-          status: { type: "string", example: "queued" },
-          analysis_run_id: { type: "integer", example: 1 },
-          domain_id: { type: "integer", example: 1 },
-          bullmq_job_id: { type: "string", example: "analysis-run-1-1778841898167" },
-          message: { type: "string", example: "Analysis started" },
-          domain: { type: "string", example: "nike.com" }
-        }
-      },
-      ScheduleRequest: {
-        type: "object",
-        required: ["domain"],
-        properties: {
           domain: { type: "string", example: "nike.com", maxLength: 253 },
-          cadence: { type: "string", enum: ["weekly"], example: "weekly" },
-          enabled: { type: "boolean", example: true },
-          next_run_at: { type: "string", format: "date-time" }
+          categories: {
+            type: "array",
+            maxItems: 5,
+            items: { $ref: "#/components/schemas/AnalysisCategorySelection" }
+          }
         }
       },
-      ScheduleUpdateRequest: {
+      AnalysisCategorySelection: {
         type: "object",
-        required: ["enabled"],
+        required: ["categoryId"],
         properties: {
-          enabled: { type: "boolean", example: false }
+          categoryId: { type: "integer", minimum: 1 },
+          brands: {
+            type: "array",
+            items: { $ref: "#/components/schemas/AnalysisBrandSelection" }
+          }
+        }
+      },
+      AnalysisBrandSelection: {
+        type: "object",
+        required: ["brandId"],
+        properties: {
+          brandId: { type: "integer", minimum: 1 },
+          products: {
+            type: "array",
+            items: { $ref: "#/components/schemas/AnalysisProductSelection" }
+          }
+        }
+      },
+      AnalysisProductSelection: {
+        type: "object",
+        required: ["productId"],
+        properties: {
+          productId: { type: "integer", minimum: 1 },
+          useContextIds: {
+            type: "array",
+            maxItems: 4,
+            items: { type: "integer", minimum: 1 }
+          }
+        }
+      },
+      DiscoveryRequest: {
+        oneOf: [
+          { $ref: "#/components/schemas/DomainDiscoveryRequest" },
+          { $ref: "#/components/schemas/BrandDiscoveryRequest" },
+          { $ref: "#/components/schemas/ProductDiscoveryRequest" }
+        ],
+        discriminator: { propertyName: "kind" }
+      },
+      DomainDiscoveryRequest: {
+        type: "object",
+        required: ["kind", "domain"],
+        properties: {
+          kind: { type: "string", enum: ["domain"] },
+          domain: { type: "string", example: "nike.com" },
+          categoryId: { type: "integer", minimum: 1 },
+          notes: { type: "string", maxLength: 2000 }
+        }
+      },
+      BrandDiscoveryRequest: {
+        type: "object",
+        required: ["kind", "domain", "brandName"],
+        properties: {
+          kind: { type: "string", enum: ["brand"] },
+          domain: { type: "string", example: "nike.com" },
+          brandName: { type: "string", example: "Nike" },
+          categoryId: { type: "integer", minimum: 1 },
+          notes: { type: "string", maxLength: 2000 }
+        }
+      },
+      ProductDiscoveryRequest: {
+        type: "object",
+        required: ["kind", "domain", "productName"],
+        properties: {
+          kind: { type: "string", enum: ["product"] },
+          domain: { type: "string", example: "nike.com" },
+          brandId: { type: "integer", minimum: 1 },
+          productName: { type: "string", example: "Pegasus 41" },
+          categoryId: { type: "integer", minimum: 1 },
+          notes: { type: "string", maxLength: 2000 }
         }
       },
       ErrorResponse: {
@@ -327,3 +216,4 @@ export const openApiDocument = {
     }
   }
 } as const;
+

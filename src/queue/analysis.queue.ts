@@ -2,7 +2,7 @@ import { Queue } from "bullmq";
 import { redisConnection } from "../lib/redis.js";
 import type { AnalysisJobData } from "../types/queue.types.js";
 
-export const ANALYSIS_QUEUE_NAME = "domain-analysis";
+export const ANALYSIS_QUEUE_NAME = "v6-analysis";
 
 export const analysisQueue = new Queue<AnalysisJobData>(ANALYSIS_QUEUE_NAME, {
   connection: redisConnection,

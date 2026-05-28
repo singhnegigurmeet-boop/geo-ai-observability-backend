@@ -2,20 +2,20 @@ import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import type { Server } from "node:http";
 import { createApp } from "../src/app.js";
+import type { AnalysisRequest } from "../src/modules/analysis/types/v6-analysis-request.js";
+import type { DiscoveryRequest } from "../src/modules/discovery/types/discovery-request.js";
 
-const domainId = 1;
 const analysisRunId = 10;
 
 const fakeAnalysisCommandService = {
-  async enqueueOrReturnCachedAnalysis(domain: string) {
+  async enqueueAnalysis(request: AnalysisRequest) {
     return {
-      statusCode: 202,
+      statusCode: 501,
       body: {
-        status: "queued",
-        analysis_run_id: analysisRunId,
-        domain_id: domainId,
-        message: "Analysis started",
-        domain
+        status: "not_implemented",
+        code: "V6_ANALYSIS_REBUILD_REQUIRED",
+        domain: request.domain,
+        selection: { categories: request.categories ?? [] }
       }
     };
   }
@@ -24,171 +24,33 @@ const fakeAnalysisCommandService = {
 const fakeAnalysisStatusService = {
   async getAnalysisRunStatus(requestedAnalysisRunId: number) {
     return {
-      statusCode: 200,
+      statusCode: 501,
       body: {
-        status: "completed",
-        analysis_run_id: requestedAnalysisRunId,
-        domain: "nike.com"
+        status: "not_implemented",
+        analysis_run_id: requestedAnalysisRunId
       }
     };
   },
 
   async getAnalysisRunDiffs(requestedAnalysisRunId: number) {
     return {
-      statusCode: 200,
+      statusCode: 501,
       body: {
-        status: "found",
-        source: "analysis_diffs",
-        analysis_run_id: requestedAnalysisRunId,
-        domain_id: domainId,
-        domain: "nike.com",
-        diffs: [
-          {
-            diff_type: "visibility_score_dropped",
-            severity: "warning"
-          }
-        ]
+        status: "not_implemented",
+        analysis_run_id: requestedAnalysisRunId
       }
     };
   }
 };
 
-const fakeProviderScoresService = {
-  async getLatestProviderScores(requestedDomainId: number, llmName: string) {
+const fakeDiscoveryCommandService = {
+  async createDiscoveryRequest(request: DiscoveryRequest) {
     return {
-      statusCode: 200,
+      statusCode: 501,
       body: {
-        domain_id: requestedDomainId,
-        domain: "nike.com",
-        provider: llmName,
-        scores: [
-          {
-            top_k: 5,
-            rank_position: 2,
-            mention_count: 1,
-            score: "92.00",
-            status: "completed"
-          }
-        ]
-      }
-    };
-  },
-
-  async getLatestProviderScoreComparison(requestedDomainId: number) {
-    return {
-      statusCode: 200,
-      body: {
-        domain_id: requestedDomainId,
-        domain: "nike.com",
-        providers: {
-          openai: [{ top_k: 5, score: "92.00", status: "completed" }],
-          gemini: [{ top_k: 5, score: "80.00", status: "completed" }],
-          claude: [{ top_k: 5, score: "88.00", status: "completed" }]
-        }
-      }
-    };
-  },
-
-  async getProviderScoreHistory(requestedDomainId: number, llmName: string) {
-    return {
-      statusCode: 200,
-      body: {
-        domain_id: requestedDomainId,
-        domain: "nike.com",
-        provider: llmName,
-        history: [{ top_k: 5, score: "92.00", status: "completed" }]
-      }
-    };
-  }
-};
-
-const fakeVisibilityScoreReadService = {
-  async getLatestVisibilityScore(requestedDomainId: number) {
-    return {
-      statusCode: 200,
-      body: {
-        domain_id: requestedDomainId,
-        domain: "nike.com",
-        data: {
-          overall_geo_score: "86.67"
-        }
-      }
-    };
-  },
-
-  async getVisibilityScoreHistory(requestedDomainId: number) {
-    return {
-      statusCode: 200,
-      body: {
-        domain_id: requestedDomainId,
-        domain: "nike.com",
-        history: [{ overall_geo_score: "86.67" }]
-      }
-    };
-  },
-
-  async getVisibilityScoreTrend(requestedDomainId: number) {
-    return {
-      statusCode: 200,
-      body: {
-        domain_id: requestedDomainId,
-        domain: "nike.com",
-        current_score: 86.67,
-        previous_score: 80,
-        change: 6.67,
-        trend: "improved"
-      }
-    };
-  }
-};
-
-const fakeScheduleManagementService = {
-  async upsertSchedule(input: { domain: string; enabled: boolean }) {
-    return {
-      statusCode: 200,
-      body: {
-        status: "scheduled",
-        source: "domain_schedules",
-        schedule: {
-          id: 7,
-          domain_id: domainId,
-          domain: input.domain,
-          cadence: "weekly",
-          enabled: input.enabled
-        }
-      }
-    };
-  },
-
-  async listSchedules() {
-    return {
-      statusCode: 200,
-      body: {
-        status: "found",
-        source: "domain_schedules",
-        schedules: [
-          {
-            id: 7,
-            domain_id: domainId,
-            domain: "nike.com",
-            cadence: "weekly",
-            enabled: true
-          }
-        ]
-      }
-    };
-  },
-
-  async setScheduleEnabled(scheduleId: number, enabled: boolean) {
-    return {
-      statusCode: 200,
-      body: {
-        status: enabled ? "enabled" : "disabled",
-        source: "domain_schedules",
-        schedule: {
-          id: scheduleId,
-          enabled
-        }
+        status: "not_implemented",
+        code: "V6_DISCOVERY_REBUILD_REQUIRED",
+        request
       }
     };
   }
@@ -202,9 +64,7 @@ describe("routes", () => {
     const app = createApp({
       analysisCommandService: fakeAnalysisCommandService,
       analysisStatusService: fakeAnalysisStatusService,
-      providerScoresService: fakeProviderScoresService,
-      scheduleManagementService: fakeScheduleManagementService,
-      visibilityScoreReadService: fakeVisibilityScoreReadService
+      discoveryCommandService: fakeDiscoveryCommandService
     });
     server = app.listen(0);
 
@@ -229,13 +89,16 @@ describe("routes", () => {
     assert.deepEqual(body, { status: "ok" });
   });
 
-  it("GET /openapi.json returns the API spec", async () => {
+  it("GET /openapi.json returns the V6 placeholder API spec", async () => {
     const response = await fetch(`${baseUrl}/openapi.json`);
     const body = await response.json();
 
     assert.equal(response.status, 200);
     assert.equal(body.openapi, "3.0.3");
     assert.ok(body.paths["/v1/analysis"]);
+    assert.ok(body.paths["/v1/discovery"]);
+    assert.equal(body.paths["/v1/schedules"], undefined);
+    assert.equal(body.paths["/v1/domains/{domainId}/provider-scores"], undefined);
   });
 
   it("GET /docs serves Swagger UI", async () => {
@@ -246,137 +109,86 @@ describe("routes", () => {
     assert.match(body, /swagger-ui/i);
   });
 
-  it("POST /v1/analysis queues an analysis", async () => {
+  it("POST /v1/analysis accepts the frozen V6 request shape as a placeholder", async () => {
     const response = await fetch(`${baseUrl}/v1/analysis`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ domain: "nike.com" })
+      body: JSON.stringify({
+        domain: "nike.com",
+        categories: [
+          {
+            categoryId: 1,
+            brands: [
+              {
+                brandId: 2,
+                products: [{ productId: 3, useContextIds: [4, 5] }]
+              }
+            ]
+          }
+        ]
+      })
     });
     const body = await response.json();
 
-    assert.equal(response.status, 202);
-    assert.equal(body.status, "queued");
-    assert.equal(body.analysis_run_id, analysisRunId);
-    assert.equal(body.domain_id, domainId);
+    assert.equal(response.status, 501);
+    assert.equal(body.status, "not_implemented");
+    assert.equal(body.code, "V6_ANALYSIS_REBUILD_REQUIRED");
+    assert.equal(body.selection.categories[0].categoryId, 1);
   });
 
-  it("GET /v1/analysis/runs/:analysisRunId returns run status", async () => {
+  it("POST /v1/analysis rejects free-text brand fields", async () => {
+    const response = await fetch(`${baseUrl}/v1/analysis`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        domain: "nike.com",
+        categories: [{ categoryId: 1, brands: [{ brandName: "Nike" }] }]
+      })
+    });
+
+    assert.equal(response.status, 400);
+  });
+
+  it("POST /v1/discovery accepts free-text missing-data requests without running analysis", async () => {
+    const response = await fetch(`${baseUrl}/v1/discovery`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "product",
+        domain: "nike.com",
+        productName: "Pegasus 41",
+        categoryId: 1
+      })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 501);
+    assert.equal(body.code, "V6_DISCOVERY_REBUILD_REQUIRED");
+    assert.equal(body.request.kind, "product");
+    assert.equal(body.request.productName, "Pegasus 41");
+  });
+
+  it("GET /v1/analysis/runs/:analysisRunId returns the V6 status placeholder", async () => {
     const response = await fetch(`${baseUrl}/v1/analysis/runs/${analysisRunId}`);
     const body = await response.json();
 
-    assert.equal(response.status, 200);
-    assert.equal(body.status, "completed");
+    assert.equal(response.status, 501);
+    assert.equal(body.status, "not_implemented");
     assert.equal(body.analysis_run_id, analysisRunId);
   });
 
-  it("GET /v1/analysis/runs/:analysisRunId/diffs returns analysis diffs", async () => {
-    const response = await fetch(`${baseUrl}/v1/analysis/runs/${analysisRunId}/diffs`);
-    const body = await response.json();
+  it("old V5 public read and scheduler routes are not active", async () => {
+    const responses = await Promise.all([
+      fetch(`${baseUrl}/v1/schedules`),
+      fetch(`${baseUrl}/v1/domains/1/provider-scores`),
+      fetch(`${baseUrl}/v1/domains/1/visibility-score`),
+      fetch(`${baseUrl}/v1/domains/1/providers/openai/scores`)
+    ]);
 
-    assert.equal(response.status, 200);
-    assert.equal(body.source, "analysis_diffs");
-    assert.equal(body.analysis_run_id, analysisRunId);
-    assert.equal(body.diffs[0].diff_type, "visibility_score_dropped");
-  });
-
-  it("POST /v1/schedules creates or updates a schedule", async () => {
-    const response = await fetch(`${baseUrl}/v1/schedules`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ domain: "nike.com", enabled: true })
-    });
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(body.source, "domain_schedules");
-    assert.equal(body.schedule.domain, "nike.com");
-  });
-
-  it("GET /v1/schedules lists schedules", async () => {
-    const response = await fetch(`${baseUrl}/v1/schedules`);
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(body.schedules[0].domain, "nike.com");
-  });
-
-  it("PATCH /v1/schedules/:scheduleId enables or disables a schedule", async () => {
-    const response = await fetch(`${baseUrl}/v1/schedules/7`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ enabled: false })
-    });
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(body.status, "disabled");
-    assert.equal(body.schedule.id, 7);
-  });
-
-  it("GET /v1/domains/:domainId/providers/:llmName/scores returns one provider", async () => {
-    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/providers/openai/scores`);
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(body.domain_id, domainId);
-    assert.equal(body.provider, "openai");
-    assert.equal(body.scores[0].top_k, 5);
-  });
-
-  it("GET /v1/domains/:domainId/provider-scores returns provider comparison", async () => {
-    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/provider-scores`);
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(body.domain_id, domainId);
-    assert.ok(body.providers.openai);
-    assert.ok(body.providers.gemini);
-    assert.ok(body.providers.claude);
-  });
-
-  it("GET /v1/domains/:domainId/visibility-score returns final score", async () => {
-    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/visibility-score`);
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(body.domain_id, domainId);
-    assert.equal(body.data.overall_geo_score, "86.67");
-  });
-
-  it("GET /v1/domains/:domainId/visibility-score/history returns visibility history", async () => {
-    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/visibility-score/history`);
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(body.domain_id, domainId);
-    assert.equal(body.history[0].overall_geo_score, "86.67");
-  });
-
-  it("GET /v1/domains/:domainId/providers/:llmName/history returns provider history", async () => {
-    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/providers/openai/history`);
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(body.domain_id, domainId);
-    assert.equal(body.provider, "openai");
-    assert.equal(body.history[0].top_k, 5);
-  });
-
-  it("GET /v1/domains/:domainId/visibility-score/trend returns trend summary", async () => {
-    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/visibility-score/trend`);
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(body.domain_id, domainId);
-    assert.equal(body.trend, "improved");
-    assert.equal(body.change, 6.67);
-  });
-
-  it("rejects an invalid provider name", async () => {
-    const response = await fetch(`${baseUrl}/v1/domains/${domainId}/providers/not-a-provider/scores`);
-    const body = await response.json();
-
-    assert.equal(response.status, 400);
-    assert.equal(body.error, "Invalid request body");
+    assert.deepEqual(
+      responses.map((response) => response.status),
+      [404, 404, 404, 404]
+    );
   });
 });
+

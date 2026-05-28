@@ -1,5 +1,7 @@
 # Backend Execution Flow
 
+> V6 rebuild note: this flow document still contains V5 domain-only architecture notes for reference. Active runtime wiring has been neutralized for the V6 hierarchy-aware rebuild and should not be treated as implementing the sections below yet.
+
 This document explains how the backend starts, which functions are called, and what each layer does.
 
 ## Documentation Rule

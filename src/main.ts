@@ -5,19 +5,17 @@ import {
   analysisCommandService,
   analysisJobService,
   analysisStatusService,
+  discoveryCommandService,
   domainSchedulerService,
   notificationService,
-  observabilityIndexService,
-  providerScoresService,
-  scheduleManagementService,
-  visibilityScoreReadService
+  observabilityIndexService
 } from "./container.js";
 import { elasticsearch } from "./lib/elasticsearch.js";
 import { pool } from "./lib/postgres.js";
 import { redisConnection } from "./lib/redis.js";
 import { analysisQueue } from "./queue/analysis.queue.js";
 import { notificationQueue } from "./queue/notification.queue.js";
-import { ensureDomainSchedulerRepeatableJob, schedulerQueue } from "./queue/scheduler.queue.js";
+import { ensureV6SchedulerRepeatableJob, schedulerQueue } from "./queue/scheduler.queue.js";
 import { createAnalysisWorker } from "./runtime/analysis-worker.js";
 import { createNotificationWorker } from "./runtime/notification-worker.js";
 import { createSchedulerWorker } from "./runtime/scheduler-worker.js";
@@ -25,9 +23,7 @@ import { createSchedulerWorker } from "./runtime/scheduler-worker.js";
 const app = createApp({
   analysisCommandService,
   analysisStatusService,
-  providerScoresService,
-  scheduleManagementService,
-  visibilityScoreReadService
+  discoveryCommandService
 });
 
 await observabilityIndexService.initialize();
@@ -36,11 +32,11 @@ const worker = createAnalysisWorker(analysisJobService);
 const schedulerWorker = createSchedulerWorker(domainSchedulerService);
 const notificationWorker = createNotificationWorker(notificationService);
 
-await ensureDomainSchedulerRepeatableJob();
+await ensureV6SchedulerRepeatableJob();
 
 const server = app.listen(env.PORT, () => {
   console.log(`GEO observability API listening on port ${env.PORT}`);
-  console.log("Analysis, scheduler, and notification workers started in the same process.");
+  console.log("V6 placeholder analysis, scheduler, and notification workers started in the same process.");
 });
 
 let shuttingDown = false;

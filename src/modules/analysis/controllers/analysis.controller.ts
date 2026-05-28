@@ -1,9 +1,10 @@
 import { Request } from "express";
 import { BaseController } from "../../../controllers/base.controller.js";
 import type { ApiResult } from "../../../types/api-response.types.js";
+import type { AnalysisRequest } from "../types/v6-analysis-request.js";
 
 export type AnalysisCommandPort = {
-  enqueueOrReturnCachedAnalysis(rawDomain: string, ipAddress: string): Promise<ApiResult>;
+  enqueueAnalysis(request: AnalysisRequest, ipAddress: string): Promise<ApiResult>;
 };
 
 export type AnalysisStatusPort = {
@@ -24,10 +25,13 @@ export class AnalysisController extends BaseController {
   async handleAnalysisRequest(req: Request): Promise<ApiResult> {
     this.logRequest(req);
 
-    const input = req.body as { domain: string };
-    this.log(`Processing analysis request for domain: ${input.domain}`);
+    const input = req.body as AnalysisRequest;
+    this.log("Received V6 analysis request", {
+      domain: input.domain,
+      categoryCount: input.categories?.length ?? 0
+    });
 
-    const result = await this.dependencies.commandService.enqueueOrReturnCachedAnalysis(input.domain, this.getClientIp(req));
+    const result = await this.dependencies.commandService.enqueueAnalysis(input, this.getClientIp(req));
 
     this.logResponse(req, result.statusCode);
     return result;
