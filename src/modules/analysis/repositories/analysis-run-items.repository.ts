@@ -61,6 +61,13 @@ export class AnalysisRunItemsRepository extends BaseRepository<AnalysisRunItemRo
       analysisRunId
     ]);
   }
+
+  async getRunItemWithPathById(runItemId: number): Promise<AnalysisRunItemWithPathRow | null> {
+    return this.executeSingleQuery<AnalysisRunItemWithPathRow>(
+      SQL_QUERIES.analysisRunItems.getByRunItemIdWithPath,
+      [runItemId]
+    );
+  }
 }
 
 export const analysisRunItemsRepository = new AnalysisRunItemsRepository();

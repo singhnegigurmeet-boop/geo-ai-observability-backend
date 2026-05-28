@@ -5,6 +5,9 @@ import { DiffEngineService } from "../src/modules/diffs/services/diff-engine.ser
 import { NotificationService } from "../src/modules/notifications/services/notification.service.js";
 import { DomainSchedulerService } from "../src/modules/scheduler/services/domain-scheduler.service.js";
 import { AnalysisCommandService } from "../src/modules/analysis/services/analysis-command.service.js";
+import { AnalysisRunItemExecutionService } from "../src/modules/analysis/services/analysis-run-item-execution.service.js";
+import { AnalysisRunOrchestratorService } from "../src/modules/analysis/services/analysis-run-orchestrator.service.js";
+import { AnalysisRunStatusAggregatorService } from "../src/modules/analysis/services/analysis-run-status-aggregator.service.js";
 import { AnalysisRequestValidationService } from "../src/modules/analysis/services/analysis-request-validation.service.js";
 import { AnalysisStatusService } from "../src/modules/analysis/services/analysis-status.service.js";
 import { DiscoveryCommandService } from "../src/modules/discovery/services/discovery-command.service.js";
@@ -42,6 +45,7 @@ describe("focused services", () => {
   const createCommandHarness = (entityPathsRepository: Record<string, unknown>) => {
     const createdRuns: unknown[] = [];
     const createdItemPathIds: number[][] = [];
+    const queuedRunJobs: unknown[] = [];
     const validationService = new AnalysisRequestValidationService({
       domainsRepository: {
         async getActiveDomainByName() {
@@ -80,10 +84,16 @@ describe("focused services", () => {
           };
         }
       } as any,
-      {} as any
+      {} as any,
+      {
+        async add(_name: string, payload: unknown) {
+          queuedRunJobs.push(payload);
+          return { id: "job-1" };
+        }
+      }
     );
 
-    return { service, createdRuns, createdItemPathIds };
+    return { service, createdRuns, createdItemPathIds, queuedRunJobs };
   };
 
   it("analysis validation loads top 5 category paths for domain-only requests", async () => {
@@ -173,7 +183,7 @@ describe("focused services", () => {
   });
 
   it("domain-only analysis creates one run and top 5 category run items", async () => {
-    const { service, createdRuns, createdItemPathIds } = createCommandHarness({
+    const { service, createdRuns, createdItemPathIds, queuedRunJobs } = createCommandHarness({
       async getTopCategoryPathsForDomain() {
         return [11, 12, 13, 14, 15].map((pathId) =>
           path({ path_id: pathId, category_id: pathId, path_type: "category" })
@@ -198,12 +208,15 @@ describe("focused services", () => {
     assert.equal(result.statusCode, 202);
     assert.equal(result.body.analysisRunId, 100);
     assert.equal(result.body.providerExecutionStarted, false);
+    assert.equal(result.body.queueStatus, "enqueued");
+    assert.equal(result.body.message, "V6 analysis run queued; provider execution not implemented yet.");
     assert.equal(createdRuns.length, 1);
     assert.deepEqual(createdItemPathIds, [[11, 12, 13, 14, 15]]);
+    assert.deepEqual(queuedRunJobs, [{ analysisRunId: 100 }]);
   });
 
   it("POST analysis command uses transactional run and item creation", async () => {
-    const { service, createdRuns, createdItemPathIds } = createCommandHarness({
+    const { service, createdRuns, createdItemPathIds, queuedRunJobs } = createCommandHarness({
       async getTopCategoryPathsForDomain() {
         return [11].map((pathId) => path({ path_id: pathId, category_id: pathId, path_type: "category" }));
       },
@@ -227,6 +240,170 @@ describe("focused services", () => {
     assert.equal(createdRuns.length, 1);
     assert.deepEqual(createdItemPathIds, [[11]]);
     assert.equal(result.body.runItemCount, 1);
+    assert.deepEqual(queuedRunJobs, [{ analysisRunId: 100 }]);
+    assert.deepEqual(Object.keys(queuedRunJobs[0] as Record<string, unknown>).sort(), ["analysisRunId"]);
+  });
+
+  it("analysis run orchestrator enqueues one item job per queued run item with ID-only payloads", async () => {
+    const queuedItemJobs: unknown[] = [];
+    const runStatusUpdates: string[] = [];
+    const service = new AnalysisRunOrchestratorService(
+      {
+        async getAnalysisRunById(analysisRunId: number) {
+          assert.equal(analysisRunId, 100);
+          return {
+            analysis_run_id: 100,
+            domain_id: 1,
+            request_payload: { domain: "nike.com" },
+            status: "queued",
+            created_on: now,
+            updated_on: now,
+            is_active: true
+          };
+        },
+        async updateAnalysisRunStatus(_analysisRunId: number, status: string) {
+          runStatusUpdates.push(status);
+          return null;
+        }
+      } as any,
+      {
+        async listRunItems(analysisRunId: number) {
+          assert.equal(analysisRunId, 100);
+          return [
+            {
+              run_item_id: 1,
+              analysis_run_id: 100,
+              path_id: 11,
+              status: "queued",
+              created_on: now,
+              updated_on: now,
+              is_active: true
+            },
+            {
+              run_item_id: 2,
+              analysis_run_id: 100,
+              path_id: 12,
+              status: "queued",
+              created_on: now,
+              updated_on: now,
+              is_active: true
+            }
+          ];
+        }
+      } as any,
+      {
+        async add(_name: string, payload: unknown) {
+          queuedItemJobs.push(payload);
+          return { id: queuedItemJobs.length };
+        }
+      } as any,
+      {
+        async aggregateRunStatus() {
+          throw new Error("aggregateRunStatus should not be called while queued items are enqueued");
+        }
+      } as any
+    );
+
+    const result = await service.processAnalysisRun({ analysisRunId: 100 });
+
+    assert.equal(result.enqueuedRunItemCount, 2);
+    assert.deepEqual(runStatusUpdates, ["processing"]);
+    assert.deepEqual(queuedItemJobs, [
+      { analysisRunId: 100, runItemId: 1 },
+      { analysisRunId: 100, runItemId: 2 }
+    ]);
+    assert.deepEqual(
+      queuedItemJobs.map((job) => Object.keys(job as Record<string, unknown>).sort()),
+      [
+        ["analysisRunId", "runItemId"],
+        ["analysisRunId", "runItemId"]
+      ]
+    );
+  });
+
+  it("analysis item worker service loads entity path, skips provider execution, and aggregates status", async () => {
+    const itemStatusUpdates: string[] = [];
+    let loadedRunItemId: number | null = null;
+    let aggregateRunId: number | null = null;
+    const service = new AnalysisRunItemExecutionService(
+      {
+        async getRunItemWithPathById(runItemId: number) {
+          loadedRunItemId = runItemId;
+          return {
+            run_item_id: runItemId,
+            analysis_run_id: 100,
+            path_id: 200,
+            run_item_status: "queued",
+            run_item_created_on: now,
+            run_item_updated_on: now,
+            run_item_is_active: true,
+            domain_id: 1,
+            category_id: 2,
+            brand_id: null,
+            product_id: null,
+            context_id: null,
+            path_type: "category",
+            path_created_on: now,
+            path_updated_on: now,
+            path_is_active: true,
+            domain: "nike.com",
+            category: "Running",
+            brand_name: null,
+            product_name: null,
+            context: null
+          };
+        },
+        async updateRunItemStatus(_runItemId: number, status: string) {
+          itemStatusUpdates.push(status);
+          return null;
+        }
+      } as any,
+      {
+        async aggregateRunStatus(analysisRunId: number) {
+          aggregateRunId = analysisRunId;
+          return "completed";
+        }
+      } as any
+    );
+
+    const result = await service.processAnalysisRunItem({ analysisRunId: 100, runItemId: 7 });
+
+    assert.equal(loadedRunItemId, 7);
+    assert.deepEqual(itemStatusUpdates, ["processing", "skipped"]);
+    assert.equal(aggregateRunId, 100);
+    assert.equal(result.status, "skipped");
+    assert.equal(result.reason, "Provider execution not implemented yet");
+  });
+
+  it("analysis run status aggregator rolls item statuses into parent run status", async () => {
+    const updatedStatuses: string[] = [];
+    const aggregator = new AnalysisRunStatusAggregatorService(
+      {
+        async updateAnalysisRunStatus(_analysisRunId: number, status: string) {
+          updatedStatuses.push(status);
+          return null;
+        }
+      } as any,
+      {
+        async listRunItems() {
+          return [
+            { status: "skipped" },
+            { status: "skipped" }
+          ];
+        }
+      } as any
+    );
+
+    assert.equal(aggregator.resolveRunStatus(["completed", "completed"]), "completed");
+    assert.equal(aggregator.resolveRunStatus(["skipped", "skipped"]), "completed");
+    assert.equal(aggregator.resolveRunStatus(["completed", "failed"]), "partial_success");
+    assert.equal(aggregator.resolveRunStatus(["failed", "failed"]), "failed");
+    assert.equal(aggregator.resolveRunStatus(["queued", "skipped"]), "processing");
+
+    const status = await aggregator.aggregateRunStatus(100);
+
+    assert.equal(status, "completed");
+    assert.deepEqual(updatedStatuses, ["completed"]);
   });
 
   it("analysis run repository rolls back run creation when item creation fails", async () => {

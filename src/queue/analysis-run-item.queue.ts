@@ -1,10 +1,10 @@
 import { Queue } from "bullmq";
 import { redisConnection } from "../lib/redis.js";
-import type { AnalysisJobData } from "../types/queue.types.js";
+import type { AnalysisRunItemJobPayload } from "../types/queue.types.js";
 
-export const ANALYSIS_QUEUE_NAME = "v6-analysis";
+export const ANALYSIS_RUN_ITEM_QUEUE_NAME = "analysis_run_item_queue";
 
-export const analysisQueue = new Queue<AnalysisJobData>(ANALYSIS_QUEUE_NAME, {
+export const analysisRunItemQueue = new Queue<AnalysisRunItemJobPayload>(ANALYSIS_RUN_ITEM_QUEUE_NAME, {
   connection: redisConnection,
   defaultJobOptions: {
     attempts: 3,

@@ -3,7 +3,8 @@ import { createApp } from "./app.js";
 import { env } from "./config/env.js";
 import {
   analysisCommandService,
-  analysisJobService,
+  analysisRunItemExecutionService,
+  analysisRunOrchestratorService,
   analysisStatusService,
   discoveryCommandService,
   domainSchedulerService,
@@ -13,10 +14,12 @@ import {
 import { elasticsearch } from "./lib/elasticsearch.js";
 import { pool } from "./lib/postgres.js";
 import { redisConnection } from "./lib/redis.js";
-import { analysisQueue } from "./queue/analysis.queue.js";
+import { analysisRunItemQueue } from "./queue/analysis-run-item.queue.js";
+import { analysisRunQueue } from "./queue/analysis-run.queue.js";
 import { notificationQueue } from "./queue/notification.queue.js";
 import { ensureV6SchedulerRepeatableJob, schedulerQueue } from "./queue/scheduler.queue.js";
-import { createAnalysisWorker } from "./runtime/analysis-worker.js";
+import { createAnalysisRunItemWorker } from "./runtime/analysis-run-item-worker.js";
+import { createAnalysisRunWorker } from "./runtime/analysis-run-worker.js";
 import { createNotificationWorker } from "./runtime/notification-worker.js";
 import { createSchedulerWorker } from "./runtime/scheduler-worker.js";
 
@@ -28,7 +31,8 @@ const app = createApp({
 
 await observabilityIndexService.initialize();
 
-const worker = createAnalysisWorker(analysisJobService);
+const analysisRunWorker = createAnalysisRunWorker(analysisRunOrchestratorService);
+const analysisRunItemWorker = createAnalysisRunItemWorker(analysisRunItemExecutionService);
 const schedulerWorker = createSchedulerWorker(domainSchedulerService);
 const notificationWorker = createNotificationWorker(notificationService);
 
@@ -50,10 +54,12 @@ async function shutdown(signal: string) {
   console.log(`Received ${signal}. Shutting down API and workers...`);
 
   await closeServer(server);
-  await worker.close();
+  await analysisRunWorker.close();
+  await analysisRunItemWorker.close();
   await schedulerWorker.close();
   await notificationWorker.close();
-  await analysisQueue.close();
+  await analysisRunQueue.close();
+  await analysisRunItemQueue.close();
   await schedulerQueue.close();
   await notificationQueue.close();
   await redisConnection.quit();

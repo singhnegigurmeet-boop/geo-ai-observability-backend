@@ -251,6 +251,41 @@ export const SQL_QUERIES = {
         AND ari.is_active = true
         AND ep.is_active = true
       ORDER BY ari.run_item_id ASC
+    `,
+    getByRunItemIdWithPath: `
+      SELECT
+        ari.run_item_id,
+        ari.analysis_run_id,
+        ari.path_id,
+        ari.status AS run_item_status,
+        ari.created_on AS run_item_created_on,
+        ari.updated_on AS run_item_updated_on,
+        ari.is_active AS run_item_is_active,
+        ep.domain_id,
+        ep.category_id,
+        ep.brand_id,
+        ep.product_id,
+        ep.context_id,
+        ep.path_type,
+        ep.created_on AS path_created_on,
+        ep.updated_on AS path_updated_on,
+        ep.is_active AS path_is_active,
+        d.domain,
+        c.category,
+        b.brand_name,
+        p.product_name,
+        uc.context
+      FROM analysis_run_items ari
+      JOIN entity_paths ep ON ep.path_id = ari.path_id
+      JOIN domains d ON d.domain_id = ep.domain_id
+      JOIN categories c ON c.category_id = ep.category_id
+      LEFT JOIN brands b ON b.brand_id = ep.brand_id
+      LEFT JOIN products p ON p.product_id = ep.product_id
+      LEFT JOIN use_contexts uc ON uc.context_id = ep.context_id
+      WHERE ari.run_item_id = $1
+        AND ari.is_active = true
+        AND ep.is_active = true
+      LIMIT 1
     `
   },
   analysisDiffs: {

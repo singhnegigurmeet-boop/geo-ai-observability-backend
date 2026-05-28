@@ -1,8 +1,10 @@
-import type { AnalysisRequest } from "../modules/analysis/types/v6-analysis-request.js";
+export type AnalysisRunJobPayload = {
+  analysisRunId: number;
+};
 
-export type AnalysisJobData = {
-  analysisRunId?: number;
-  request: AnalysisRequest;
+export type AnalysisRunItemJobPayload = {
+  analysisRunId: number;
+  runItemId: number;
 };
 
 export type SchedulerJobData = {

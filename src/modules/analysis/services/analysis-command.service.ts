@@ -3,6 +3,7 @@ import { apiError } from "../../../utils/api-response.js";
 import type { AnalysisRunItemsRepository } from "../repositories/analysis-run-items.repository.js";
 import type { AnalysisRunsRepository } from "../repositories/analysis-runs.repository.js";
 import type { AnalysisRequest } from "../types/v6-analysis-request.js";
+import type { AnalysisRunJobPayload } from "../../../types/queue.types.js";
 import {
   AnalysisRequestValidationError,
   type ValidatedAnalysisPath,
@@ -13,7 +14,8 @@ export class AnalysisCommandService extends BaseService {
   constructor(
     private readonly validationService: AnalysisRequestValidationService,
     private readonly analysisRunsRepository: AnalysisRunsRepository,
-    private readonly analysisRunItemsRepository: AnalysisRunItemsRepository
+    private readonly analysisRunItemsRepository: AnalysisRunItemsRepository,
+    private readonly analysisRunQueue: { add(name: string, data: AnalysisRunJobPayload): Promise<unknown> }
   ) {
     super();
   }
@@ -40,6 +42,10 @@ export class AnalysisCommandService extends BaseService {
         status: "queued"
       });
 
+      await this.analysisRunQueue.add("analysis-run", {
+        analysisRunId: analysisRun.analysis_run_id
+      });
+
       this.log("V6 analysis run persisted; provider execution is not implemented yet", {
         domain: validation.normalizedDomain,
         ipAddress,
@@ -51,11 +57,12 @@ export class AnalysisCommandService extends BaseService {
         statusCode: 202,
         body: {
           status: analysisRun.status,
-          code: "V6_ANALYSIS_RUN_CREATED",
-          message: "V6 analysis run created; provider execution not implemented yet.",
+          code: "V6_ANALYSIS_RUN_QUEUED",
+          message: "V6 analysis run queued; provider execution not implemented yet.",
           analysisRunId: analysisRun.analysis_run_id,
           domain: validation.normalizedDomain,
           runItemCount: runItems.length,
+          queueStatus: "enqueued",
           runItems,
           providerExecutionStarted: false
         }
