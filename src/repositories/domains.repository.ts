@@ -1,5 +1,6 @@
 import { SQL_QUERIES } from "../db/sql-queries.js";
 import type { DomainRow } from "../types/database.types.js";
+import { normalizeDomain } from "../utils/domain-normalization.js";
 import { BaseRepository } from "./base.repository.js";
 
 export class DomainsRepository extends BaseRepository<DomainRow> {
@@ -50,11 +51,4 @@ export class DomainsRepository extends BaseRepository<DomainRow> {
 }
 
 export const domainsRepository = new DomainsRepository();
-
-export function normalizeDomain(input: string): string {
-  const trimmed = input.trim().toLowerCase();
-  const withoutProtocol = trimmed.replace(/^https?:\/\//, "");
-  const withoutPath = withoutProtocol.split("/")[0] ?? "";
-  const withoutPort = withoutPath.split(":")[0] ?? "";
-  return withoutPort.replace(/^www\./, "");
-}
+export { normalizeDomain };

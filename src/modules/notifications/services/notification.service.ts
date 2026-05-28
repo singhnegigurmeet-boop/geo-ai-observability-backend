@@ -1,6 +1,6 @@
 import type { Queue } from "bullmq";
-import { NotificationsRepository } from "../repositories/notifications.repository.js";
-import { ObservabilityIndexService } from "../../observability/services/observability-index.service.js";
+import type { NotificationsRepository } from "../repositories/notifications.repository.js";
+import type { ObservabilityIndexService } from "../../observability/services/observability-index.service.js";
 import type { AnalysisDiffRow } from "../../../types/database.types.js";
 import type { NotificationJobData } from "../../../types/queue.types.js";
 

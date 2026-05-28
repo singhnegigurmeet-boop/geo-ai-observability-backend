@@ -1,8 +1,8 @@
 import { PROVIDERS } from "../../../config/constants.js";
-import { AnalysisDiffsRepository } from "../repositories/analysis-diffs.repository.js";
-import { AnalysisRunsRepository } from "../../analysis/repositories/analysis-runs.repository.js";
-import { ProviderSnapshotsRepository } from "../../providers/repositories/provider-snapshots.repository.js";
-import { VisibilityScoresRepository } from "../../visibility/repositories/visibility-scores.repository.js";
+import type { AnalysisDiffsRepository } from "../repositories/analysis-diffs.repository.js";
+import type { AnalysisRunsRepository } from "../../analysis/repositories/analysis-runs.repository.js";
+import type { ProviderSnapshotsRepository } from "../../providers/repositories/provider-snapshots.repository.js";
+import type { VisibilityScoresRepository } from "../../visibility/repositories/visibility-scores.repository.js";
 import type {
   AnalysisDiffInput,
   AnalysisDiffRow,
@@ -43,7 +43,7 @@ export class DiffEngineService {
       analysisRunId
     );
     const previousVisibility = await this.dependencies.visibilityScoresRepository.findVisibilityScoreByRunId(
-      previousRun.id
+      previousRun.analysis_run_id
     );
 
     if (!currentVisibility || !previousVisibility) {
@@ -54,12 +54,24 @@ export class DiffEngineService {
       analysisRunId
     );
     const previousSnapshots = await this.dependencies.providerSnapshotsRepository.findProviderSnapshotsByRunId(
-      previousRun.id
+      previousRun.analysis_run_id
     );
 
     const diffInputs: AnalysisDiffInput[] = [
-      ...this.buildVisibilityDiffs(domainId, analysisRunId, previousRun.id, previousVisibility, currentVisibility),
-      ...this.buildProviderDiffs(domainId, analysisRunId, previousRun.id, previousSnapshots, currentSnapshots)
+      ...this.buildVisibilityDiffs(
+        domainId,
+        analysisRunId,
+        previousRun.analysis_run_id,
+        previousVisibility,
+        currentVisibility
+      ),
+      ...this.buildProviderDiffs(
+        domainId,
+        analysisRunId,
+        previousRun.analysis_run_id,
+        previousSnapshots,
+        currentSnapshots
+      )
     ];
 
     const diffs: AnalysisDiffRow[] = [];

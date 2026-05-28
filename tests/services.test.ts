@@ -4,9 +4,16 @@ import { SQL_QUERIES } from "../src/db/sql-queries.js";
 import { DiffEngineService } from "../src/modules/diffs/services/diff-engine.service.js";
 import { NotificationService } from "../src/modules/notifications/services/notification.service.js";
 import { DomainSchedulerService } from "../src/modules/scheduler/services/domain-scheduler.service.js";
+import { AnalysisCommandService } from "../src/modules/analysis/services/analysis-command.service.js";
 import { AnalysisRequestValidationService } from "../src/modules/analysis/services/analysis-request-validation.service.js";
+import { AnalysisStatusService } from "../src/modules/analysis/services/analysis-status.service.js";
 import { DiscoveryCommandService } from "../src/modules/discovery/services/discovery-command.service.js";
-import type { AnalysisDiffRow, EntityPathRow, ProviderSnapshotRow } from "../src/types/database.types.js";
+import type {
+  AnalysisDiffRow,
+  AnalysisRunItemStatus,
+  EntityPathRow,
+  ProviderSnapshotRow
+} from "../src/types/database.types.js";
 
 const now = new Date("2026-05-15T12:00:00.000Z");
 
@@ -31,6 +38,53 @@ describe("focused services", () => {
     updated_on: now,
     is_active: true
   });
+
+  const createCommandHarness = (entityPathsRepository: Record<string, unknown>) => {
+    const createdRuns: unknown[] = [];
+    const createdItemPathIds: number[][] = [];
+    const validationService = new AnalysisRequestValidationService({
+      domainsRepository: {
+        async getActiveDomainByName() {
+          return domainRow;
+        }
+      },
+      entityPathsRepository: entityPathsRepository as any
+    });
+    const service = new AnalysisCommandService(
+      validationService,
+      {
+        async createAnalysisRunWithItems(input: { domainId: number; requestPayload: unknown; pathIds: number[] }) {
+          createdRuns.push(input);
+          createdItemPathIds.push(input.pathIds);
+          const analysisRun = {
+            analysis_run_id: 100,
+            domain_id: 1,
+            request_payload: input.requestPayload,
+            status: "queued",
+            created_on: now,
+            updated_on: now,
+            is_active: true
+          };
+
+          return {
+            analysisRun,
+            runItems: input.pathIds.map((pathId, index) => ({
+              run_item_id: index + 1,
+              analysis_run_id: analysisRun.analysis_run_id,
+              path_id: pathId,
+              status: "queued",
+              created_on: now,
+              updated_on: now,
+              is_active: true
+            }))
+          };
+        }
+      } as any,
+      {} as any
+    );
+
+    return { service, createdRuns, createdItemPathIds };
+  };
 
   it("analysis validation loads top 5 category paths for domain-only requests", async () => {
     const service = new AnalysisRequestValidationService({
@@ -116,6 +170,363 @@ describe("focused services", () => {
       }),
       /Invalid domain\/category\/brand\/product\/use_context path/
     );
+  });
+
+  it("domain-only analysis creates one run and top 5 category run items", async () => {
+    const { service, createdRuns, createdItemPathIds } = createCommandHarness({
+      async getTopCategoryPathsForDomain() {
+        return [11, 12, 13, 14, 15].map((pathId) =>
+          path({ path_id: pathId, category_id: pathId, path_type: "category" })
+        );
+      },
+      async validateCategoryPath() {
+        throw new Error("validateCategoryPath should not be called");
+      },
+      async validateBrandPath() {
+        throw new Error("validateBrandPath should not be called");
+      },
+      async validateProductContextPath() {
+        throw new Error("validateProductContextPath should not be called");
+      },
+      async getUseContextsForProductPath() {
+        throw new Error("getUseContextsForProductPath should not be called");
+      }
+    });
+
+    const result = await service.enqueueAnalysis({ domain: "nike.com" }, "127.0.0.1");
+
+    assert.equal(result.statusCode, 202);
+    assert.equal(result.body.analysisRunId, 100);
+    assert.equal(result.body.providerExecutionStarted, false);
+    assert.equal(createdRuns.length, 1);
+    assert.deepEqual(createdItemPathIds, [[11, 12, 13, 14, 15]]);
+  });
+
+  it("POST analysis command uses transactional run and item creation", async () => {
+    const { service, createdRuns, createdItemPathIds } = createCommandHarness({
+      async getTopCategoryPathsForDomain() {
+        return [11].map((pathId) => path({ path_id: pathId, category_id: pathId, path_type: "category" }));
+      },
+      async validateCategoryPath() {
+        throw new Error("validateCategoryPath should not be called");
+      },
+      async validateBrandPath() {
+        throw new Error("validateBrandPath should not be called");
+      },
+      async validateProductContextPath() {
+        throw new Error("validateProductContextPath should not be called");
+      },
+      async getUseContextsForProductPath() {
+        throw new Error("getUseContextsForProductPath should not be called");
+      }
+    });
+
+    const result = await service.enqueueAnalysis({ domain: "nike.com" }, "127.0.0.1");
+
+    assert.equal(result.statusCode, 202);
+    assert.equal(createdRuns.length, 1);
+    assert.deepEqual(createdItemPathIds, [[11]]);
+    assert.equal(result.body.runItemCount, 1);
+  });
+
+  it("analysis run repository rolls back run creation when item creation fails", async () => {
+    process.env.DATABASE_URL ??= "postgres://user:password@127.0.0.1:5432/test";
+    process.env.REDIS_URL ??= "redis://127.0.0.1:6379";
+    process.env.ELASTICSEARCH_NODE ??= "http://127.0.0.1:9200";
+
+    const [{ AnalysisRunsRepository }, { pool }] = await Promise.all([
+      import("../src/modules/analysis/repositories/analysis-runs.repository.js"),
+      import("../src/lib/postgres.js")
+    ]);
+    const originalConnect = pool.connect.bind(pool);
+    const calls: string[] = [];
+    const fakeClient = {
+      async query(sql: string) {
+        if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+          calls.push(sql);
+          return { rows: [] };
+        }
+
+        if (sql.includes("INSERT INTO analysis_runs")) {
+          calls.push("insert_run");
+          return {
+            rows: [
+              {
+                analysis_run_id: 500,
+                domain_id: 1,
+                request_payload: { domain: "nike.com" },
+                status: "queued",
+                created_on: now,
+                updated_on: now,
+                is_active: true
+              }
+            ]
+          };
+        }
+
+        if (sql.includes("INSERT INTO analysis_run_items")) {
+          calls.push("insert_items");
+          throw new Error("simulated item insert failure");
+        }
+
+        throw new Error(`Unexpected SQL: ${sql}`);
+      },
+      release() {
+        calls.push("release");
+      }
+    };
+
+    (pool as any).connect = async () => fakeClient;
+
+    try {
+      const repository = new AnalysisRunsRepository();
+
+      await assert.rejects(
+        repository.createAnalysisRunWithItems({
+          domainId: 1,
+          requestPayload: { domain: "nike.com" },
+          pathIds: [999],
+          status: "queued"
+        }),
+        /simulated item insert failure/
+      );
+
+      assert.deepEqual(calls, ["BEGIN", "insert_run", "insert_items", "ROLLBACK", "release"]);
+    } finally {
+      (pool as any).connect = originalConnect;
+    }
+  });
+
+  it("selected categories create category-level run items only", async () => {
+    const { service, createdItemPathIds } = createCommandHarness({
+      async getTopCategoryPathsForDomain() {
+        return [];
+      },
+      async validateCategoryPath(_domainId: number, categoryId: number) {
+        return path({ path_id: categoryId + 20, category_id: categoryId, path_type: "category" });
+      },
+      async validateBrandPath() {
+        throw new Error("validateBrandPath should not be called");
+      },
+      async validateProductContextPath() {
+        throw new Error("validateProductContextPath should not be called");
+      },
+      async getUseContextsForProductPath() {
+        throw new Error("getUseContextsForProductPath should not be called");
+      }
+    });
+
+    const result = await service.enqueueAnalysis(
+      { domain: "nike.com", categories: [{ categoryId: 1 }, { categoryId: 2 }] },
+      "127.0.0.1"
+    );
+
+    assert.equal(result.statusCode, 202);
+    assert.deepEqual(createdItemPathIds, [[21, 22]]);
+  });
+
+  it("selected brands create brand-level run items only", async () => {
+    const { service, createdItemPathIds } = createCommandHarness({
+      async getTopCategoryPathsForDomain() {
+        return [];
+      },
+      async validateCategoryPath() {
+        throw new Error("validateCategoryPath should not be called");
+      },
+      async validateBrandPath(_domainId: number, categoryId: number, brandId: number) {
+        return path({ path_id: 30 + brandId, category_id: categoryId, brand_id: brandId, path_type: "brand" });
+      },
+      async validateProductContextPath() {
+        throw new Error("validateProductContextPath should not be called");
+      },
+      async getUseContextsForProductPath() {
+        throw new Error("getUseContextsForProductPath should not be called");
+      }
+    });
+
+    const result = await service.enqueueAnalysis(
+      { domain: "nike.com", categories: [{ categoryId: 1, brands: [{ brandId: 10 }] }] },
+      "127.0.0.1"
+    );
+
+    assert.equal(result.statusCode, 202);
+    assert.deepEqual(createdItemPathIds, [[40]]);
+  });
+
+  it("products with useContextIds create product_context run items", async () => {
+    const { service, createdItemPathIds } = createCommandHarness({
+      async getTopCategoryPathsForDomain() {
+        return [];
+      },
+      async validateCategoryPath() {
+        throw new Error("validateCategoryPath should not be called");
+      },
+      async validateBrandPath(_domainId: number, categoryId: number, brandId: number) {
+        return path({ path_id: 40, category_id: categoryId, brand_id: brandId, path_type: "brand" });
+      },
+      async validateProductContextPath(
+        _domainId: number,
+        categoryId: number,
+        brandId: number,
+        productId: number,
+        contextId: number
+      ) {
+        return path({
+          path_id: 50 + contextId,
+          category_id: categoryId,
+          brand_id: brandId,
+          product_id: productId,
+          context_id: contextId,
+          path_type: "product_context"
+        });
+      },
+      async getUseContextsForProductPath() {
+        throw new Error("getUseContextsForProductPath should not be called");
+      }
+    });
+
+    const result = await service.enqueueAnalysis(
+      {
+        domain: "nike.com",
+        categories: [
+          {
+            categoryId: 1,
+            brands: [{ brandId: 10, products: [{ productId: 100, useContextIds: [5, 6] }] }]
+          }
+        ]
+      },
+      "127.0.0.1"
+    );
+
+    assert.equal(result.statusCode, 202);
+    assert.deepEqual(createdItemPathIds, [[55, 56]]);
+  });
+
+  it("products without useContextIds return a blocking response and create no run items", async () => {
+    const { service, createdRuns, createdItemPathIds } = createCommandHarness({
+      async getTopCategoryPathsForDomain() {
+        return [];
+      },
+      async validateCategoryPath() {
+        throw new Error("validateCategoryPath should not be called");
+      },
+      async validateBrandPath(_domainId: number, categoryId: number, brandId: number) {
+        return path({ path_id: 40, category_id: categoryId, brand_id: brandId, path_type: "brand" });
+      },
+      async validateProductContextPath() {
+        throw new Error("validateProductContextPath should not be called");
+      },
+      async getUseContextsForProductPath(_domainId: number, categoryId: number, brandId: number, productId: number) {
+        return [
+          path({
+            path_id: 55,
+            category_id: categoryId,
+            brand_id: brandId,
+            product_id: productId,
+            context_id: 5,
+            path_type: "product_context"
+          })
+        ];
+      }
+    });
+
+    const result = await service.enqueueAnalysis(
+      {
+        domain: "nike.com",
+        categories: [{ categoryId: 1, brands: [{ brandId: 10, products: [{ productId: 100 }] }] }]
+      },
+      "127.0.0.1"
+    );
+
+    assert.equal(result.statusCode, 422);
+    assert.equal(result.body.details.blocking_reason, "PRODUCT_USE_CONTEXT_SELECTION_NOT_IMPLEMENTED");
+    assert.deepEqual(createdRuns, []);
+    assert.deepEqual(createdItemPathIds, []);
+  });
+
+  it("analysis status returns run with joined item path details and summary", async () => {
+    const item = (runItemId: number, status: AnalysisRunItemStatus) => ({
+      run_item_id: runItemId,
+      analysis_run_id: 100,
+      path_id: 200 + runItemId,
+      run_item_status: status,
+      run_item_created_on: now,
+      run_item_updated_on: now,
+      run_item_is_active: true,
+      domain_id: 1,
+      category_id: 2,
+      brand_id: runItemId === 1 ? null : 3,
+      product_id: runItemId === 3 ? 4 : null,
+      context_id: runItemId === 3 ? 5 : null,
+      path_type: runItemId === 3 ? "product_context" : runItemId === 2 ? "brand" : "category",
+      path_created_on: now,
+      path_updated_on: now,
+      path_is_active: true,
+      domain: "nike.com",
+      category: "Running",
+      brand_name: runItemId === 1 ? null : "Nike",
+      product_name: runItemId === 3 ? "Pegasus 41" : null,
+      context: runItemId === 3 ? "Marathon training" : null
+    });
+    const service = new AnalysisStatusService(
+      {
+        async getAnalysisRunWithItems(analysisRunId: number) {
+          assert.equal(analysisRunId, 100);
+          return {
+            analysis_run_id: 100,
+            domain_id: 1,
+            domain: "nike.com",
+            request_payload: { domain: "nike.com" },
+            status: "queued",
+            created_on: now,
+            updated_on: now,
+            is_active: true
+          };
+        }
+      } as any,
+      {
+        async getRunItemsWithPaths(analysisRunId: number) {
+          assert.equal(analysisRunId, 100);
+          return [item(1, "queued"), item(2, "completed"), item(3, "failed")];
+        }
+      } as any
+    );
+
+    const result = await service.getAnalysisRunStatus(100);
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.analysisRunId, 100);
+    assert.equal(result.body.items[2].pathType, "product_context");
+    assert.equal(result.body.items[2].productName, "Pegasus 41");
+    assert.deepEqual(result.body.itemStatusSummary, {
+      queued: 1,
+      processing: 0,
+      completed: 1,
+      failed: 1,
+      skipped: 0,
+      cancelled: 0
+    });
+  });
+
+  it("analysis status returns 404 for unknown runs", async () => {
+    const service = new AnalysisStatusService(
+      {
+        async getAnalysisRunWithItems() {
+          return null;
+        }
+      } as any,
+      {
+        async getRunItemsWithPaths() {
+          throw new Error("getRunItemsWithPaths should not be called");
+        }
+      } as any
+    );
+
+    const result = await service.getAnalysisRunStatus(999);
+
+    assert.equal(result.statusCode, 404);
+    assert.equal(result.body.status, "error");
+    assert.equal(result.body.error, "Analysis run not found");
   });
 
   it("discovery requests create pending work and do not run analysis", async () => {
@@ -254,7 +665,7 @@ describe("focused services", () => {
     const service = new DiffEngineService({
       analysisRunsRepository: {
         async findPreviousSuccessfulRun() {
-          return { id: 1 };
+          return { analysis_run_id: 1 };
         }
       } as any,
       visibilityScoresRepository: {
@@ -289,7 +700,8 @@ describe("focused services", () => {
 describe("SQL query registry", () => {
   it("keeps application repository SQL in keyed parameterized statements", () => {
     assert.match(SQL_QUERIES.domains.upsertDomain, /\$1/);
-    assert.match(SQL_QUERIES.analysisRuns.markFinished, /\$2/);
+    assert.match(SQL_QUERIES.analysisRuns.updateStatus, /\$2/);
+    assert.match(SQL_QUERIES.analysisRunItems.createMany, /unnest\(\$2::integer\[\]\)/);
     assert.match(SQL_QUERIES.domainSchedules.upsert, /\$4::timestamptz/);
     assert.doesNotMatch(JSON.stringify(SQL_QUERIES), /\$\{/);
   });

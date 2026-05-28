@@ -1,11 +1,11 @@
 import { SQL_QUERIES } from "../../../db/sql-queries.js";
-import { normalizeDomain } from "../../../repositories/domains.repository.js";
 import { BaseRepository } from "../../../repositories/base.repository.js";
 import type {
   DiscoveryRequestKind,
   DiscoveryRequestRow,
   DiscoveryRequestStatus
 } from "../../../types/database.types.js";
+import { normalizeDomain } from "../../../utils/domain-normalization.js";
 import type { DiscoveryRequest } from "../types/discovery-request.js";
 
 export type PendingDiscoveryFilters = {

@@ -1,35 +1,63 @@
 import { BaseService } from "../../../services/base.service.js";
 import { apiError } from "../../../utils/api-response.js";
+import type { AnalysisRunItemsRepository } from "../repositories/analysis-run-items.repository.js";
+import type { AnalysisRunsRepository } from "../repositories/analysis-runs.repository.js";
 import type { AnalysisRequest } from "../types/v6-analysis-request.js";
 import {
   AnalysisRequestValidationError,
+  type ValidatedAnalysisPath,
   type AnalysisRequestValidationService
 } from "./analysis-request-validation.service.js";
 
 export class AnalysisCommandService extends BaseService {
-  constructor(private readonly validationService: AnalysisRequestValidationService) {
+  constructor(
+    private readonly validationService: AnalysisRequestValidationService,
+    private readonly analysisRunsRepository: AnalysisRunsRepository,
+    private readonly analysisRunItemsRepository: AnalysisRunItemsRepository
+  ) {
     super();
   }
 
   async enqueueAnalysis(request: AnalysisRequest, ipAddress: string) {
     try {
       const validation = await this.validationService.validateRequest(request);
-      this.log("V6 analysis request validated; execution is not implemented yet", {
+
+      if (validation.useContextSelectionRequired) {
+        return apiError(422, "Use context selection is required before product-level analysis can run", {
+          domain: validation.normalizedDomain,
+          blocking_reason: "PRODUCT_USE_CONTEXT_SELECTION_NOT_IMPLEMENTED",
+          message:
+            "A product was selected without useContextIds. LLM-assisted top use_context selection is not implemented yet.",
+          validation
+        });
+      }
+
+      const pathIds = this.getRunItemPathIds(validation.paths);
+      const { analysisRun, runItems } = await this.analysisRunsRepository.createAnalysisRunWithItems({
+        domainId: validation.domain.domain_id,
+        requestPayload: request,
+        pathIds,
+        status: "queued"
+      });
+
+      this.log("V6 analysis run persisted; provider execution is not implemented yet", {
         domain: validation.normalizedDomain,
         ipAddress,
-        pathCount: validation.paths.length,
-        useContextSelectionRequired: validation.useContextSelectionRequired
+        analysisRunId: analysisRun.analysis_run_id,
+        runItemCount: runItems.length
       });
 
       return {
-        statusCode: 501,
+        statusCode: 202,
         body: {
-          status: "not_implemented",
-          code: "V6_ANALYSIS_EXECUTION_NOT_IMPLEMENTED",
-          message: "V6 hierarchy-aware analysis validation succeeded, but execution is not implemented yet.",
-          accepted_contract: "AnalysisRequest",
+          status: analysisRun.status,
+          code: "V6_ANALYSIS_RUN_CREATED",
+          message: "V6 analysis run created; provider execution not implemented yet.",
+          analysisRunId: analysisRun.analysis_run_id,
           domain: validation.normalizedDomain,
-          validation
+          runItemCount: runItems.length,
+          runItems,
+          providerExecutionStarted: false
         }
       };
     } catch (error) {
@@ -39,5 +67,17 @@ export class AnalysisCommandService extends BaseService {
 
       throw error;
     }
+  }
+
+  private getRunItemPathIds(paths: ValidatedAnalysisPath[]): number[] {
+    const pathIds = paths.flatMap((path) => {
+      if (path.pathType === "product") {
+        return path.pathIds;
+      }
+
+      return [path.pathId];
+    });
+
+    return [...new Set(pathIds)];
   }
 }

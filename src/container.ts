@@ -1,6 +1,8 @@
 import { elasticsearch } from "./lib/elasticsearch.js";
 import { AnalysisCommandService } from "./modules/analysis/services/analysis-command.service.js";
 import { AnalysisJobService } from "./modules/analysis/services/analysis-job.service.js";
+import { analysisRunItemsRepository } from "./modules/analysis/repositories/analysis-run-items.repository.js";
+import { analysisRunsRepository } from "./modules/analysis/repositories/analysis-runs.repository.js";
 import { AnalysisRequestValidationService } from "./modules/analysis/services/analysis-request-validation.service.js";
 import { AnalysisStatusService } from "./modules/analysis/services/analysis-status.service.js";
 import { DiscoveryCommandService } from "./modules/discovery/services/discovery-command.service.js";
@@ -19,8 +21,12 @@ export const analysisRequestValidationService = new AnalysisRequestValidationSer
   domainsRepository,
   entityPathsRepository
 });
-export const analysisCommandService = new AnalysisCommandService(analysisRequestValidationService);
-export const analysisStatusService = new AnalysisStatusService();
+export const analysisCommandService = new AnalysisCommandService(
+  analysisRequestValidationService,
+  analysisRunsRepository,
+  analysisRunItemsRepository
+);
+export const analysisStatusService = new AnalysisStatusService(analysisRunsRepository, analysisRunItemsRepository);
 export const analysisJobService = new AnalysisJobService();
 export const discoveryCommandService = new DiscoveryCommandService(discoveryRequestsRepository);
 

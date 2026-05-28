@@ -10,12 +10,13 @@ const analysisRunId = 10;
 const fakeAnalysisCommandService = {
   async enqueueAnalysis(request: AnalysisRequest) {
     return {
-      statusCode: 501,
+      statusCode: 202,
       body: {
-        status: "not_implemented",
-        code: "V6_ANALYSIS_EXECUTION_NOT_IMPLEMENTED",
+        status: "queued",
+        code: "V6_ANALYSIS_RUN_CREATED",
         domain: request.domain,
-        validation: { paths: request.categories ?? [] }
+        analysisRunId: 100,
+        runItems: request.categories ?? []
       }
     };
   }
@@ -23,11 +24,54 @@ const fakeAnalysisCommandService = {
 
 const fakeAnalysisStatusService = {
   async getAnalysisRunStatus(requestedAnalysisRunId: number) {
+    if (requestedAnalysisRunId === 9999) {
+      return {
+        statusCode: 404,
+        body: {
+          status: "error",
+          error: "Analysis run not found",
+          details: { analysisRunId: requestedAnalysisRunId }
+        }
+      };
+    }
+
     return {
-      statusCode: 501,
+      statusCode: 200,
       body: {
-        status: "not_implemented",
-        analysis_run_id: requestedAnalysisRunId
+        analysisRunId: requestedAnalysisRunId,
+        domain: "nike.com",
+        requestPayload: { domain: "nike.com" },
+        status: "queued",
+        createdOn: "2026-05-15T12:00:00.000Z",
+        updatedOn: "2026-05-15T12:00:00.000Z",
+        itemStatusSummary: {
+          queued: 1,
+          processing: 0,
+          completed: 0,
+          failed: 0,
+          skipped: 0,
+          cancelled: 0
+        },
+        items: [
+          {
+            runItemId: 1,
+            status: "queued",
+            pathId: 11,
+            pathType: "category",
+            domainId: 1,
+            domain: "nike.com",
+            categoryId: 2,
+            category: "Running",
+            brandId: null,
+            brandName: null,
+            productId: null,
+            productName: null,
+            contextId: null,
+            context: null,
+            createdOn: "2026-05-15T12:00:00.000Z",
+            updatedOn: "2026-05-15T12:00:00.000Z"
+          }
+        ]
       }
     };
   },
@@ -130,10 +174,10 @@ describe("routes", () => {
     });
     const body = await response.json();
 
-    assert.equal(response.status, 501);
-    assert.equal(body.status, "not_implemented");
-    assert.equal(body.code, "V6_ANALYSIS_EXECUTION_NOT_IMPLEMENTED");
-    assert.equal(body.validation.paths[0].categoryId, 1);
+    assert.equal(response.status, 202);
+    assert.equal(body.status, "queued");
+    assert.equal(body.code, "V6_ANALYSIS_RUN_CREATED");
+    assert.equal(body.runItems[0].categoryId, 1);
   });
 
   it("POST /v1/analysis rejects flat V5-style free-text fields", async () => {
@@ -171,13 +215,24 @@ describe("routes", () => {
     assert.equal(body.discovery_request.productName, "Pegasus 41");
   });
 
-  it("GET /v1/analysis/runs/:analysisRunId returns the V6 status placeholder", async () => {
+  it("GET /v1/analysis/runs/:analysisRunId returns V6 run status with items", async () => {
     const response = await fetch(`${baseUrl}/v1/analysis/runs/${analysisRunId}`);
     const body = await response.json();
 
-    assert.equal(response.status, 501);
-    assert.equal(body.status, "not_implemented");
-    assert.equal(body.analysis_run_id, analysisRunId);
+    assert.equal(response.status, 200);
+    assert.equal(body.status, "queued");
+    assert.equal(body.analysisRunId, analysisRunId);
+    assert.equal(body.items[0].category, "Running");
+    assert.equal(body.itemStatusSummary.queued, 1);
+  });
+
+  it("GET /v1/analysis/runs/:analysisRunId returns 404 for unknown runs", async () => {
+    const response = await fetch(`${baseUrl}/v1/analysis/runs/9999`);
+    const body = await response.json();
+
+    assert.equal(response.status, 404);
+    assert.equal(body.status, "error");
+    assert.equal(body.error, "Analysis run not found");
   });
 
   it("old V5 public read and scheduler routes are not active", async () => {

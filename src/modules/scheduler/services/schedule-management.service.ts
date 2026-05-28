@@ -1,6 +1,7 @@
-import { DomainsRepository, normalizeDomain } from "../../../repositories/domains.repository.js";
-import { DomainSchedulesRepository } from "../repositories/domain-schedules.repository.js";
+import type { DomainsRepository } from "../../../repositories/domains.repository.js";
+import type { DomainSchedulesRepository } from "../repositories/domain-schedules.repository.js";
 import type { DomainScheduleCadence } from "../../../types/database.types.js";
+import { normalizeDomain } from "../../../utils/domain-normalization.js";
 
 type ScheduleManagementServiceDependencies = {
   domainsRepository: DomainsRepository;

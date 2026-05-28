@@ -82,20 +82,55 @@ export type DiscoveryRequestRow = {
   is_active: boolean;
 };
 
-export type AnalysisRunStatus = "queued" | "processing" | "completed" | "partial_success" | "failed";
+export type AnalysisRunStatus =
+  | "queued"
+  | "processing"
+  | "completed"
+  | "partial_success"
+  | "failed"
+  | "cancelled";
 export type AnalysisRunSource = "manual" | "scheduled" | "retry";
 
 export type AnalysisRunRow = {
-  id: number;
+  analysis_run_id: number;
   domain_id: number;
-  bullmq_job_id: string | null;
+  request_payload: unknown;
   status: AnalysisRunStatus;
-  source: AnalysisRunSource;
-  started_at: Date | null;
-  completed_at: Date | null;
-  error_message: string | null;
-  created_at: Date;
-  updated_at: Date;
+  created_on: Date;
+  updated_on: Date;
+  is_active: boolean;
+};
+
+export type AnalysisRunInput = {
+  domainId: number;
+  requestPayload: unknown;
+  status?: AnalysisRunStatus;
+};
+
+export type AnalysisRunFilters = {
+  domainId?: number;
+  status?: AnalysisRunStatus;
+  limit?: number;
+  offset?: number;
+};
+
+export type AnalysisRunItemStatus = "queued" | "processing" | "completed" | "failed" | "skipped" | "cancelled";
+
+export type AnalysisRunItemRow = {
+  run_item_id: number;
+  analysis_run_id: number;
+  path_id: number;
+  status: AnalysisRunItemStatus;
+  created_on: Date;
+  updated_on: Date;
+  is_active: boolean;
+};
+
+export type AnalysisRunItemWithPathRow = AnalysisRunItemRow & EntityPathRow;
+
+export type AnalysisRunItemsInput = {
+  analysisRunId: number;
+  pathIds: number[];
 };
 
 export type ProviderAnalysisInput = {

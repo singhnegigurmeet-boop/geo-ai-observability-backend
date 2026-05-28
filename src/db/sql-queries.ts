@@ -146,49 +146,111 @@ export const SQL_QUERIES = {
     `
   },
   analysisRuns: {
-    createQueuedRun: `
-      INSERT INTO analysis_runs (domain_id, status, source)
-      VALUES ($1, 'queued', $2)
+    createAnalysisRun: `
+      INSERT INTO analysis_runs (domain_id, request_payload, status)
+      VALUES ($1, $2::jsonb, coalesce($3::text, 'queued'))
       RETURNING *
     `,
-    attachBullMqJob: `
+    updateStatus: `
       UPDATE analysis_runs
-      SET bullmq_job_id = $2, updated_at = now()
-      WHERE id = $1
-      RETURNING *
-    `,
-    markProcessing: `
-      UPDATE analysis_runs
-      SET
-        status = 'processing',
-        started_at = coalesce(started_at, now()),
-        updated_at = now()
-      WHERE id = $1
-      RETURNING *
-    `,
-    markFinished: `
-      UPDATE analysis_runs
-      SET
-        status = $2,
-        error_message = $3,
-        completed_at = now(),
-        updated_at = now()
-      WHERE id = $1
+      SET status = $2,
+          updated_on = now()
+      WHERE analysis_run_id = $1
+        AND is_active = true
       RETURNING *
     `,
     findById: `
+      SELECT ar.*
+      FROM analysis_runs ar
+      WHERE ar.analysis_run_id = $1
+        AND ar.is_active = true
+    `,
+    findByIdWithDomain: `
+      SELECT
+        ar.*,
+        d.domain
+      FROM analysis_runs ar
+      JOIN domains d ON d.domain_id = ar.domain_id
+      WHERE ar.analysis_run_id = $1
+        AND ar.is_active = true
+        AND d.is_active = true
+    `,
+    list: `
       SELECT *
       FROM analysis_runs
-      WHERE id = $1
+      WHERE is_active = true
+        AND ($1::integer IS NULL OR domain_id = $1)
+        AND ($2::text IS NULL OR status = $2)
+      ORDER BY created_on DESC, analysis_run_id DESC
+      LIMIT $3 OFFSET $4
     `,
     findPreviousSuccessfulRun: `
       SELECT *
       FROM analysis_runs
       WHERE domain_id = $1
-        AND id <> $2
+        AND analysis_run_id <> $2
         AND status IN ('completed', 'partial_success')
-      ORDER BY completed_at DESC NULLS LAST, id DESC
+        AND is_active = true
+      ORDER BY updated_on DESC, analysis_run_id DESC
       LIMIT 1
+    `
+  },
+  analysisRunItems: {
+    createMany: `
+      INSERT INTO analysis_run_items (analysis_run_id, path_id)
+      SELECT $1, unnest($2::integer[])
+      ON CONFLICT DO NOTHING
+      RETURNING *
+    `,
+    listByRunId: `
+      SELECT *
+      FROM analysis_run_items
+      WHERE analysis_run_id = $1
+        AND is_active = true
+      ORDER BY run_item_id ASC
+    `,
+    updateStatus: `
+      UPDATE analysis_run_items
+      SET status = $2,
+          updated_on = now()
+      WHERE run_item_id = $1
+        AND is_active = true
+      RETURNING *
+    `,
+    getWithPaths: `
+      SELECT
+        ari.run_item_id,
+        ari.analysis_run_id,
+        ari.path_id,
+        ari.status AS run_item_status,
+        ari.created_on AS run_item_created_on,
+        ari.updated_on AS run_item_updated_on,
+        ari.is_active AS run_item_is_active,
+        ep.domain_id,
+        ep.category_id,
+        ep.brand_id,
+        ep.product_id,
+        ep.context_id,
+        ep.path_type,
+        ep.created_on AS path_created_on,
+        ep.updated_on AS path_updated_on,
+        ep.is_active AS path_is_active,
+        d.domain,
+        c.category,
+        b.brand_name,
+        p.product_name,
+        uc.context
+      FROM analysis_run_items ari
+      JOIN entity_paths ep ON ep.path_id = ari.path_id
+      JOIN domains d ON d.domain_id = ep.domain_id
+      JOIN categories c ON c.category_id = ep.category_id
+      LEFT JOIN brands b ON b.brand_id = ep.brand_id
+      LEFT JOIN products p ON p.product_id = ep.product_id
+      LEFT JOIN use_contexts uc ON uc.context_id = ep.context_id
+      WHERE ari.analysis_run_id = $1
+        AND ari.is_active = true
+        AND ep.is_active = true
+      ORDER BY ari.run_item_id ASC
     `
   },
   analysisDiffs: {

@@ -82,16 +82,27 @@ CREATE TABLE IF NOT EXISTS discovery_requests (
 );
 
 CREATE TABLE IF NOT EXISTS analysis_runs (
-  id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  analysis_run_id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   domain_id integer NOT NULL REFERENCES domains(domain_id) ON DELETE CASCADE,
-  bullmq_job_id text UNIQUE,
-  status text NOT NULL CHECK (status IN ('queued', 'processing', 'completed', 'partial_success', 'failed')),
-  source text NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'scheduled', 'retry')),
-  started_at timestamptz,
-  completed_at timestamptz,
-  error_message text,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+  request_payload jsonb NOT NULL,
+  status text NOT NULL DEFAULT 'queued' CHECK (
+    status IN ('queued', 'processing', 'completed', 'partial_success', 'failed', 'cancelled')
+  ),
+  created_on timestamptz NOT NULL DEFAULT now(),
+  updated_on timestamptz NOT NULL DEFAULT now(),
+  is_active boolean NOT NULL DEFAULT true
+);
+
+CREATE TABLE IF NOT EXISTS analysis_run_items (
+  run_item_id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  analysis_run_id integer NOT NULL REFERENCES analysis_runs(analysis_run_id) ON DELETE CASCADE,
+  path_id integer NOT NULL REFERENCES entity_paths(path_id) ON DELETE RESTRICT,
+  status text NOT NULL DEFAULT 'queued' CHECK (
+    status IN ('queued', 'processing', 'completed', 'failed', 'skipped', 'cancelled')
+  ),
+  created_on timestamptz NOT NULL DEFAULT now(),
+  updated_on timestamptz NOT NULL DEFAULT now(),
+  is_active boolean NOT NULL DEFAULT true
 );
 
 CREATE TABLE IF NOT EXISTS provider_analysis (
@@ -113,7 +124,7 @@ CREATE TABLE IF NOT EXISTS provider_analysis (
 CREATE TABLE IF NOT EXISTS provider_snapshots (
   id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   domain_id integer NOT NULL REFERENCES domains(domain_id) ON DELETE CASCADE,
-  analysis_run_id integer REFERENCES analysis_runs(id) ON DELETE SET NULL,
+  analysis_run_id integer REFERENCES analysis_runs(analysis_run_id) ON DELETE SET NULL,
   llm_name text NOT NULL CHECK (llm_name IN ('openai', 'gemini', 'claude')),
   top_k integer NOT NULL CHECK (top_k IN (5, 10, 15, 50, 100)),
   rank_position integer,
@@ -127,7 +138,7 @@ CREATE TABLE IF NOT EXISTS provider_snapshots (
 CREATE TABLE IF NOT EXISTS visibility_scores (
   id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   domain_id integer NOT NULL REFERENCES domains(domain_id) ON DELETE CASCADE,
-  analysis_run_id integer REFERENCES analysis_runs(id) ON DELETE SET NULL,
+  analysis_run_id integer REFERENCES analysis_runs(analysis_run_id) ON DELETE SET NULL,
   openai_score numeric(5, 2) NOT NULL DEFAULT 0,
   gemini_score numeric(5, 2) NOT NULL DEFAULT 0,
   claude_score numeric(5, 2) NOT NULL DEFAULT 0,
@@ -141,8 +152,8 @@ CREATE TABLE IF NOT EXISTS visibility_scores (
 CREATE TABLE IF NOT EXISTS analysis_diffs (
   id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   domain_id integer NOT NULL REFERENCES domains(domain_id) ON DELETE CASCADE,
-  analysis_run_id integer NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
-  previous_analysis_run_id integer REFERENCES analysis_runs(id) ON DELETE SET NULL,
+  analysis_run_id integer NOT NULL REFERENCES analysis_runs(analysis_run_id) ON DELETE CASCADE,
+  previous_analysis_run_id integer REFERENCES analysis_runs(analysis_run_id) ON DELETE SET NULL,
   diff_type text NOT NULL CHECK (
     diff_type IN (
       'visibility_score_dropped',
@@ -227,10 +238,23 @@ CREATE INDEX IF NOT EXISTS discovery_requests_kind_status_idx
   WHERE is_active = true;
 
 CREATE INDEX IF NOT EXISTS analysis_runs_domain_created_idx
-  ON analysis_runs (domain_id, created_at DESC);
+  ON analysis_runs (domain_id, created_on DESC);
 
 CREATE INDEX IF NOT EXISTS analysis_runs_status_idx
   ON analysis_runs (status);
+
+CREATE INDEX IF NOT EXISTS analysis_run_items_run_idx
+  ON analysis_run_items (analysis_run_id);
+
+CREATE INDEX IF NOT EXISTS analysis_run_items_path_idx
+  ON analysis_run_items (path_id);
+
+CREATE INDEX IF NOT EXISTS analysis_run_items_status_idx
+  ON analysis_run_items (status);
+
+CREATE UNIQUE INDEX IF NOT EXISTS analysis_run_items_active_run_path_unique_idx
+  ON analysis_run_items (analysis_run_id, path_id)
+  WHERE is_active = true;
 
 CREATE INDEX IF NOT EXISTS provider_snapshots_domain_created_idx
   ON provider_snapshots (domain_id, created_at DESC);

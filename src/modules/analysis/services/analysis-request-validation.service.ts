@@ -1,4 +1,4 @@
-import { normalizeDomain } from "../../../repositories/domains.repository.js";
+import { normalizeDomain } from "../../../utils/domain-normalization.js";
 import type { DomainRow, EntityPathRow } from "../../../types/database.types.js";
 import type {
   AnalysisBrandSelection,

@@ -14,6 +14,7 @@ const resetTables = [
   "visibility_scores",
   "provider_snapshots",
   "provider_analysis",
+  "analysis_run_items",
   "analysis_runs",
   "discovery_requests",
   "entity_paths",
@@ -32,13 +33,14 @@ const requiredTables = [
   "use_contexts",
   "entity_paths",
   "discovery_requests",
+  "analysis_runs",
+  "analysis_run_items",
   "provider_analysis",
   "provider_snapshots",
   "visibility_scores",
   "analysis_diffs",
   "domain_schedules",
   "notifications",
-  "analysis_runs",
   "schema_migrations"
 ];
 

@@ -3,7 +3,7 @@ export const openApiDocument = {
   info: {
     title: "GEO AI Observability Backend API",
     version: "0.1.0-v6-placeholder",
-    description: "V6 hierarchy-aware GEO API foundation. Analysis validates DB-controlled hierarchy IDs; execution is intentionally not implemented yet."
+    description: "V6 hierarchy-aware GEO API foundation. Analysis validates DB-controlled hierarchy IDs, persists runs and expanded run items; provider execution is intentionally not implemented yet."
   },
   servers: [
     {
@@ -33,7 +33,7 @@ export const openApiDocument = {
       post: {
         tags: ["Analysis"],
         summary: "Accept the V6 analysis contract",
-        description: "Validates DB-controlled hierarchy IDs and returns 501 until V6 execution is rebuilt.",
+        description: "Validates DB-controlled hierarchy IDs, persists one analysis run and expanded run items, but does not execute providers yet.",
         requestBody: {
           required: true,
           content: {
@@ -43,7 +43,8 @@ export const openApiDocument = {
           }
         },
         responses: {
-          "501": { description: "V6 analysis validation succeeded; execution is not implemented yet" },
+          "202": { description: "V6 analysis run created; provider execution is not implemented yet" },
+          "422": { description: "Product selected without useContextIds; later use-context selection is required" },
           "400": { $ref: "#/components/responses/ValidationError" }
         }
       }
@@ -51,10 +52,11 @@ export const openApiDocument = {
     "/v1/analysis/runs/{analysisRunId}": {
       get: {
         tags: ["Analysis"],
-        summary: "V6 analysis status placeholder",
+        summary: "Read a V6 analysis run with expanded hierarchy items",
         parameters: [{ $ref: "#/components/parameters/AnalysisRunId" }],
         responses: {
-          "501": { description: "V6 run status is not implemented yet" },
+          "200": { description: "Analysis run with hierarchy-aware run items" },
+          "404": { description: "Analysis run not found" },
           "400": { $ref: "#/components/responses/ValidationError" }
         }
       }
