@@ -4,11 +4,161 @@ import { SQL_QUERIES } from "../src/db/sql-queries.js";
 import { DiffEngineService } from "../src/modules/diffs/services/diff-engine.service.js";
 import { NotificationService } from "../src/modules/notifications/services/notification.service.js";
 import { DomainSchedulerService } from "../src/modules/scheduler/services/domain-scheduler.service.js";
-import type { AnalysisDiffRow, ProviderSnapshotRow } from "../src/types/database.types.js";
+import { AnalysisRequestValidationService } from "../src/modules/analysis/services/analysis-request-validation.service.js";
+import { DiscoveryCommandService } from "../src/modules/discovery/services/discovery-command.service.js";
+import type { AnalysisDiffRow, EntityPathRow, ProviderSnapshotRow } from "../src/types/database.types.js";
 
 const now = new Date("2026-05-15T12:00:00.000Z");
 
 describe("focused services", () => {
+  const domainRow = {
+    domain_id: 1,
+    domain: "nike.com",
+    created_on: now,
+    updated_on: now,
+    is_active: true
+  };
+
+  const path = (overrides: Partial<EntityPathRow>): EntityPathRow => ({
+    path_id: overrides.path_id ?? 1,
+    domain_id: overrides.domain_id ?? 1,
+    category_id: overrides.category_id ?? 1,
+    brand_id: overrides.brand_id ?? null,
+    product_id: overrides.product_id ?? null,
+    context_id: overrides.context_id ?? null,
+    path_type: overrides.path_type ?? "category",
+    created_on: now,
+    updated_on: now,
+    is_active: true
+  });
+
+  it("analysis validation loads top 5 category paths for domain-only requests", async () => {
+    const service = new AnalysisRequestValidationService({
+      domainsRepository: {
+        async getActiveDomainByName(domain: string) {
+          assert.equal(domain, "nike.com");
+          return domainRow;
+        }
+      },
+      entityPathsRepository: {
+        async getTopCategoryPathsForDomain(domainId: number, limit?: number) {
+          assert.equal(domainId, 1);
+          assert.equal(limit, 5);
+          return [1, 2, 3, 4, 5].map((categoryId) =>
+            path({ path_id: categoryId, category_id: categoryId, path_type: "category" })
+          );
+        },
+        async validateCategoryPath() {
+          throw new Error("validateCategoryPath should not be called");
+        },
+        async validateBrandPath() {
+          throw new Error("validateBrandPath should not be called");
+        },
+        async validateProductContextPath() {
+          throw new Error("validateProductContextPath should not be called");
+        },
+        async getUseContextsForProductPath() {
+          throw new Error("getUseContextsForProductPath should not be called");
+        }
+      }
+    });
+
+    const result = await service.validateRequest({ domain: "https://www.nike.com/sale" });
+
+    assert.equal(result.normalizedDomain, "nike.com");
+    assert.equal(result.paths.length, 5);
+    assert.deepEqual(
+      result.paths.map((resolvedPath) => resolvedPath.categoryId),
+      [1, 2, 3, 4, 5]
+    );
+  });
+
+  it("analysis validation rejects invalid category/brand/product paths", async () => {
+    const service = new AnalysisRequestValidationService({
+      domainsRepository: {
+        async getActiveDomainByName() {
+          return domainRow;
+        }
+      },
+      entityPathsRepository: {
+        async getTopCategoryPathsForDomain() {
+          return [];
+        },
+        async validateCategoryPath() {
+          return path({ path_type: "category" });
+        },
+        async validateBrandPath() {
+          return path({ path_id: 2, brand_id: 2, path_type: "brand" });
+        },
+        async validateProductContextPath() {
+          return null;
+        },
+        async getUseContextsForProductPath() {
+          return [];
+        }
+      }
+    });
+
+    await assert.rejects(
+      service.validateRequest({
+        domain: "nike.com",
+        categories: [
+          {
+            categoryId: 1,
+            brands: [
+              {
+                brandId: 2,
+                products: [{ productId: 3, useContextIds: [999] }]
+              }
+            ]
+          }
+        ]
+      }),
+      /Invalid domain\/category\/brand\/product\/use_context path/
+    );
+  });
+
+  it("discovery requests create pending work and do not run analysis", async () => {
+    let analysisWasRun = false;
+    const service = new DiscoveryCommandService({
+      async createDiscoveryRequest(input) {
+        assert.equal(input.kind, "product");
+        return {
+          request_id: 7,
+          kind: "product",
+          domain: "nike.com",
+          category_id: 1,
+          brand_id: null,
+          brand_name: null,
+          product_name: "Pegasus 41",
+          notes: null,
+          status: "pending",
+          created_on: now,
+          updated_on: now,
+          is_active: true
+        };
+      },
+      async listPendingDiscoveryRequests() {
+        return [];
+      },
+      async updateDiscoveryRequestStatus() {
+        return null;
+      }
+    } as any);
+
+    const result = await service.createDiscoveryRequest({
+      kind: "product",
+      domain: "nike.com",
+      productName: "Pegasus 41",
+      categoryId: 1
+    });
+
+    assert.equal(result.statusCode, 201);
+    assert.equal(result.body.discovery_request.status, "pending");
+    assert.equal(result.body.analysis_started, false);
+    assert.equal(analysisWasRun, false);
+  });
+
   it("scheduler scaffold no longer enqueues V5 domain-only analysis jobs", async () => {
     const service = new DomainSchedulerService();
 

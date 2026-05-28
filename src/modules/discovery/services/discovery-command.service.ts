@@ -1,17 +1,20 @@
 import type { DiscoveryRequest } from "../types/discovery-request.js";
+import type { DiscoveryRequestsRepository } from "../repositories/discovery-requests.repository.js";
 
 export class DiscoveryCommandService {
+  constructor(private readonly discoveryRequestsRepository: DiscoveryRequestsRepository) {}
+
   async createDiscoveryRequest(request: DiscoveryRequest) {
-    // TODO: V6_REBUILD_REQUIRED persist pending discovery work without running analysis.
+    const row = await this.discoveryRequestsRepository.createDiscoveryRequest(request);
+
     return {
-      statusCode: 501,
+      statusCode: 201,
       body: {
-        status: "not_implemented",
-        code: "V6_DISCOVERY_REBUILD_REQUIRED",
-        message: "Discovery requests are not persisted yet and do not run analysis.",
-        request
+        status: "created",
+        message: "Discovery request was queued for manual/admin/crawler verification.",
+        discovery_request: row,
+        analysis_started: false
       }
     };
   }
 }
-

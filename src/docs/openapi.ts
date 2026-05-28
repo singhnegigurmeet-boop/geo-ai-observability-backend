@@ -3,7 +3,7 @@ export const openApiDocument = {
   info: {
     title: "GEO AI Observability Backend API",
     version: "0.1.0-v6-placeholder",
-    description: "V6 hierarchy-aware GEO API placeholder. Analysis and discovery contracts are active, but execution is intentionally not implemented yet."
+    description: "V6 hierarchy-aware GEO API foundation. Analysis validates DB-controlled hierarchy IDs; execution is intentionally not implemented yet."
   },
   servers: [
     {
@@ -33,7 +33,7 @@ export const openApiDocument = {
       post: {
         tags: ["Analysis"],
         summary: "Accept the V6 analysis contract",
-        description: "Placeholder endpoint. It validates DB-controlled hierarchy IDs and returns 501 until V6 execution is rebuilt.",
+        description: "Validates DB-controlled hierarchy IDs and returns 501 until V6 execution is rebuilt.",
         requestBody: {
           required: true,
           content: {
@@ -43,7 +43,7 @@ export const openApiDocument = {
           }
         },
         responses: {
-          "501": { description: "V6 analysis execution is not implemented yet" },
+          "501": { description: "V6 analysis validation succeeded; execution is not implemented yet" },
           "400": { $ref: "#/components/responses/ValidationError" }
         }
       }
@@ -73,8 +73,8 @@ export const openApiDocument = {
     "/v1/discovery": {
       post: {
         tags: ["Discovery"],
-        summary: "Accept the V6 discovery contract",
-        description: "Placeholder endpoint. Discovery can carry missing free-text brand/product names, but does not run analysis.",
+        summary: "Create a pending V6 discovery request",
+        description: "Discovery can carry missing free-text brand/product names, but only creates pending verification work and does not run analysis.",
         requestBody: {
           required: true,
           content: {
@@ -84,7 +84,7 @@ export const openApiDocument = {
           }
         },
         responses: {
-          "501": { description: "V6 discovery persistence is not implemented yet" },
+          "201": { description: "Pending discovery request created" },
           "400": { $ref: "#/components/responses/ValidationError" }
         }
       }
@@ -216,4 +216,3 @@ export const openApiDocument = {
     }
   }
 } as const;
-

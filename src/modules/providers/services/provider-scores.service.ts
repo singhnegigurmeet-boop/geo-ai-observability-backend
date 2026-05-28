@@ -23,7 +23,7 @@ export class ProviderScoresService extends BaseService {
     }
 
     const scores = await this.dependencies.providerAnalysisRepository.findLatestScoresByDomainAndProvider(
-      domainRow.id,
+      domainRow.domain_id,
       llmName
     );
 
@@ -45,7 +45,7 @@ export class ProviderScoresService extends BaseService {
       body: {
         status: "found",
         source: "provider_analysis",
-        domain_id: domainRow.id,
+        domain_id: domainRow.domain_id,
         domain: domainRow.domain,
         provider: llmName,
         scores: scores.map((score) => ({
@@ -69,14 +69,14 @@ export class ProviderScoresService extends BaseService {
       return this.notFoundDomain(domainId);
     }
 
-    const scores = await this.dependencies.providerAnalysisRepository.findLatestScoresByDomain(domainRow.id);
+    const scores = await this.dependencies.providerAnalysisRepository.findLatestScoresByDomain(domainRow.domain_id);
 
     if (scores.length === 0) {
       return {
         statusCode: 404,
         body: {
           status: "not_found",
-          domain_id: domainRow.id,
+          domain_id: domainRow.domain_id,
           domain: domainRow.domain,
           error: "No latest provider scores found for this domain"
         }
@@ -103,7 +103,7 @@ export class ProviderScoresService extends BaseService {
       body: {
         status: "found",
         source: "provider_analysis",
-        domain_id: domainRow.id,
+        domain_id: domainRow.domain_id,
         domain: domainRow.domain,
         providers
       }
@@ -118,7 +118,7 @@ export class ProviderScoresService extends BaseService {
     }
 
     const history = await this.dependencies.providerSnapshotsRepository.findProviderSnapshotHistory(
-      domainRow.id,
+      domainRow.domain_id,
       llmName
     );
 
@@ -127,7 +127,7 @@ export class ProviderScoresService extends BaseService {
       body: {
         status: "found",
         source: "provider_snapshots",
-        domain_id: domainRow.id,
+        domain_id: domainRow.domain_id,
         domain: domainRow.domain,
         provider: llmName,
         history

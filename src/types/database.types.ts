@@ -1,10 +1,85 @@
 import { ProviderName, ProviderStatus, TopKValue } from "../config/constants.js";
 
 export type DomainRow = {
-  id: number;
+  domain_id: number;
   domain: string;
-  created_at: Date;
-  updated_at: Date;
+  created_on: Date;
+  updated_on: Date;
+  is_active: boolean;
+};
+
+export type CategoryRow = {
+  category_id: number;
+  category: string;
+  created_on: Date;
+  updated_on: Date;
+  is_active: boolean;
+};
+
+export type BrandRow = {
+  brand_id: number;
+  brand_name: string;
+  created_on: Date;
+  updated_on: Date;
+  is_active: boolean;
+};
+
+export type ProductRow = {
+  product_id: number;
+  product_name: string;
+  created_on: Date;
+  updated_on: Date;
+  is_active: boolean;
+};
+
+export type UseContextRow = {
+  context_id: number;
+  context: string;
+  created_on: Date;
+  updated_on: Date;
+  is_active: boolean;
+};
+
+export type EntityPathType = "category" | "brand" | "product_context";
+
+export type EntityPathRow = {
+  path_id: number;
+  domain_id: number;
+  category_id: number;
+  brand_id: number | null;
+  product_id: number | null;
+  context_id: number | null;
+  path_type: EntityPathType;
+  created_on: Date;
+  updated_on: Date;
+  is_active: boolean;
+};
+
+export type EntityPathInput = {
+  domainId: number;
+  categoryId: number;
+  brandId?: number | null;
+  productId?: number | null;
+  contextId?: number | null;
+  pathType: EntityPathType;
+};
+
+export type DiscoveryRequestKind = "domain" | "brand" | "product";
+export type DiscoveryRequestStatus = "pending" | "approved" | "rejected" | "resolved";
+
+export type DiscoveryRequestRow = {
+  request_id: number;
+  kind: DiscoveryRequestKind;
+  domain: string;
+  category_id: number | null;
+  brand_id: number | null;
+  brand_name: string | null;
+  product_name: string | null;
+  notes: string | null;
+  status: DiscoveryRequestStatus;
+  created_on: Date;
+  updated_on: Date;
+  is_active: boolean;
 };
 
 export type AnalysisRunStatus = "queued" | "processing" | "completed" | "partial_success" | "failed";

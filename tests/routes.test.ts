@@ -13,9 +13,9 @@ const fakeAnalysisCommandService = {
       statusCode: 501,
       body: {
         status: "not_implemented",
-        code: "V6_ANALYSIS_REBUILD_REQUIRED",
+        code: "V6_ANALYSIS_EXECUTION_NOT_IMPLEMENTED",
         domain: request.domain,
-        selection: { categories: request.categories ?? [] }
+        validation: { paths: request.categories ?? [] }
       }
     };
   }
@@ -46,11 +46,11 @@ const fakeAnalysisStatusService = {
 const fakeDiscoveryCommandService = {
   async createDiscoveryRequest(request: DiscoveryRequest) {
     return {
-      statusCode: 501,
+      statusCode: 201,
       body: {
-        status: "not_implemented",
-        code: "V6_DISCOVERY_REBUILD_REQUIRED",
-        request
+        status: "created",
+        discovery_request: request,
+        analysis_started: false
       }
     };
   }
@@ -132,17 +132,19 @@ describe("routes", () => {
 
     assert.equal(response.status, 501);
     assert.equal(body.status, "not_implemented");
-    assert.equal(body.code, "V6_ANALYSIS_REBUILD_REQUIRED");
-    assert.equal(body.selection.categories[0].categoryId, 1);
+    assert.equal(body.code, "V6_ANALYSIS_EXECUTION_NOT_IMPLEMENTED");
+    assert.equal(body.validation.paths[0].categoryId, 1);
   });
 
-  it("POST /v1/analysis rejects free-text brand fields", async () => {
+  it("POST /v1/analysis rejects flat V5-style free-text fields", async () => {
     const response = await fetch(`${baseUrl}/v1/analysis`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         domain: "nike.com",
-        categories: [{ categoryId: 1, brands: [{ brandName: "Nike" }] }]
+        category: "running shoes",
+        brand: "Nike",
+        product: "Pegasus 41"
       })
     });
 
@@ -162,10 +164,11 @@ describe("routes", () => {
     });
     const body = await response.json();
 
-    assert.equal(response.status, 501);
-    assert.equal(body.code, "V6_DISCOVERY_REBUILD_REQUIRED");
-    assert.equal(body.request.kind, "product");
-    assert.equal(body.request.productName, "Pegasus 41");
+    assert.equal(response.status, 201);
+    assert.equal(body.status, "created");
+    assert.equal(body.analysis_started, false);
+    assert.equal(body.discovery_request.kind, "product");
+    assert.equal(body.discovery_request.productName, "Pegasus 41");
   });
 
   it("GET /v1/analysis/runs/:analysisRunId returns the V6 status placeholder", async () => {
@@ -191,4 +194,3 @@ describe("routes", () => {
     );
   });
 });
-

@@ -19,14 +19,14 @@ export class VisibilityScoreReadService extends BaseService {
       return this.notFoundDomain(domainId);
     }
 
-    const visibilityScore = await this.dependencies.visibilityScoresRepository.findLatestVisibilityScore(domainRow.id);
+    const visibilityScore = await this.dependencies.visibilityScoresRepository.findLatestVisibilityScore(domainRow.domain_id);
 
     if (!visibilityScore) {
       return {
         statusCode: 404,
         body: {
           status: "not_found",
-          domain_id: domainRow.id,
+          domain_id: domainRow.domain_id,
           domain: domainRow.domain,
           error: "No visibility score found for this domain"
         }
@@ -38,7 +38,7 @@ export class VisibilityScoreReadService extends BaseService {
       body: {
         status: "found",
         source: "visibility_scores",
-        domain_id: domainRow.id,
+        domain_id: domainRow.domain_id,
         domain: domainRow.domain,
         data: visibilityScore
       }
@@ -52,14 +52,14 @@ export class VisibilityScoreReadService extends BaseService {
       return this.notFoundDomain(domainId);
     }
 
-    const history = await this.dependencies.visibilityScoresRepository.findVisibilityScoreHistory(domainRow.id);
+    const history = await this.dependencies.visibilityScoresRepository.findVisibilityScoreHistory(domainRow.domain_id);
 
     return {
       statusCode: 200,
       body: {
         status: "found",
         source: "visibility_scores",
-        domain_id: domainRow.id,
+        domain_id: domainRow.domain_id,
         domain: domainRow.domain,
         history
       }
@@ -73,7 +73,7 @@ export class VisibilityScoreReadService extends BaseService {
       return this.notFoundDomain(domainId);
     }
 
-    const history = await this.dependencies.visibilityScoresRepository.findVisibilityScoreHistory(domainRow.id, 2);
+    const history = await this.dependencies.visibilityScoresRepository.findVisibilityScoreHistory(domainRow.domain_id, 2);
     const current = history[0] ?? null;
     const previous = history[1] ?? null;
 
@@ -82,7 +82,7 @@ export class VisibilityScoreReadService extends BaseService {
         statusCode: 404,
         body: {
           status: "not_found",
-          domain_id: domainRow.id,
+          domain_id: domainRow.domain_id,
           domain: domainRow.domain,
           error: "No visibility score found for this domain"
         }
@@ -97,7 +97,7 @@ export class VisibilityScoreReadService extends BaseService {
       statusCode: 200,
       body: {
         domain: domainRow.domain,
-        domain_id: domainRow.id,
+        domain_id: domainRow.domain_id,
         current_score: currentScore,
         previous_score: previousScore,
         change,

@@ -11,21 +11,27 @@ const baseDiscoverySchema = {
 };
 
 const discoveryRequestSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("domain"),
-    ...baseDiscoverySchema
-  }),
-  z.object({
-    kind: z.literal("brand"),
-    ...baseDiscoverySchema,
-    brandName: z.string().trim().min(1).max(200)
-  }),
-  z.object({
-    kind: z.literal("product"),
-    ...baseDiscoverySchema,
-    brandId: z.number().int().positive().optional(),
-    productName: z.string().trim().min(1).max(200)
-  })
+  z
+    .object({
+      kind: z.literal("domain"),
+      ...baseDiscoverySchema
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("brand"),
+      ...baseDiscoverySchema,
+      brandName: z.string().trim().min(1).max(200)
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("product"),
+      ...baseDiscoverySchema,
+      brandId: z.number().int().positive().optional(),
+      productName: z.string().trim().min(1).max(200)
+    })
+    .strict()
 ]);
 
 export class DiscoveryRouter extends BaseRouter {
@@ -53,4 +59,3 @@ export class DiscoveryRouter extends BaseRouter {
 export function createDiscoveryRouter(discoveryController: DiscoveryController): Router {
   return new DiscoveryRouter(discoveryController).getRouter();
 }
-

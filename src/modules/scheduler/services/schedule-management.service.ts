@@ -1,4 +1,4 @@
-import { DomainsRepository } from "../../../repositories/domains.repository.js";
+import { DomainsRepository, normalizeDomain } from "../../../repositories/domains.repository.js";
 import { DomainSchedulesRepository } from "../repositories/domain-schedules.repository.js";
 import type { DomainScheduleCadence } from "../../../types/database.types.js";
 
@@ -18,10 +18,10 @@ export class ScheduleManagementService {
   constructor(private readonly dependencies: ScheduleManagementServiceDependencies) {}
 
   async upsertSchedule(input: UpsertScheduleInput) {
-    const normalizedDomain = this.normalizeDomain(input.domain);
+    const normalizedDomain = normalizeDomain(input.domain);
     const domain = await this.dependencies.domainsRepository.upsertDomain(normalizedDomain);
     const schedule = await this.dependencies.domainSchedulesRepository.upsertSchedule({
-      domainId: domain.id,
+      domainId: domain.domain_id,
       cadence: input.cadence,
       enabled: input.enabled,
       nextRunAt: input.nextRunAt
@@ -75,13 +75,5 @@ export class ScheduleManagementService {
         schedule
       }
     };
-  }
-
-  private normalizeDomain(input: string) {
-    const trimmed = input.trim().toLowerCase();
-    const withoutProtocol = trimmed.replace(/^https?:\/\//, "");
-    const withoutPath = withoutProtocol.split("/")[0] ?? "";
-    const withoutPort = withoutPath.split(":")[0] ?? "";
-    return withoutPort.replace(/^www\./, "");
   }
 }

@@ -4,25 +4,33 @@ import { validateBody, validateParams } from "../../../middleware/validate.middl
 import { BaseRouter } from "../../../routes/base.router.js";
 import type { AnalysisController } from "../controllers/analysis.controller.js";
 
-const productSchema = z.object({
-  productId: z.number().int().positive(),
-  useContextIds: z.array(z.number().int().positive()).max(4).optional()
-});
+const productSchema = z
+  .object({
+    productId: z.number().int().positive(),
+    useContextIds: z.array(z.number().int().positive()).max(4).optional()
+  })
+  .strict();
 
-const brandSchema = z.object({
-  brandId: z.number().int().positive(),
-  products: z.array(productSchema).optional()
-});
+const brandSchema = z
+  .object({
+    brandId: z.number().int().positive(),
+    products: z.array(productSchema).max(5).optional()
+  })
+  .strict();
 
-const categorySchema = z.object({
-  categoryId: z.number().int().positive(),
-  brands: z.array(brandSchema).optional()
-});
+const categorySchema = z
+  .object({
+    categoryId: z.number().int().positive(),
+    brands: z.array(brandSchema).max(5).optional()
+  })
+  .strict();
 
-const requestSchema = z.object({
-  domain: z.string().trim().min(1).max(253),
-  categories: z.array(categorySchema).max(5).optional()
-});
+const requestSchema = z
+  .object({
+    domain: z.string().trim().min(1).max(253),
+    categories: z.array(categorySchema).max(5).optional()
+  })
+  .strict();
 
 const runParamsSchema = z.object({
   analysisRunId: z.coerce.number().int().positive()

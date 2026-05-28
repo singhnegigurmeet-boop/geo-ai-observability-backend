@@ -4,15 +4,16 @@ import { BaseRepository } from "./base.repository.js";
 
 export class DomainsRepository extends BaseRepository<DomainRow> {
   async upsertDomain(domain: string): Promise<DomainRow> {
-    this.log(`Upserting domain: ${domain}`);
+    const normalizedDomain = normalizeDomain(domain);
+    this.log(`Upserting domain: ${normalizedDomain}`);
 
     const row = await this.executeSingleQueryOrThrow<DomainRow>(
       SQL_QUERIES.domains.upsertDomain,
-      [domain],
+      [normalizedDomain],
       "Failed to upsert domain"
     );
 
-    this.log(`Domain upserted successfully`, { id: row.id, domain: row.domain });
+    this.log(`Domain upserted successfully`, { domain_id: row.domain_id, domain: row.domain });
     return row;
   }
 
@@ -23,9 +24,17 @@ export class DomainsRepository extends BaseRepository<DomainRow> {
   }
 
   async findDomainByName(domain: string): Promise<DomainRow | null> {
-    this.log(`Finding domain by name: ${domain}`);
+    const normalizedDomain = normalizeDomain(domain);
+    this.log(`Finding domain by name: ${normalizedDomain}`);
 
-    return this.executeSingleQuery<DomainRow>(SQL_QUERIES.domains.findByName, [domain]);
+    return this.executeSingleQuery<DomainRow>(SQL_QUERIES.domains.findByName, [normalizedDomain]);
+  }
+
+  async getActiveDomainByName(domain: string): Promise<DomainRow | null> {
+    const normalizedDomain = normalizeDomain(domain);
+    this.log(`Finding active domain by name: ${normalizedDomain}`);
+
+    return this.executeSingleQuery<DomainRow>(SQL_QUERIES.domains.findActiveByName, [normalizedDomain]);
   }
 
   async getAllDomains(limit: number = 100, offset: number = 0): Promise<DomainRow[]> {
@@ -41,3 +50,11 @@ export class DomainsRepository extends BaseRepository<DomainRow> {
 }
 
 export const domainsRepository = new DomainsRepository();
+
+export function normalizeDomain(input: string): string {
+  const trimmed = input.trim().toLowerCase();
+  const withoutProtocol = trimmed.replace(/^https?:\/\//, "");
+  const withoutPath = withoutProtocol.split("/")[0] ?? "";
+  const withoutPort = withoutPath.split(":")[0] ?? "";
+  return withoutPort.replace(/^www\./, "");
+}
