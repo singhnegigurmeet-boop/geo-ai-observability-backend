@@ -58,7 +58,11 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
     const connectionString =
       process.env.TEST_DATABASE_URL ??
       "postgres://postgres:postgres@127.0.0.1:5433/geo_observability_test";
-    pool = new pg.Pool({ connectionString, max: 4 });
+    pool = new pg.Pool({
+      connectionString,
+      max: 4,
+      options: "-c search_path=migration_decoy,public"
+    });
 
     const databaseResult = await pool.query<{ current_database: string }>(
       "SELECT current_database()"
@@ -71,8 +75,10 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
     }
 
     await pool.query("DROP SCHEMA IF EXISTS geo_meta CASCADE");
+    await pool.query("DROP SCHEMA IF EXISTS migration_decoy CASCADE");
     await pool.query("DROP SCHEMA public CASCADE");
     await pool.query("CREATE SCHEMA public");
+    await pool.query("CREATE SCHEMA migration_decoy");
 
     temporaryMigrationsDirectory = await mkdtemp(
       path.join(os.tmpdir(), "geo-v6-migrations-")
@@ -96,6 +102,16 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
   });
 
   it("applies early migrations and preserves rows through later migrations", async () => {
+    await pool.query("CREATE TABLE public.legacy_probe (probe_id integer PRIMARY KEY)");
+    await assert.rejects(
+      runMigrations({
+        pool,
+        migrationsDirectory: temporaryMigrationsDirectory
+      }),
+      /Refusing to migrate non-empty public schema containing: legacy_probe/
+    );
+    await pool.query("DROP TABLE public.legacy_probe");
+
     const firstRun = await runMigrations({
       pool,
       migrationsDirectory: temporaryMigrationsDirectory
@@ -112,19 +128,35 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
     );
 
     const sourceDirectory = getDefaultMigrationsDirectory();
-    for (const filename of migrationFilenames.slice(4)) {
+    const correctiveMigration = migrationFilenames.at(-1);
+    if (correctiveMigration !== "013_seal_phase1_invariants.sql") {
+      throw new Error("Expected 013_seal_phase1_invariants.sql to be the final migration");
+    }
+
+    for (const filename of migrationFilenames.slice(4, -1)) {
       await cp(
         path.join(sourceDirectory, filename),
         path.join(temporaryMigrationsDirectory, filename)
       );
     }
 
-    const laterRun = await runMigrations({
+    const baselineRun = await runMigrations({
       pool,
       migrationsDirectory: temporaryMigrationsDirectory
     });
-    assert.equal(laterRun.applied.length, migrationFilenames.length - 4);
-    assert.equal(laterRun.skipped.length, 4);
+    assert.equal(baselineRun.applied.length, migrationFilenames.length - 5);
+    assert.equal(baselineRun.skipped.length, 4);
+
+    await cp(
+      path.join(sourceDirectory, correctiveMigration),
+      path.join(temporaryMigrationsDirectory, correctiveMigration)
+    );
+    const correctiveRun = await runMigrations({
+      pool,
+      migrationsDirectory: temporaryMigrationsDirectory
+    });
+    assert.equal(correctiveRun.applied.length, 1);
+    assert.equal(correctiveRun.skipped.length, migrationFilenames.length - 1);
 
     const retained = await pool.query<{ normalized_domain: string }>(
       "SELECT normalized_domain FROM domains WHERE normalized_domain = $1",
@@ -165,6 +197,14 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
         AND table_name = 'schema_migrations'
     `);
     assert.equal(ledger.rowCount, 1);
+
+    const decoyTables = await pool.query<{ table_name: string }>(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'migration_decoy'
+        AND table_type = 'BASE TABLE'
+    `);
+    assert.deepEqual(decoyTables.rows, []);
   });
 
   it("enforces normalized-domain and entity-path hierarchy uniqueness", async () => {
@@ -244,6 +284,78 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       hasPostgresCode("23503")
     );
 
+    await assert.rejects(
+      insertAnalysisRun(pool, {
+        idempotencyKey: "run-unclaimed-session",
+        anonymousSessionId: ownership.anonymousSessionId,
+        userId: ownership.memberUserId,
+        workspaceId: ownership.workspaceId,
+        entityPathId: hierarchy.entityPathId
+      }),
+      hasPostgresCode("23514")
+    );
+
+    await pool.query(
+      `
+        UPDATE anonymous_sessions
+        SET claimed_by_user_id = $2,
+            claimed_workspace_id = $3,
+            claimed_at = now()
+        WHERE anonymous_session_id = $1
+      `,
+      [
+        ownership.anonymousSessionId,
+        ownership.memberUserId,
+        ownership.workspaceId
+      ]
+    );
+
+    await pool.query(
+      `
+        INSERT INTO workspace_members (workspace_id, user_id, role)
+        VALUES ($1, $2, 'member')
+      `,
+      [ownership.workspaceId, ownership.nonmemberUserId]
+    );
+    const otherWorkspaceId = await insertReturningId(
+      pool,
+      `
+        INSERT INTO workspaces (workspace_name, created_by_user_id)
+        VALUES ('Other Workspace', $1)
+        RETURNING workspace_id
+      `,
+      [ownership.memberUserId],
+      "workspace_id"
+    );
+    await pool.query(
+      `
+        INSERT INTO workspace_members (workspace_id, user_id, role)
+        VALUES ($1, $2, 'owner')
+      `,
+      [otherWorkspaceId, ownership.memberUserId]
+    );
+
+    await assert.rejects(
+      insertAnalysisRun(pool, {
+        idempotencyKey: "run-mismatched-claimed-user",
+        anonymousSessionId: ownership.anonymousSessionId,
+        userId: ownership.nonmemberUserId,
+        workspaceId: ownership.workspaceId,
+        entityPathId: hierarchy.entityPathId
+      }),
+      hasPostgresCode("23514")
+    );
+    await assert.rejects(
+      insertAnalysisRun(pool, {
+        idempotencyKey: "run-mismatched-claimed-workspace",
+        anonymousSessionId: ownership.anonymousSessionId,
+        userId: ownership.memberUserId,
+        workspaceId: otherWorkspaceId,
+        entityPathId: hierarchy.entityPathId
+      }),
+      hasPostgresCode("23514")
+    );
+
     const claimedRun = await insertAnalysisRun(pool, {
       idempotencyKey: "run-claimed",
       anonymousSessionId: ownership.anonymousSessionId,
@@ -260,6 +372,37 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
           WHERE analysis_run_id = $1
         `,
         [claimedRun]
+      ),
+      hasPostgresCode("23514")
+    );
+
+    await assert.rejects(
+      pool.query(
+        `
+          UPDATE anonymous_sessions
+          SET claimed_by_user_id = $2
+          WHERE anonymous_session_id = $1
+        `,
+        [ownership.anonymousSessionId, ownership.nonmemberUserId]
+      ),
+      hasPostgresCode("23514")
+    );
+
+    const loggedInRun = await insertAnalysisRun(pool, {
+      idempotencyKey: "run-origin-cannot-be-added",
+      anonymousSessionId: null,
+      userId: ownership.memberUserId,
+      workspaceId: ownership.workspaceId,
+      entityPathId: hierarchy.entityPathId
+    });
+    await assert.rejects(
+      pool.query(
+        `
+          UPDATE analysis_runs
+          SET anonymous_session_id = $2
+          WHERE analysis_run_id = $1
+        `,
+        [loggedInRun, ownership.anonymousSessionId]
       ),
       hasPostgresCode("23514")
     );
@@ -321,6 +464,21 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       [itemId],
       "llm_run_id"
     );
+    await assert.rejects(
+      pool.query(
+        `
+          INSERT INTO llm_runs (
+            idempotency_key,
+            analysis_run_item_id,
+            run_key
+          )
+          VALUES ('llm-workflow-duplicate', $1, 'primary')
+        `,
+        [itemId]
+      ),
+      hasPostgresCode("23505")
+    );
+
     const promptJobId = await insertReturningId(
       pool,
       `
@@ -337,6 +495,29 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       [llmRunId],
       "prompt_job_id"
     );
+    await assert.rejects(
+      pool.query(
+        `
+          INSERT INTO prompt_jobs (
+            idempotency_key,
+            llm_run_id,
+            prompt_type,
+            prompt_version,
+            prompt_text
+          )
+          VALUES (
+            'prompt-workflow-duplicate',
+            $1,
+            'ranking',
+            'v1',
+            'Duplicate prompt'
+          )
+        `,
+        [llmRunId]
+      ),
+      hasPostgresCode("23505")
+    );
+
     const providerJobId = await insertReturningId(
       pool,
       `
@@ -352,6 +533,22 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       [promptJobId],
       "provider_job_id"
     );
+    await assert.rejects(
+      pool.query(
+        `
+          INSERT INTO provider_jobs (
+            idempotency_key,
+            prompt_job_id,
+            provider,
+            model
+          )
+          VALUES ('provider-job-workflow-duplicate', $1, 'mock', 'mock-v1')
+        `,
+        [promptJobId]
+      ),
+      hasPostgresCode("23505")
+    );
+
     const providerResultId = await insertReturningId(
       pool,
       `
@@ -413,6 +610,22 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       `,
       [providerResultId]
     );
+    await assert.rejects(
+      pool.query(
+        `
+          INSERT INTO provider_scores (
+            idempotency_key,
+            provider_result_id,
+            scoring_version,
+            score
+          )
+          VALUES ('score-workflow-duplicate', $1, 'v1', 50)
+        `,
+        [providerResultId]
+      ),
+      hasPostgresCode("23505")
+    );
+
     await pool.query(
       `
         INSERT INTO reports (
@@ -426,6 +639,23 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       `,
       [runId]
     );
+    await assert.rejects(
+      pool.query(
+        `
+          INSERT INTO reports (
+            idempotency_key,
+            analysis_run_id,
+            report_version,
+            status,
+            report_data
+          )
+          VALUES ('report-workflow-duplicate', $1, 'v1', 'completed', '{}')
+        `,
+        [runId]
+      ),
+      hasPostgresCode("23505")
+    );
+
     await pool.query(
       `
         INSERT INTO outbox_events (
@@ -439,10 +669,33 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       `,
       [runId]
     );
+    await assert.rejects(
+      pool.query(
+        `
+          INSERT INTO outbox_events (
+            event_key,
+            aggregate_type,
+            aggregate_id,
+            event_type,
+            payload
+          )
+          VALUES ('event-workflow', 'analysis_run', $1, 'duplicate', '{}')
+        `,
+        [runId]
+      ),
+      hasPostgresCode("23505")
+    );
 
     await assert.rejects(
       pool.query(
         "UPDATE provider_results SET raw_response = 'changed' WHERE provider_result_id = $1",
+        [providerResultId]
+      ),
+      hasPostgresCode("23514")
+    );
+    await assert.rejects(
+      pool.query(
+        "DELETE FROM provider_results WHERE provider_result_id = $1",
         [providerResultId]
       ),
       hasPostgresCode("23514")

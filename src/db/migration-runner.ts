@@ -105,6 +105,7 @@ export async function runMigrations(options: MigrationRunnerOptions): Promise<Mi
 
       await client.query("BEGIN");
       transactionOpen = true;
+      await client.query(MIGRATION_QUERIES.setMigrationSearchPath);
 
       const startedAt = process.hrtime.bigint();
       await client.query(migration.sql);

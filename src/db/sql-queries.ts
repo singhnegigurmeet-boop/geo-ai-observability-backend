@@ -5,6 +5,9 @@ export const MIGRATION_QUERIES = {
   releaseAdvisoryLock: `
     SELECT pg_advisory_unlock(hashtext('geo_v6_schema_migrations'))
   `,
+  setMigrationSearchPath: `
+    SET LOCAL search_path TO public, pg_catalog
+  `,
   createMetadataSchema: `
     CREATE SCHEMA IF NOT EXISTS geo_meta
   `,

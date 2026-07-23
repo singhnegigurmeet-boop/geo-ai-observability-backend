@@ -27,7 +27,7 @@ npm run migrate
   -> release the advisory lock
 ```
 
-The 12 migrations create enums first, then the frozen 26 production tables, followed by integrity triggers and indexes. A second run skips every recorded migration without changing data.
+The ordered migrations create enums first, then the frozen 26 production tables, followed by integrity triggers and indexes. A second run skips every recorded migration without changing data.
 
 ## Production Data Path Encoded by the Schema
 

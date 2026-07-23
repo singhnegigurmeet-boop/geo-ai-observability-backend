@@ -57,7 +57,7 @@ npm run test:migrations
 npm run infra:test:down
 ```
 
-The integration suite destroys and recreates schemas only in a database whose name ends in `_test`. It verifies incremental application, no-op reruns, preservation of existing rows, the exact table set, ownership and hierarchy constraints, idempotency, immutable provider evidence, and checksum drift rejection.
+`test:migrations` waits up to 30 seconds for PostgreSQL readiness, so this sequence is safe to run immediately after a cold container start. The integration suite destroys and recreates schemas only in a database whose name ends in `_test`. It verifies incremental application, no-op reruns, preservation of existing rows, the exact table set, ownership and hierarchy constraints, idempotency, immutable provider evidence, and checksum drift rejection.
 
 ## Phase Boundary
 

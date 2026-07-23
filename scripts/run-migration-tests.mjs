@@ -1,5 +1,12 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import pg from "pg";
+
+const connectionString =
+  process.env.TEST_DATABASE_URL ??
+  "postgres://postgres:postgres@127.0.0.1:5433/geo_observability_test";
+
+await waitForDatabase(connectionString);
 
 const tsxCli = fileURLToPath(
   new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url)
@@ -12,9 +19,7 @@ const child = spawn(
     env: {
       ...process.env,
       RUN_MIGRATION_TESTS: "true",
-      TEST_DATABASE_URL:
-        process.env.TEST_DATABASE_URL ??
-        "postgres://postgres:postgres@127.0.0.1:5433/geo_observability_test"
+      TEST_DATABASE_URL: connectionString
     }
   }
 );
@@ -33,3 +38,32 @@ child.on("exit", (code, signal) => {
 
   process.exitCode = code ?? 1;
 });
+
+async function waitForDatabase(databaseUrl) {
+  const deadline = Date.now() + 30_000;
+  let lastError;
+
+  while (Date.now() < deadline) {
+    const client = new pg.Client({
+      connectionString: databaseUrl,
+      connectionTimeoutMillis: 1_000
+    });
+
+    try {
+      await client.connect();
+      await client.query("SELECT 1");
+      await client.end();
+      return;
+    } catch (error) {
+      lastError = error;
+      await client.end().catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+
+  throw new Error(
+    `PostgreSQL did not become ready within 30 seconds: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`
+  );
+}
