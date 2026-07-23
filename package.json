@@ -11,9 +11,13 @@
     "build": "npm run clean && tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "test": "tsx --test tests/*.test.ts",
+    "test:migrations": "node scripts/run-migration-tests.mjs",
     "typecheck": "tsc --noEmit",
+    "migrate": "tsx src/db/migrate.ts",
     "infra:up": "docker compose up -d postgres redis elasticsearch",
     "infra:down": "docker compose down",
+    "infra:test:up": "docker compose --profile test up -d postgres-test",
+    "infra:test:down": "docker compose --profile test stop postgres-test",
     "docker:up": "docker compose up -d --build api",
     "docker:logs": "docker compose logs -f api"
   },

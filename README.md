@@ -1,8 +1,20 @@
 # GEO V6 Production Core Backend
 
-This branch is currently a Phase 0 clean backend shell.
+This branch contains the Phase 1 database foundation for GEO V6. The HTTP runtime remains a clean backend shell; no V5 business modules or placeholder analysis APIs are active.
 
-The V5 prototype and the earlier V6 placeholder runtime have been removed from active source. No analysis, discovery, provider, scoring, reporting, scheduling, notification, queue, or worker feature is currently exposed.
+## Implemented in Phase 1
+
+- Production-safe, ordered PostgreSQL migrations
+- Frozen 26-table Production Core schema
+- Database enums, foreign keys, ownership and hierarchy constraints
+- Idempotency constraints and practical indexes
+- Immutable evidence/output guards
+- TypeScript row contracts for all 26 tables
+- PostgreSQL integration tests for migration safety and schema invariants
+
+The migration ledger is stored outside the production table namespace in `geo_meta.schema_migrations`. Applied migrations are protected by SHA-256 checksums and run one-at-a-time under a PostgreSQL advisory lock. Each migration runs in its own transaction.
+
+The runner intentionally refuses to initialize a non-empty `public` schema. Existing prototype/reset schemas must be handled explicitly rather than silently modified or destroyed.
 
 ## Active HTTP Surface
 
@@ -12,67 +24,24 @@ GET /openapi.json
 GET /docs
 ```
 
-`/health` confirms only that the API process is running. It is not a PostgreSQL, Redis, or Elasticsearch readiness check.
-
-## Retained Infrastructure
-
-- Express application bootstrap
-- Environment validation with Zod
-- PostgreSQL pool and transaction helper
-- Redis client
-- Elasticsearch client
-- Generic controller, router, repository, validation, error, and API response helpers
-- Docker Compose services for PostgreSQL, Redis, and Elasticsearch
-
-RabbitMQ has not been added. There are no queue publishers, consumers, workers, provider integrations, or V6 business modules in Phase 0.
-
-## Quarantined Phase 1 Files
-
-The following legacy reset-style migration files are intentionally retained unchanged for atomic replacement in Phase 1:
-
-```text
-src/db/migrate.ts
-src/db/migrations/001_initial_schema.sql
-src/db/sql-queries.ts
-src/types/database.types.ts
-src/config/constants.ts
-```
-
-They do not represent the frozen 26-table Production Core schema. Do not execute them against a database. Migration commands have been removed from `package.json` and Docker Compose during quarantine.
+`/health` confirms that the API process is running. It is not a PostgreSQL, Redis, or Elasticsearch readiness check.
 
 ## Local Setup
 
-Copy `.env.example` to `.env` and install dependencies:
+Copy `.env.example` to `.env`, install dependencies, and start infrastructure:
 
 ```bash
 npm install
-```
-
-Start optional local infrastructure:
-
-```bash
 npm run infra:up
-```
-
-Run the shell:
-
-```bash
+npm run migrate
 npm run dev
 ```
 
-Verify it:
-
-```bash
-curl http://127.0.0.1:4000/health
-```
-
-Expected response:
-
-```json
-{"status":"ok"}
-```
+`npm run migrate` is repeatable. Once the schema is current, another run is a no-op.
 
 ## Verification
+
+Run the regular checks:
 
 ```bash
 npm run typecheck
@@ -80,10 +49,23 @@ npm test
 npm run build
 ```
 
-## Phase Boundaries
+Run PostgreSQL migration integration tests against the isolated test service:
 
-Phase 0 removes conflicting prototype behavior and leaves a buildable shell.
+```bash
+npm run infra:test:up
+npm run test:migrations
+npm run infra:test:down
+```
 
-Phase 1 will replace the quarantined migration system with the frozen production schema. It must not incrementally modify the quarantined reset schema.
+The integration suite destroys and recreates schemas only in a database whose name ends in `_test`. It verifies incremental application, no-op reruns, preservation of existing rows, the exact table set, ownership and hierarchy constraints, idempotency, immutable provider evidence, and checksum drift rejection.
 
-Later phases will introduce RabbitMQ, outbox delivery, workers, mock providers, scoring, reports, and other frozen V6 components in their approved implementation order.
+## Phase Boundary
+
+Phase 1 implements only migration and database type foundations. It does not add:
+
+- Business APIs or application services
+- RabbitMQ, publishers, consumers, or workers
+- Provider integrations
+- Analysis orchestration, scoring, or report generation
+
+Those belong to later approved phases.

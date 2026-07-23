@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import { after, before, describe, it } from "node:test";
 import { createApp } from "../src/app.js";
 
-describe("Phase 0 shell routes", () => {
+describe("Production Core shell routes", () => {
   let server: Server;
   let baseUrl: string;
 
@@ -48,7 +48,7 @@ describe("Phase 0 shell routes", () => {
     };
 
     assert.equal(response.status, 200);
-    assert.equal(document.info.version, "0.1.0-phase0");
+    assert.equal(document.info.version, "0.1.0-phase1");
     assert.deepEqual(Object.keys(document.paths), ["/health"]);
   });
 

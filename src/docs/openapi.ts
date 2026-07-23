@@ -2,9 +2,9 @@ export const openApiDocument = {
   openapi: "3.0.3",
   info: {
     title: "GEO V6 Production Core API",
-    version: "0.1.0-phase0",
+    version: "0.1.0-phase1",
     description:
-      "Phase 0 clean backend shell. V6 business APIs, queues, workers, and production schema are intentionally not implemented yet."
+      "GEO V6 Production Core backend shell. The incremental production schema is available, while business APIs, queues, workers, and providers remain intentionally unimplemented."
   },
   servers: [
     {

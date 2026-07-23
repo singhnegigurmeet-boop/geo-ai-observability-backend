@@ -1,286 +1,403 @@
-import { ProviderName, ProviderStatus, TopKValue } from "../config/constants.js";
+export type DbId = string;
+export type NumericString = string;
 
-export type DomainRow = {
-  domain_id: number;
-  domain: string;
-  created_on: Date;
-  updated_on: Date;
-  is_active: boolean;
-};
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue };
 
-export type CategoryRow = {
-  category_id: number;
-  category: string;
-  created_on: Date;
-  updated_on: Date;
-  is_active: boolean;
-};
-
-export type BrandRow = {
-  brand_id: number;
-  brand_name: string;
-  created_on: Date;
-  updated_on: Date;
-  is_active: boolean;
-};
-
-export type ProductRow = {
-  product_id: number;
-  product_name: string;
-  created_on: Date;
-  updated_on: Date;
-  is_active: boolean;
-};
-
-export type UseContextRow = {
-  context_id: number;
-  context: string;
-  created_on: Date;
-  updated_on: Date;
-  is_active: boolean;
-};
-
-export type EntityPathType = "category" | "brand" | "product_context";
-
-export type EntityPathRow = {
-  path_id: number;
-  domain_id: number;
-  category_id: number;
-  brand_id: number | null;
-  product_id: number | null;
-  context_id: number | null;
-  path_type: EntityPathType;
-  created_on: Date;
-  updated_on: Date;
-  is_active: boolean;
-};
-
-export type EntityPathInput = {
-  domainId: number;
-  categoryId: number;
-  brandId?: number | null;
-  productId?: number | null;
-  contextId?: number | null;
-  pathType: EntityPathType;
-};
-
-export type DiscoveryRequestKind = "domain" | "brand" | "product";
-export type DiscoveryRequestStatus = "pending" | "rejected" | "resolved";
-
-export type DiscoveryRequestRow = {
-  request_id: number;
-  kind: DiscoveryRequestKind;
-  requested_value: string;
-  context_domain: string | null;
-  context_category_id: number | null;
-  context_brand_id: number | null;
-  notes: string | null;
-  status: DiscoveryRequestStatus;
-  resolved_domain_id: number | null;
-  resolved_brand_id: number | null;
-  resolved_product_id: number | null;
-  resolved_path_id: number | null;
-  created_on: Date;
-  updated_on: Date;
-  is_active: boolean;
-};
-
-export type AnalysisRunStatus =
+export type UserStatus = "active" | "disabled" | "deleted";
+export type SessionStatus = "active" | "revoked" | "expired";
+export type WorkspaceRole = "owner" | "admin" | "member" | "viewer";
+export type WorkspaceRoleChangeStatus = "pending" | "approved" | "rejected" | "cancelled";
+export type EntityPathType = "domain" | "category" | "brand" | "product" | "use_context";
+export type AnalysisRunSource = "manual" | "scheduled";
+export type AnalysisExecutionStatus =
   | "queued"
   | "processing"
+  | "paused_budget"
   | "completed"
   | "partial_success"
   | "failed"
   | "cancelled";
-export type AnalysisRunSource = "manual" | "scheduled" | "retry";
+export type PromptType = "competitor" | "ranking" | "visibility" | "price_range" | "pros_cons";
+export type JobStatus =
+  | "pending"
+  | "queued"
+  | "processing"
+  | "paused_budget"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+export type ProviderName = "mock" | "openai" | "gemini" | "claude";
+export type ProviderResultStatus = "valid" | "invalid";
+export type BudgetScope = "platform_default" | "workspace";
+export type BudgetLimitMode = "hard" | "soft";
+export type TokenUsageKind = "estimated" | "actual";
+export type ReportStatus = "completed" | "partial" | "failed";
+export type OutboxStatus = "pending" | "publishing" | "published" | "failed";
+export type FailureRecordStatus = "open" | "acknowledged" | "resolved";
+export type NotificationStatus = "pending" | "queued" | "sent" | "failed" | "cancelled";
+export type NotificationChannel = "internal" | "email" | "webhook";
+export type SchedulerJobStatus = "active" | "paused" | "disabled";
+
+export type UserRow = {
+  user_id: DbId;
+  email: string;
+  password_hash: string | null;
+  display_name: string | null;
+  status: UserStatus;
+  created_at: Date;
+  updated_at: Date;
+  deleted_at: Date | null;
+};
+
+export type UserSessionRow = {
+  user_session_id: DbId;
+  user_id: DbId;
+  token_hash: string;
+  status: SessionStatus;
+  expires_at: Date;
+  last_seen_at: Date | null;
+  revoked_at: Date | null;
+  client_metadata: JsonObject;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type AnonymousSessionRow = {
+  anonymous_session_id: DbId;
+  token_hash: string;
+  status: SessionStatus;
+  expires_at: Date;
+  last_seen_at: Date | null;
+  claimed_by_user_id: DbId | null;
+  claimed_workspace_id: DbId | null;
+  claimed_at: Date | null;
+  client_metadata: JsonObject;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type WorkspaceRow = {
+  workspace_id: DbId;
+  workspace_name: string;
+  created_by_user_id: DbId;
+  created_at: Date;
+  updated_at: Date;
+  deleted_at: Date | null;
+};
+
+export type WorkspaceMemberRow = {
+  workspace_id: DbId;
+  user_id: DbId;
+  role: WorkspaceRole;
+  joined_at: Date;
+  updated_at: Date;
+};
+
+export type WorkspaceRoleChangeRequestRow = {
+  workspace_role_change_request_id: DbId;
+  workspace_id: DbId;
+  target_user_id: DbId;
+  requested_role: WorkspaceRole;
+  requested_by_user_id: DbId;
+  reviewed_by_user_id: DbId | null;
+  status: WorkspaceRoleChangeStatus;
+  request_reason: string | null;
+  review_note: string | null;
+  reviewed_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type DomainRow = {
+  domain_id: DbId;
+  normalized_domain: string;
+  display_domain: string | null;
+  is_active: boolean;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type CategoryRow = {
+  category_id: DbId;
+  category_name: string;
+  normalized_name: string;
+  is_active: boolean;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type BrandRow = {
+  brand_id: DbId;
+  brand_name: string;
+  normalized_name: string;
+  is_active: boolean;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type ProductRow = {
+  product_id: DbId;
+  product_name: string;
+  normalized_name: string;
+  is_active: boolean;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type UseContextRow = {
+  use_context_id: DbId;
+  use_context_name: string;
+  normalized_name: string;
+  is_active: boolean;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type EntityPathRow = {
+  entity_path_id: DbId;
+  domain_id: DbId;
+  category_id: DbId | null;
+  brand_id: DbId | null;
+  product_id: DbId | null;
+  use_context_id: DbId | null;
+  path_type: EntityPathType;
+  is_active: boolean;
+  created_at: Date;
+  updated_at: Date;
+};
 
 export type AnalysisRunRow = {
-  analysis_run_id: number;
-  domain_id: number;
-  request_payload: unknown;
-  status: AnalysisRunStatus;
-  created_on: Date;
-  updated_on: Date;
-  is_active: boolean;
+  analysis_run_id: DbId;
+  idempotency_key: string;
+  anonymous_session_id: DbId | null;
+  user_id: DbId | null;
+  workspace_id: DbId | null;
+  starting_entity_path_id: DbId;
+  source: AnalysisRunSource;
+  status: AnalysisExecutionStatus;
+  request_payload: JsonObject;
+  error_code: string | null;
+  error_message: string | null;
+  started_at: Date | null;
+  completed_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
 };
-
-export type AnalysisRunInput = {
-  domainId: number;
-  requestPayload: unknown;
-  status?: AnalysisRunStatus;
-};
-
-export type AnalysisRunFilters = {
-  domainId?: number;
-  status?: AnalysisRunStatus;
-  limit?: number;
-  offset?: number;
-};
-
-export type AnalysisRunItemStatus = "queued" | "processing" | "completed" | "failed" | "skipped" | "cancelled";
 
 export type AnalysisRunItemRow = {
-  run_item_id: number;
-  analysis_run_id: number;
-  path_id: number;
-  status: AnalysisRunItemStatus;
-  created_on: Date;
-  updated_on: Date;
-  is_active: boolean;
-};
-
-export type AnalysisRunItemWithPathRow = AnalysisRunItemRow & EntityPathRow;
-
-export type AnalysisRunItemsInput = {
-  analysisRunId: number;
-  pathIds: number[];
-};
-
-export type ProviderAnalysisInput = {
-  analysisRunId?: number;
-  domainId: number;
-  llmName: ProviderName;
-  topK: TopKValue;
-  rankPosition: number | null;
-  mentionCount: number;
-  score: number;
-  status: ProviderStatus;
-  errorMessage: string | null;
-};
-
-export type ProviderAnalysisStatusRow = {
-  llm_name: ProviderName;
-  status: ProviderStatus;
+  analysis_run_item_id: DbId;
+  idempotency_key: string;
+  analysis_run_id: DbId;
+  entity_path_id: DbId;
+  item_ordinal: number;
+  status: AnalysisExecutionStatus;
+  error_code: string | null;
   error_message: string | null;
-};
-
-export type ProviderAnalysisScoreRow = {
-  llm_name: ProviderName;
-  top_k: TopKValue;
-  rank_position: number | null;
-  mention_count: number;
-  score: string;
-  status: ProviderStatus;
-};
-
-export type ProviderLatestScoreRow = {
-  id: number;
-  domain_id: number;
-  llm_name: ProviderName;
-  top_k: TopKValue;
-  rank_position: number | null;
-  mention_count: number;
-  score: string;
-  status: ProviderStatus;
-  error_message: string | null;
-  last_run: Date;
-  updated_at: Date;
-};
-
-export type ProviderSnapshotRow = {
-  id: number;
-  domain_id: number;
-  analysis_run_id: number | null;
-  llm_name: ProviderName;
-  top_k: TopKValue;
-  rank_position: number | null;
-  mention_count: number;
-  score: string;
-  status: ProviderStatus;
-  error_message: string | null;
-  created_at: Date;
-};
-
-export type LatestProviderSnapshotRow = Pick<
-  ProviderSnapshotRow,
-  "llm_name" | "top_k" | "mention_count" | "score" | "status"
->;
-
-export type VisibilityScoreRow = {
-  id: number;
-  domain_id: number;
-  analysis_run_id: number | null;
-  openai_score: number;
-  gemini_score: number;
-  claude_score: number;
-  coverage_score: number;
-  consistency_score: number;
-  mention_frequency_score: number;
-  overall_geo_score: number;
-  created_at: Date;
-};
-
-export type AnalysisDiffType =
-  | "visibility_score_dropped"
-  | "brand_rank_changed"
-  | "provider_mention_disappeared"
-  | "provider_recovered";
-
-export type AnalysisDiffSeverity = "info" | "warning" | "critical";
-
-export type AnalysisDiffRow = {
-  id: number;
-  domain_id: number;
-  analysis_run_id: number;
-  previous_analysis_run_id: number | null;
-  diff_type: AnalysisDiffType;
-  provider: ProviderName | null;
-  old_value: unknown;
-  new_value: unknown;
-  severity: AnalysisDiffSeverity;
-  created_at: Date;
-};
-
-export type AnalysisDiffInput = {
-  domainId: number;
-  analysisRunId: number;
-  previousAnalysisRunId: number | null;
-  diffType: AnalysisDiffType;
-  provider: ProviderName | null;
-  oldValue: unknown;
-  newValue: unknown;
-  severity: AnalysisDiffSeverity;
-};
-
-export type DomainScheduleCadence = "weekly";
-
-export type DomainScheduleRow = {
-  id: number;
-  domain_id: number;
-  domain: string;
-  cadence: DomainScheduleCadence;
-  enabled: boolean;
-  last_enqueued_at: Date | null;
-  next_run_at: Date;
+  started_at: Date | null;
+  completed_at: Date | null;
   created_at: Date;
   updated_at: Date;
 };
 
-export type DomainScheduleInput = {
-  domainId: number;
-  cadence: DomainScheduleCadence;
-  enabled: boolean;
-  nextRunAt: Date | null;
+export type LlmRunRow = {
+  llm_run_id: DbId;
+  idempotency_key: string;
+  analysis_run_item_id: DbId;
+  run_key: string;
+  status: AnalysisExecutionStatus;
+  error_code: string | null;
+  error_message: string | null;
+  started_at: Date | null;
+  completed_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
 };
 
-export type NotificationChannel = "log";
-export type NotificationStatus = "pending" | "sent" | "failed";
+export type PromptJobRow = {
+  prompt_job_id: DbId;
+  idempotency_key: string;
+  llm_run_id: DbId;
+  prompt_type: PromptType;
+  prompt_version: string;
+  status: JobStatus;
+  prompt_text: string;
+  input_payload: JsonObject;
+  priority: number;
+  attempt_count: number;
+  available_at: Date;
+  started_at: Date | null;
+  completed_at: Date | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type ProviderJobRow = {
+  provider_job_id: DbId;
+  idempotency_key: string;
+  prompt_job_id: DbId;
+  provider: ProviderName;
+  model: string;
+  status: JobStatus;
+  request_payload: JsonObject;
+  attempt_count: number;
+  max_attempts: number;
+  available_at: Date;
+  started_at: Date | null;
+  completed_at: Date | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type ProviderResultRow = {
+  provider_result_id: DbId;
+  idempotency_key: string;
+  provider_job_id: DbId;
+  provider: ProviderName;
+  status: ProviderResultStatus;
+  provider_request_id: string | null;
+  model_version: string | null;
+  raw_response: string;
+  parsed_response: JsonValue | null;
+  validation_errors: JsonValue[];
+  finish_reason: string | null;
+  latency_ms: number;
+  received_at: Date;
+  created_at: Date;
+};
+
+export type BudgetPolicyRow = {
+  budget_policy_id: DbId;
+  budget_scope: BudgetScope;
+  workspace_id: DbId | null;
+  provider: ProviderName;
+  limit_mode: BudgetLimitMode;
+  window_seconds: number;
+  token_limit: DbId | null;
+  cost_limit_micros: DbId | null;
+  currency_code: string;
+  is_enabled: boolean;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type TokenUsageRow = {
+  token_usage_id: DbId;
+  idempotency_key: string;
+  provider_job_id: DbId;
+  usage_kind: TokenUsageKind;
+  input_tokens: DbId;
+  output_tokens: DbId;
+  cached_tokens: DbId;
+  reasoning_tokens: DbId;
+  total_tokens: DbId;
+  cost_micros: DbId | null;
+  currency_code: string;
+  recorded_at: Date;
+  created_at: Date;
+};
+
+export type ProviderScoreRow = {
+  provider_score_id: DbId;
+  idempotency_key: string;
+  provider_result_id: DbId;
+  scoring_version: string;
+  score: NumericString;
+  score_components: JsonObject;
+  calculated_at: Date;
+  created_at: Date;
+};
+
+export type ReportRow = {
+  report_id: DbId;
+  idempotency_key: string;
+  analysis_run_id: DbId;
+  report_version: string;
+  status: ReportStatus;
+  report_data: JsonObject;
+  rendered_text: string | null;
+  generated_at: Date;
+  created_at: Date;
+};
+
+export type OutboxEventRow = {
+  outbox_event_id: DbId;
+  event_key: string;
+  aggregate_type: string;
+  aggregate_id: string;
+  event_type: string;
+  event_version: number;
+  payload: JsonObject;
+  headers: JsonObject;
+  status: OutboxStatus;
+  attempt_count: number;
+  available_at: Date;
+  locked_at: Date | null;
+  locked_by: string | null;
+  published_at: Date | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type FailureRecordRow = {
+  failure_record_id: DbId;
+  queue_name: string;
+  message_id: string;
+  aggregate_type: string | null;
+  aggregate_id: string | null;
+  attempt_number: number;
+  error_code: string | null;
+  error_message: string;
+  error_details: JsonObject;
+  status: FailureRecordStatus;
+  occurred_at: Date;
+  acknowledged_at: Date | null;
+  resolved_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+};
 
 export type NotificationRow = {
-  id: number;
-  domain_id: number;
-  analysis_diff_id: number;
+  notification_id: DbId;
+  idempotency_key: string;
+  user_id: DbId | null;
+  workspace_id: DbId | null;
+  analysis_run_id: DbId | null;
+  failure_record_id: DbId | null;
+  is_admin_notification: boolean;
   channel: NotificationChannel;
   status: NotificationStatus;
-  payload: unknown;
+  payload: JsonObject;
+  attempt_count: number;
+  available_at: Date;
+  sent_at: Date | null;
+  error_code: string | null;
   error_message: string | null;
   created_at: Date;
-  sent_at: Date | null;
+  updated_at: Date;
 };
 
-export type NotificationInput = {
-  domainId: number;
-  analysisDiffId: number;
-  channel: NotificationChannel;
-  payload: unknown;
+export type SchedulerJobRow = {
+  scheduler_job_id: DbId;
+  idempotency_key: string;
+  workspace_id: DbId;
+  created_by_user_id: DbId;
+  starting_entity_path_id: DbId;
+  job_name: string;
+  schedule_expression: string;
+  timezone: string;
+  status: SchedulerJobStatus;
+  request_payload: JsonObject;
+  next_run_at: Date;
+  last_enqueued_at: Date | null;
+  last_analysis_run_id: DbId | null;
+  created_at: Date;
+  updated_at: Date;
 };

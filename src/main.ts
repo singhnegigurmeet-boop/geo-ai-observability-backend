@@ -6,7 +6,7 @@ import { elasticsearch, pool, redisConnection } from "./container.js";
 const app = createApp();
 
 const server = app.listen(env.PORT, () => {
-  console.log(`GEO V6 Phase 0 shell listening on port ${env.PORT}`);
+  console.log(`GEO V6 Production Core shell listening on port ${env.PORT}`);
 });
 
 let shuttingDown = false;
