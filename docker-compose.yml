@@ -9,11 +9,6 @@ services:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
       REDIS_URL: redis://redis:6379
       ELASTICSEARCH_NODE: http://elasticsearch:9200
-      CACHE_TTL_SECONDS: 3600
-      ANALYSIS_STALE_HOURS: 24
-      PROVIDER_TIMEOUT_MS: 60000
-      PROVIDER_MAX_RETRIES: 3
-      USE_MOCK_PROVIDERS: "true"
     ports:
       - "4000:4000"
     depends_on:
@@ -22,24 +17,6 @@ services:
       redis:
         condition: service_healthy
       elasticsearch:
-        condition: service_healthy
-
-  migrate:
-    build: .
-    container_name: geo-migrate
-    command: node dist/db/migrate.js
-    environment:
-      NODE_ENV: development
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
-      CACHE_TTL_SECONDS: 3600
-      ANALYSIS_STALE_HOURS: 24
-      PROVIDER_TIMEOUT_MS: 60000
-      PROVIDER_MAX_RETRIES: 3
-      USE_MOCK_PROVIDERS: "true"
-    depends_on:
-      postgres:
         condition: service_healthy
 
   postgres:
