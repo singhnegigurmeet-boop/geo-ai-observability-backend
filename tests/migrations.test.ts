@@ -122,7 +122,7 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
     await pool.query(
       `
         INSERT INTO domains (normalized_domain, display_domain)
-        VALUES ($1, $1)
+        VALUES ($1, 'RAW-UNTRUSTED-DISPLAY')
       `,
       [retainedDomain]
     );
@@ -175,11 +175,19 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
     );
     assert.equal(laterRun.skipped.length, correctiveIndex + 1);
 
-    const retained = await pool.query<{ normalized_domain: string }>(
-      "SELECT normalized_domain FROM domains WHERE normalized_domain = $1",
+    const retained = await pool.query<{
+      normalized_domain: string;
+      display_domain: string | null;
+    }>(
+      `
+        SELECT normalized_domain, display_domain
+        FROM domains
+        WHERE normalized_domain = $1
+      `,
       [retainedDomain]
     );
     assert.equal(retained.rows[0]?.normalized_domain, retainedDomain);
+    assert.equal(retained.rows[0]?.display_domain, retainedDomain);
   });
 
   it("is a no-op on the second complete run", async () => {

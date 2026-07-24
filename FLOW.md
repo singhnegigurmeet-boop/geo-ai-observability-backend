@@ -21,7 +21,7 @@ POST /v1/analysis
   -> resolve anonymous or user/workspace ownership
   -> require Idempotency-Key
   -> validate a contiguous hierarchy request
-  -> normalize the domain
+  -> parse hostile input into a validated public ASCII hostname
   -> begin PostgreSQL transaction
   -> find/create normalized domain
   -> validate active DB-controlled hierarchy IDs
@@ -34,6 +34,10 @@ POST /v1/analysis
   -> return 202
 ```
 
+The raw domain is discarded at the input boundary. Bare hostnames and HTTP(S) URL-like values are reduced to a lowercase hostname after removing protocol, port, path, query, hash, and a leading `www.`. Instruction-like input, HTML/script forms, IPs, localhost/internal names, IDNs, and malformed labels are rejected.
+
+Only the normalized hostname is stored in `domains`, persisted in `analysis_runs.request_payload`, and returned by status reads. Outbox payloads contain IDs only.
+
 The normalized request persisted in `analysis_runs.request_payload` has fixed fields:
 
 ```text
@@ -45,6 +49,8 @@ useContextId
 ```
 
 Missing hierarchy IDs are stored as `null`. This canonical form makes casing and a trailing domain dot idempotently equivalent.
+
+Future network-fetch code must still resolve and validate destination addresses at fetch time and after redirects; normalization does not replace an SSRF-safe network policy.
 
 ## Idempotency
 

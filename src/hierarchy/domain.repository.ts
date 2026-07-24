@@ -18,15 +18,15 @@ export class DomainRepository {
     return result.rows[0] ?? null;
   }
 
-  async findOrCreate(normalizedDomain: string, displayDomain: string) {
+  async findOrCreate(normalizedDomain: string) {
     const inserted = await this.database.query<DomainRow>(
       `
         INSERT INTO domains (normalized_domain, display_domain)
-        VALUES ($1, $2)
+        VALUES ($1, $1)
         ON CONFLICT (normalized_domain) DO NOTHING
         RETURNING *
       `,
-      [normalizedDomain, displayDomain]
+      [normalizedDomain]
     );
     if (inserted.rows[0]) {
       return inserted.rows[0];

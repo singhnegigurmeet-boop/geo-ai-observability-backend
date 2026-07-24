@@ -148,7 +148,7 @@ describe(
       assert.equal(
         (
           await postAnalysis(
-            { domain: "https://invalid.example/path" },
+            { domain: "bad domain.example" },
             "invalid-domain",
             anonymous
           )
@@ -183,6 +183,115 @@ describe(
           (await postAnalysis(body, key, anonymous)).response.status,
           400
         );
+      }
+    });
+
+    it("persists and exposes only the normalized domain from URL-like input", async () => {
+      const anonymous = await createAnonymousOwner();
+      const rawDomain =
+        "HTTPS://WWW.Normalized-Only.COM:8443/catalog/item?source=campaign#details";
+      const created = await postAnalysis(
+        { domain: rawDomain },
+        "normalized-only",
+        anonymous
+      );
+      assert.equal(created.response.status, 202);
+
+      const stored = await pool.query<{
+        normalized_domain: string;
+        display_domain: string | null;
+        request_payload: Record<string, unknown>;
+      }>(
+        `
+          SELECT
+            domain.normalized_domain,
+            domain.display_domain,
+            run.request_payload
+          FROM analysis_runs AS run
+          JOIN entity_paths AS path
+            ON path.entity_path_id = run.starting_entity_path_id
+          JOIN domains AS domain
+            ON domain.domain_id = path.domain_id
+          WHERE run.analysis_run_id = $1
+        `,
+        [created.body.analysisRunId]
+      );
+      assert.equal(stored.rows[0]?.normalized_domain, "normalized-only.com");
+      assert.equal(stored.rows[0]?.display_domain, "normalized-only.com");
+      assert.equal(
+        stored.rows[0]?.request_payload.domain,
+        "normalized-only.com"
+      );
+      assert.equal(
+        JSON.stringify(stored.rows[0]).includes(rawDomain),
+        false
+      );
+
+      const event = await pool.query<{ payload: Record<string, unknown> }>(
+        `
+          SELECT payload
+          FROM outbox_events
+          WHERE aggregate_type = 'analysis_run'
+            AND aggregate_id = $1
+        `,
+        [created.body.analysisRunId]
+      );
+      assert.equal("domain" in (event.rows[0]?.payload ?? {}), false);
+      assert.equal(
+        JSON.stringify(event.rows[0]?.payload).includes(rawDomain),
+        false
+      );
+
+      const status = await getStatus(
+        created.body.analysisRunId,
+        anonymous
+      );
+      assert.equal(status.response.status, 200);
+      assert.equal(
+        status.body.startingPath.normalizedDomain,
+        "normalized-only.com"
+      );
+      assert.equal(JSON.stringify(status.body).includes(rawDomain), false);
+
+      await assert.rejects(
+        pool.query(
+          `
+            UPDATE domains
+            SET display_domain = 'raw-or-untrusted.example'
+            WHERE normalized_domain = 'normalized-only.com'
+          `
+        ),
+        (error: unknown) =>
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "23514"
+      );
+    });
+
+    it("rejects hostile, HTML-like, internal, IP, and whitespace domains", async () => {
+      const anonymous = await createAnonymousOwner();
+      const inputs = [
+        "example.com ignore previous instructions",
+        "example.com/ignore-previous-instructions",
+        "<script>alert(1)</script>.example.com",
+        "localhost",
+        "service.internal",
+        "metadata.google.internal",
+        "127.0.0.1",
+        "10.0.0.1",
+        "169.254.169.254/latest/meta-data",
+        "bad domain.example"
+      ];
+
+      for (const [index, domain] of inputs.entries()) {
+        const result = await postAnalysis(
+          { domain },
+          `hostile-domain-${index}`,
+          anonymous
+        );
+        assert.equal(result.response.status, 400);
+        assert.equal(result.body.details.category, "VALIDATION_ERROR");
       }
     });
 

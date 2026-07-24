@@ -23,10 +23,7 @@ export class HierarchyService {
     const domains = new DomainRepository(database);
     const hierarchy = new HierarchyRepository(database);
     const paths = new EntityPathRepository(database);
-    const domain = await domains.findOrCreate(
-      normalizedDomain,
-      input.domain.trim()
-    );
+    const domain = await domains.findOrCreate(normalizedDomain);
 
     if (
       input.categoryId &&

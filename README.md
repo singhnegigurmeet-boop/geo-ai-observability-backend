@@ -7,7 +7,7 @@ This branch contains the Phase 4 transactional analysis-submission slice for GEO
 - Production-safe PostgreSQL migrations and the frozen 26-table schema
 - PostgreSQL outbox-to-RabbitMQ delivery infrastructure
 - Opaque user and anonymous sessions with workspace ownership
-- Strict hostname-like domain normalization
+- Hostile-input-safe public ASCII domain normalization
 - Active DB-controlled hierarchy validation
 - Exact entity-path create/reuse
 - Owner-scoped, normalized-request idempotency
@@ -69,7 +69,13 @@ domain -> category -> brand -> product
 domain -> category -> brand -> product -> use_context
 ```
 
+The domain field accepts a bare hostname or HTTP(S) URL-like value. The input boundary removes protocol, credentials-free port, path, query, hash, a leading `www.`, and then validates the extracted public ASCII hostname. Instruction-like text, HTML/script-like input, IDNs/punycode, IP literals, localhost, and internal/reserved host suffixes are rejected.
+
+Only the normalized hostname is persisted in `domains`, `analysis_runs.request_payload`, and downstream status data. Raw domain input is never included in outbox messages or retained as `display_domain`.
+
 The API may create the normalized domain and exact selected `entity_path`. It never creates category, brand, product, or use-context master records. Deeper relationships must already be represented by active database-controlled paths.
+
+Any future crawler or fetcher must additionally resolve and revalidate every destination IP at request time and after redirects. Input normalization alone is not a complete SSRF boundary.
 
 An accepted or idempotently replayed request returns `202`:
 

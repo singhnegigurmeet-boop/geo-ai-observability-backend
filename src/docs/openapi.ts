@@ -143,7 +143,12 @@ export const openApiDocument = {
         additionalProperties: false,
         required: ["domain"],
         properties: {
-          domain: { type: "string", example: "example.com" },
+          domain: {
+            type: "string",
+            example: "https://www.example.com/catalog?source=campaign",
+            description:
+              "Bare hostname or HTTP(S) URL-like value. Only the normalized public ASCII hostname is retained."
+          },
           categoryId: { $ref: "#/components/schemas/DatabaseId" },
           brandId: { $ref: "#/components/schemas/DatabaseId" },
           productId: { $ref: "#/components/schemas/DatabaseId" },
