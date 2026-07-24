@@ -6,14 +6,6 @@ import type {
   UseContextRow
 } from "../types/database.types.js";
 
-export type HierarchyRelationship = {
-  domainId: string;
-  categoryId: string;
-  brandId?: string;
-  productId?: string;
-  useContextId?: string;
-};
-
 export class HierarchyRepository {
   constructor(private readonly database: DatabaseExecutor) {}
 
@@ -39,38 +31,6 @@ export class HierarchyRepository {
       "use_context_id",
       useContextId
     );
-  }
-
-  async relationshipExists(input: HierarchyRelationship) {
-    const conditions = [
-      "domain_id = $1",
-      "category_id = $2",
-      "is_active"
-    ];
-    const values: string[] = [input.domainId, input.categoryId];
-
-    for (const [column, value] of [
-      ["brand_id", input.brandId],
-      ["product_id", input.productId],
-      ["use_context_id", input.useContextId]
-    ] as const) {
-      if (value) {
-        values.push(value);
-        conditions.push(`${column} = $${values.length}`);
-      }
-    }
-
-    const result = await this.database.query<{ exists: boolean }>(
-      `
-        SELECT EXISTS (
-          SELECT 1
-          FROM entity_paths
-          WHERE ${conditions.join("\n            AND ")}
-        ) AS exists
-      `,
-      values
-    );
-    return result.rows[0]?.exists ?? false;
   }
 
   private async findActive<TRow extends Record<string, unknown>>(

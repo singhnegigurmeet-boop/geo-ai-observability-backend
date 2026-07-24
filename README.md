@@ -4,11 +4,11 @@ This branch contains the Phase 4 transactional analysis-submission slice for GEO
 
 ## Implemented
 
-- Production-safe PostgreSQL migrations and the frozen 26-table schema
+- Production-safe PostgreSQL migrations and the current 30-table schema
 - PostgreSQL outbox-to-RabbitMQ delivery infrastructure
 - Opaque user and anonymous sessions with workspace ownership
 - Hostile-input-safe public ASCII domain normalization
-- Active DB-controlled hierarchy validation
+- Explicit active hierarchy-relationship validation
 - Exact entity-path create/reuse
 - Owner-scoped, normalized-request idempotency
 - Transactional `analysis_runs` and `outbox_events` creation
@@ -73,7 +73,13 @@ The domain field accepts a bare hostname or HTTP(S) URL-like value. The input bo
 
 Only the normalized hostname is persisted in `domains`, `analysis_runs.request_payload`, and downstream status data. Raw domain input is never included in outbox messages or retained as `display_domain`.
 
-The API may create the normalized domain and exact selected `entity_path`. It never creates category, brand, product, or use-context master records. Deeper relationships must already be represented by active database-controlled paths.
+The original V6 core schema contained 26 public production tables. Phase 4.5 adds four relationship tables—`domain_categories`, `category_brands`, `brand_products`, and `product_use_contexts`—for a current total of 30.
+
+Categories, brands, products, and use contexts are controlled master records. The relationship tables define valid cascade relationships using IDs only. `entity_paths` materializes reusable concrete paths for analysis state and is not relationship authority.
+
+Normal analysis submission may create/reuse normalized domains and exact selected `entity_paths`. It never creates category, brand, product, or use-context masters, and it never creates relationship rows. Those relationships are admin/system/discovery-controlled.
+
+Future hierarchy expansion reads active relationship rows in deterministic admin-controlled order: `sort_order ASC NULLS LAST`, then relationship creation time and relationship ID.
 
 Any future crawler or fetcher must additionally resolve and revalidate every destination IP at request time and after redirects. Input normalization alone is not a complete SSRF boundary.
 

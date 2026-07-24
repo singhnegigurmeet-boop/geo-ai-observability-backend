@@ -24,8 +24,8 @@ POST /v1/analysis
   -> parse hostile input into a validated public ASCII hostname
   -> begin PostgreSQL transaction
   -> find/create normalized domain
-  -> validate active DB-controlled hierarchy IDs
-  -> prove deeper parent relationships through active entity_paths
+  -> validate active DB-controlled hierarchy masters
+  -> validate the explicit active relationship chain
   -> create/reuse exact starting entity_path
   -> derive owner-scoped idempotency key
   -> create/replay analysis_run
@@ -84,7 +84,27 @@ domain + category + brand + product
 domain + category + brand + product + use_context
 ```
 
-Categories, brands, products, and use contexts are DB-controlled master records. The API does not create them. Because those master tables do not contain parent foreign keys, deeper parentage is proven through existing active `entity_paths`.
+Categories, brands, products, and use contexts are DB-controlled master records. Explicit relationship tables define the valid cascade:
+
+```text
+domains
+  -> domain_categories
+  -> category_brands
+  -> brand_products
+  -> product_use_contexts
+```
+
+Normal analysis submission does not create master or relationship rows. It validates the controlled relationship chain, then creates/reuses only the exact selected `entity_path`.
+
+`entity_paths` is a reusable materialized path registry for analysis state; it is not hierarchy relationship authority. Existing historical paths remain valid, but migration `016` deliberately does not promote them into controlled relationship rows.
+
+Future expansion traverses active relationship rows using:
+
+```text
+sort_order ASC NULLS LAST
+created_at ASC
+relationship_id ASC
+```
 
 The selected exact path is created or reused. No expanded paths or `analysis_run_items` are produced.
 

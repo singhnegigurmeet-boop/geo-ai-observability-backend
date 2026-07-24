@@ -155,6 +155,50 @@ export type UseContextRow = {
   updated_at: Date;
 };
 
+export type DomainCategoryRow = {
+  domain_category_id: DbId;
+  domain_id: DbId;
+  category_id: DbId;
+  is_active: boolean;
+  sort_order: number | null;
+  source: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type CategoryBrandRow = {
+  category_brand_id: DbId;
+  domain_category_id: DbId;
+  brand_id: DbId;
+  is_active: boolean;
+  sort_order: number | null;
+  source: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type BrandProductRow = {
+  brand_product_id: DbId;
+  category_brand_id: DbId;
+  product_id: DbId;
+  is_active: boolean;
+  sort_order: number | null;
+  source: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type ProductUseContextRow = {
+  product_use_context_id: DbId;
+  brand_product_id: DbId;
+  use_context_id: DbId;
+  is_active: boolean;
+  sort_order: number | null;
+  source: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
 export type EntityPathRow = {
   entity_path_id: DbId;
   domain_id: DbId;

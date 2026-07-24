@@ -15,8 +15,11 @@ const expectedTables = [
   "analysis_runs",
   "anonymous_sessions",
   "brands",
+  "brand_products",
   "budget_policies",
   "categories",
+  "category_brands",
+  "domain_categories",
   "domains",
   "entity_paths",
   "failure_records",
@@ -28,6 +31,7 @@ const expectedTables = [
   "provider_jobs",
   "provider_results",
   "provider_scores",
+  "product_use_contexts",
   "reports",
   "scheduler_jobs",
   "token_usage",
@@ -126,6 +130,21 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       `,
       [retainedDomain]
     );
+    await pool.query(
+      `
+        WITH category AS (
+          INSERT INTO categories (category_name, normalized_name)
+          VALUES ('Historical Category', 'historical-category')
+          RETURNING category_id
+        )
+        INSERT INTO entity_paths (domain_id, category_id, path_type)
+        SELECT domain.domain_id, category.category_id, 'category'
+        FROM domains AS domain
+        CROSS JOIN category
+        WHERE domain.normalized_domain = $1
+      `,
+      [retainedDomain]
+    );
 
     const sourceDirectory = getDefaultMigrationsDirectory();
     const correctiveMigration = "013_seal_phase1_invariants.sql";
@@ -188,6 +207,10 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
     );
     assert.equal(retained.rows[0]?.normalized_domain, retainedDomain);
     assert.equal(retained.rows[0]?.display_domain, retainedDomain);
+    const relationshipBackfill = await pool.query<{ count: string }>(
+      "SELECT count(*) FROM domain_categories"
+    );
+    assert.equal(relationshipBackfill.rows[0]?.count, "0");
   });
 
   it("is a no-op on the second complete run", async () => {
@@ -200,7 +223,7 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
     assert.equal(result.skipped.length, migrationFilenames.length);
   });
 
-  it("creates exactly the 26 frozen production tables and no V5 tables", async () => {
+  it("creates exactly the 30 current production tables and no V5 tables", async () => {
     const result = await pool.query<{ table_name: string }>(`
       SELECT table_name
       FROM information_schema.tables

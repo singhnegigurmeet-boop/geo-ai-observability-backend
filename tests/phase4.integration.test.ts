@@ -894,6 +894,83 @@ async function seedHierarchy(pool: pg.Pool): Promise<HierarchyFixture> {
   const useContextA = contexts.rows[0]!.use_context_id;
   const useContextB = contexts.rows[1]!.use_context_id;
 
+  const domainCategories = await pool.query<{
+    domain_category_id: string;
+  }>(
+    `
+      INSERT INTO domain_categories (
+        domain_id,
+        category_id,
+        sort_order,
+        source
+      )
+      VALUES ($1, $2, 1, 'phase4-test'),
+             ($1, $3, 2, 'phase4-test')
+      RETURNING domain_category_id
+    `,
+    [domainId, categoryA, categoryB]
+  );
+  const categoryBrands = await pool.query<{
+    category_brand_id: string;
+  }>(
+    `
+      INSERT INTO category_brands (
+        domain_category_id,
+        brand_id,
+        sort_order,
+        source
+      )
+      VALUES ($1, $2, 1, 'phase4-test'),
+             ($3, $4, 2, 'phase4-test')
+      RETURNING category_brand_id
+    `,
+    [
+      domainCategories.rows[0]!.domain_category_id,
+      brandA,
+      domainCategories.rows[1]!.domain_category_id,
+      brandB
+    ]
+  );
+  const brandProducts = await pool.query<{
+    brand_product_id: string;
+  }>(
+    `
+      INSERT INTO brand_products (
+        category_brand_id,
+        product_id,
+        sort_order,
+        source
+      )
+      VALUES ($1, $2, 1, 'phase4-test'),
+             ($3, $4, 2, 'phase4-test')
+      RETURNING brand_product_id
+    `,
+    [
+      categoryBrands.rows[0]!.category_brand_id,
+      productA,
+      categoryBrands.rows[1]!.category_brand_id,
+      productB
+    ]
+  );
+  await pool.query(
+    `
+      INSERT INTO product_use_contexts (
+        brand_product_id,
+        use_context_id,
+        sort_order,
+        source
+      )
+      VALUES ($1, $2, 1, 'phase4-test'),
+             ($3, $4, 2, 'phase4-test')
+    `,
+    [
+      brandProducts.rows[0]!.brand_product_id,
+      useContextA,
+      brandProducts.rows[1]!.brand_product_id,
+      useContextB
+    ]
+  );
+
   const paths = await pool.query<{ entity_path_id: string }>(
     `
       INSERT INTO entity_paths (

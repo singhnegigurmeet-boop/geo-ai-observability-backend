@@ -4,6 +4,7 @@ import type { EntityPathType } from "../types/database.types.js";
 import { DomainRepository } from "./domain.repository.js";
 import { normalizeDomain } from "./domain-normalizer.js";
 import { EntityPathRepository } from "./entity-path.repository.js";
+import { HierarchyRelationshipsRepository } from "./hierarchy-relationships.repository.js";
 import { HierarchyRepository } from "./hierarchy.repository.js";
 
 export type ResolveStartingPathInput = {
@@ -14,6 +15,13 @@ export type ResolveStartingPathInput = {
   useContextId: string | null;
 };
 
+export type ValidatedHierarchyChain = {
+  domainCategoryId?: string;
+  categoryBrandId?: string;
+  brandProductId?: string;
+  productUseContextId?: string;
+};
+
 export class HierarchyService {
   async resolveStartingPath(
     database: DatabaseExecutor,
@@ -22,6 +30,7 @@ export class HierarchyService {
     const normalizedDomain = normalizeDomain(input.domain);
     const domains = new DomainRepository(database);
     const hierarchy = new HierarchyRepository(database);
+    const relationships = new HierarchyRelationshipsRepository(database);
     const paths = new EntityPathRepository(database);
     const domain = await domains.findOrCreate(normalizedDomain);
 
@@ -47,29 +56,51 @@ export class HierarchyService {
       throw notFound("Use context");
     }
 
+    const chain: ValidatedHierarchyChain = {};
+    if (input.categoryId) {
+      const domainCategory =
+        await relationships.findActiveDomainCategory(
+          domain.domain_id,
+          input.categoryId
+        );
+      if (!domainCategory) {
+        throw missingRelationship("Category");
+      }
+      chain.domainCategoryId = domainCategory.domain_category_id;
+    }
     if (input.brandId) {
-      await requireRelationship(hierarchy, "Brand", {
-        domainId: domain.domain_id,
-        categoryId: input.categoryId as string,
-        brandId: input.brandId
-      });
+      const categoryBrand =
+        await relationships.findActiveCategoryBrand(
+          chain.domainCategoryId as string,
+          input.brandId
+        );
+      if (!categoryBrand) {
+        throw missingRelationship("Brand");
+      }
+      chain.categoryBrandId = categoryBrand.category_brand_id;
     }
     if (input.productId) {
-      await requireRelationship(hierarchy, "Product", {
-        domainId: domain.domain_id,
-        categoryId: input.categoryId as string,
-        brandId: input.brandId as string,
-        productId: input.productId
-      });
+      const brandProduct =
+        await relationships.findActiveBrandProduct(
+          chain.categoryBrandId as string,
+          input.productId
+        );
+      if (!brandProduct) {
+        throw missingRelationship("Product");
+      }
+      chain.brandProductId = brandProduct.brand_product_id;
     }
     if (input.useContextId) {
-      await requireRelationship(hierarchy, "Use context", {
-        domainId: domain.domain_id,
-        categoryId: input.categoryId as string,
-        brandId: input.brandId as string,
-        productId: input.productId as string,
-        useContextId: input.useContextId
-      });
+      const productUseContext =
+        await relationships.findActiveProductUseContext(
+          chain.brandProductId as string,
+          input.useContextId
+        );
+      if (!productUseContext) {
+        throw missingRelationship("Use context");
+      }
+      chain.productUseContextId =
+        productUseContext.product_use_context_id;
     }
 
     const path = await paths.findOrCreate({
@@ -81,7 +112,7 @@ export class HierarchyService {
       pathType: pathTypeFor(input)
     });
 
-    return { domain, normalizedDomain, path };
+    return { domain, normalizedDomain, path, chain };
   }
 }
 
@@ -93,17 +124,11 @@ function pathTypeFor(input: ResolveStartingPathInput): EntityPathType {
   return "domain";
 }
 
-async function requireRelationship(
-  hierarchy: HierarchyRepository,
-  entityName: string,
-  input: Parameters<HierarchyRepository["relationshipExists"]>[0]
-) {
-  if (!(await hierarchy.relationshipExists(input))) {
-    throw new ApplicationError(
-      "VALIDATION_ERROR",
-      `${entityName} does not belong to the selected parent context`
-    );
-  }
+function missingRelationship(entityName: string) {
+  return new ApplicationError(
+    "VALIDATION_ERROR",
+    `${entityName} does not belong to the selected parent context`
+  );
 }
 
 function notFound(entityName: string) {
