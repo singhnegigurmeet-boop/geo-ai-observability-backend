@@ -1,21 +1,24 @@
 # GEO V6 Production Core Backend
 
-This branch contains the Phase 2 infrastructure and reliability core for GEO V6. PostgreSQL remains authoritative, and a standalone dispatcher delivers committed `outbox_events` to RabbitMQ. The HTTP runtime remains a health/docs shell with no business APIs.
+This branch contains the Phase 3 identity, session, and workspace ownership core for GEO V6. The HTTP runtime remains a health/docs shell: identity components are internal building blocks and are not exposed as APIs or mounted globally.
 
 ## Implemented
 
 - Production-safe PostgreSQL migrations and the frozen 26-table schema
-- `geo_meta.schema_migrations` checksum ledger
-- Durable RabbitMQ main and dead-letter exchanges
-- All 13 frozen queues and a dedicated technical DLQ for each queue
-- Typed ID-oriented queue envelopes
-- Persistent mandatory publishing with broker confirms
-- Transactional outbox claiming with `FOR UPDATE SKIP LOCKED`
-- Lease-based stale-dispatch recovery
-- Confirmed success transitions and database-owned retry backoff
-- Standalone dispatcher startup and graceful shutdown
+- PostgreSQL outbox-to-RabbitMQ delivery infrastructure
+- Opaque 256-bit user and anonymous session tokens
+- HMAC-SHA-256 token hashing; only hashes are stored
+- Transactional user, default-workspace, and owner-membership provisioning
+- Anonymous-session creation, lookup, row-locked claim, and idempotent re-claim
+- User-session lookup with expiry, revocation, and disabled-user checks
+- Workspace membership lookup and explicit role authorization
+- Framework-independent request ownership resolution
+- Thin opt-in Express ownership middleware
+- Stable identity error categories
 
-Outbox delivery is intentionally at least once. If a process loses its connection after RabbitMQ accepts a message but before PostgreSQL records success, the event can be republished after its lease expires. Future consumers must handle the unique envelope `messageId` idempotently and reload authoritative state from PostgreSQL.
+Anonymous sessions never receive synthetic user or workspace identifiers. An anonymous token continues to resolve as anonymous after a claim. User privileges require a valid user token, an explicit `X-Workspace-Id`, current membership, and—when an anonymous token is also supplied—a matching recorded claim.
+
+Raw session tokens are returned only when a session is created. They must not be logged or persisted by the server.
 
 ## Active HTTP Surface
 
@@ -25,11 +28,11 @@ GET /openapi.json
 GET /docs
 ```
 
-`/health` confirms only that the API process is running.
+Health and documentation remain unauthenticated. Ownership middleware is deliberately not mounted on the application; a future protected route must opt in explicitly.
 
 ## Local Setup
 
-Copy `.env.example` to `.env`, install dependencies, start infrastructure, and migrate:
+Copy `.env.example` to `.env`, set a private `SESSION_TOKEN_PEPPER` of at least 32 characters, install dependencies, start infrastructure, and migrate:
 
 ```bash
 npm install
@@ -44,7 +47,21 @@ npm run dev
 npm run outbox:dev
 ```
 
-The dispatcher declares RabbitMQ topology on connection. It does not create outbox events or execute business work.
+## Identity Credentials
+
+The ownership middleware recognizes these credentials when attached to a protected route:
+
+```text
+Authorization: Bearer <user-session-token>
+X-Workspace-Id: <workspace-id>
+X-Anonymous-Session-Token: <anonymous-session-token>
+```
+
+- Anonymous token only: anonymous context
+- User token plus workspace: logged-in workspace context
+- User token, workspace, and anonymous token: user context only when the anonymous claim matches
+- Workspace without user token: validation error
+- No credentials: rejected by protected middleware only
 
 ## Verification
 
@@ -56,29 +73,24 @@ npm test
 npm run build
 ```
 
-Run migration integration tests:
+Run database and messaging integration tests:
 
 ```bash
 npm run infra:test:up
 npm run test:migrations
-npm run infra:test:down
-```
-
-Run Phase 2 PostgreSQL/RabbitMQ integration tests:
-
-```bash
-npm run infra:test:up
 npm run test:phase2
+npm run test:phase3
 npm run infra:test:down
 ```
 
-Both integration launchers wait up to 30 seconds for required infrastructure. Test schema resets are guarded by a `_test` database-name suffix.
+The integration launchers wait for their dependencies. Test schema resets are guarded by a `_test` database-name suffix.
 
 ## Phase Boundary
 
-Phase 2 implements message transport and outbox delivery only. It does not add:
+Phase 3 does not add:
 
-- Analysis or other business APIs
+- Analysis or identity HTTP APIs
+- Globally mounted authentication or ownership middleware
 - RabbitMQ business consumers
 - Analysis, prompt, provider, scheduler, or notification workers
 - Provider integrations

@@ -2,9 +2,9 @@ export const openApiDocument = {
   openapi: "3.0.3",
   info: {
     title: "GEO V6 Production Core API",
-    version: "0.1.0-phase2",
+    version: "0.1.0-phase3",
     description:
-      "GEO V6 Production Core backend shell with PostgreSQL outbox-to-RabbitMQ infrastructure. Business APIs, consumers, workers, and providers remain intentionally unimplemented."
+      "GEO V6 Production Core backend shell with database, messaging, and internal identity/workspace ownership foundations. Identity middleware is not globally mounted and no business APIs, consumers, workers, or providers are exposed."
   },
   servers: [
     {

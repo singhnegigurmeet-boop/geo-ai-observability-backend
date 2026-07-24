@@ -1,74 +1,103 @@
-# Phase 2 Outbox Delivery Flow
+# Phase 3 Identity and Ownership Flow
 
 ## Process Boundaries
 
 ```text
 HTTP process
   -> health and OpenAPI endpoints only
+  -> ownership middleware available but not globally mounted
 
 Outbox dispatcher process
   -> PostgreSQL outbox repository
   -> RabbitMQ confirm publisher
 ```
 
-The HTTP process does not start the dispatcher. No business consumers or workers exist in Phase 2.
+No identity API, business consumer, or business worker exists in Phase 3.
 
-## Reliable Handoff
-
-Future business transactions will write authoritative state and an `outbox_events` row in the same PostgreSQL transaction.
+## Session Storage
 
 ```text
-PostgreSQL transaction commits
-  -> outbox event becomes pending
-  -> dispatcher claims event in a short transaction
-  -> event becomes publishing with a lease and incremented attempt
-  -> transaction commits
-  -> dispatcher publishes a persistent message
-  -> RabbitMQ confirms responsibility
-  -> dispatcher conditionally marks the owned lease published
+create session
+  -> generate 32 cryptographically random bytes
+  -> encode as an opaque base64url token
+  -> HMAC-SHA-256 with the configured server pepper
+  -> store only the token hash
+  -> return the raw token once
+
+resolve session
+  -> hash the presented token
+  -> load the authoritative PostgreSQL row
+  -> reject missing, expired, revoked, or disabled identity
 ```
 
-The database transaction is never held open while waiting for RabbitMQ.
+Raw tokens are credentials and must never be logged.
 
-## Claiming and Recovery
-
-Eligible rows are:
-
-- `pending` or `failed` with `available_at <= now()`
-- `publishing` with an expired `locked_at` lease
-
-Claims use `FOR UPDATE SKIP LOCKED`, allowing multiple dispatcher processes to divide work without selecting the same row. A failed publication clears its lease, records the error, and advances `available_at` with capped exponential backoff.
-
-Rows already marked `published` are never selected again. A crash between broker confirmation and the database success update can still produce a duplicate after lease recovery, so delivery semantics are at least once.
-
-## RabbitMQ Topology
+## User Provisioning
 
 ```text
-geo.v6.main (durable direct exchange)
-  -> 13 frozen durable quorum queues
-
-each main queue
-  -> geo.v6.dlx on rejected/non-requeued delivery
-  -> <main-queue>.dlq
+one PostgreSQL transaction
+  -> create user
+  -> create default workspace
+  -> create active owner membership
+  -> commit all or roll back all
 ```
 
-Routing keys are the frozen queue names. Outbox `headers.queueName` must contain one of those names. Messages contain stable identifiers and metadata; future workers must reload state from PostgreSQL.
+Workspace roles exist only on `workspace_members`.
 
-Publisher failure retries remain in PostgreSQL. Broker retry queues are deferred until consumer retry behavior is implemented and frozen.
-
-## Dispatcher Shutdown
+## Anonymous Claim
 
 ```text
-SIGINT or SIGTERM
-  -> abort polling
-  -> finish the current claimed batch
-  -> close RabbitMQ channel and connection
-  -> close PostgreSQL pool
+transaction begins
+  -> SELECT anonymous session FOR UPDATE
+  -> verify session is usable
+  -> reject a different existing claimant
+  -> verify the real user has current workspace membership
+  -> return unchanged for the same claimant (idempotent)
+  -> otherwise record claimed_by_user_id and claimed_workspace_id
+  -> commit
 ```
+
+The original `anonymous_session_id` is preserved. A claim does not upgrade the anonymous token into a user credential.
+
+## Ownership Resolution
+
+```text
+anonymous token
+  -> anonymous context only
+
+user token + X-Workspace-Id
+  -> validate user session
+  -> validate current workspace membership
+  -> user workspace context
+
+user token + X-Workspace-Id + anonymous token
+  -> validate both sessions
+  -> require anonymous claim to match that user and workspace
+  -> user workspace context with anonymous origin
+```
+
+`X-Workspace-Id` without a user token is invalid. Missing credentials are rejected only when a protected route mounts the ownership middleware; health and docs remain public.
+
+## Stable Error Categories
+
+```text
+UNAUTHENTICATED
+FORBIDDEN
+NOT_FOUND
+CONFLICT
+VALIDATION_ERROR
+EXPIRED_SESSION
+REVOKED_SESSION
+DISABLED_USER
+```
+
+## Existing Messaging Reliability
+
+PostgreSQL remains authoritative. The standalone outbox dispatcher publishes persistent, ID-oriented messages with broker confirms and PostgreSQL-owned retry state. RabbitMQ is transport only, and Phase 3 adds no consumers.
 
 ## Explicitly Not Implemented
 
-- Business APIs or application services
+- Analysis or identity APIs
 - RabbitMQ business consumers
 - Analysis or prompt workers
 - Provider execution

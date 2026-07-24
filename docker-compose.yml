@@ -10,6 +10,7 @@ services:
       REDIS_URL: redis://redis:6379
       ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
+      SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
     ports:
       - "4000:4000"
     depends_on:
@@ -34,6 +35,9 @@ services:
       RABBITMQ_EXCHANGE: geo.v6.main
       RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
       RABBITMQ_CONFIRM_TIMEOUT_MS: 10000
+      SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
+      USER_SESSION_TTL_SECONDS: 2592000
+      ANONYMOUS_SESSION_TTL_SECONDS: 604800
       OUTBOX_BATCH_SIZE: 25
       OUTBOX_POLL_INTERVAL_MS: 1000
       OUTBOX_LOCK_TIMEOUT_MS: 60000
