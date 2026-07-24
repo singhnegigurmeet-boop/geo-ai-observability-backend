@@ -14,6 +14,7 @@
     "test:migrations": "node scripts/run-migration-tests.mjs",
     "test:phase2": "node scripts/run-phase2-integration-tests.mjs",
     "test:phase3": "node scripts/run-phase3-integration-tests.mjs",
+    "test:phase4": "node scripts/run-phase4-integration-tests.mjs",
     "typecheck": "tsc --noEmit",
     "migrate": "tsx src/db/migrate.ts",
     "outbox:dev": "tsx watch src/outbox/main.ts",

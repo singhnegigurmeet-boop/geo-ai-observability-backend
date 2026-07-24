@@ -1,71 +1,120 @@
 # GEO V6 Production Core Backend
 
-This branch contains the Phase 3 identity, session, and workspace ownership core for GEO V6. The HTTP runtime remains a health/docs shell: identity components are internal building blocks and are not exposed as APIs or mounted globally.
+This branch contains the Phase 4 transactional analysis-submission slice for GEO V6. PostgreSQL remains authoritative. The API can accept an owned starting hierarchy path, create a queued `analysis_run`, and atomically create its `analysis_run.created` outbox event.
 
 ## Implemented
 
 - Production-safe PostgreSQL migrations and the frozen 26-table schema
 - PostgreSQL outbox-to-RabbitMQ delivery infrastructure
-- Opaque 256-bit user and anonymous session tokens
-- HMAC-SHA-256 token hashing; only hashes are stored
-- Transactional user, default-workspace, and owner-membership provisioning
-- Anonymous-session creation, lookup, row-locked claim, and idempotent re-claim
-- User-session lookup with expiry, revocation, and disabled-user checks
-- Workspace membership lookup and explicit role authorization
-- Framework-independent request ownership resolution
-- Thin opt-in Express ownership middleware
-- Stable identity error categories
+- Opaque user and anonymous sessions with workspace ownership
+- Strict hostname-like domain normalization
+- Active DB-controlled hierarchy validation
+- Exact entity-path create/reuse
+- Owner-scoped, normalized-request idempotency
+- Transactional `analysis_runs` and `outbox_events` creation
+- Owner-scoped queued-run status reads
 
-Anonymous sessions never receive synthetic user or workspace identifiers. An anonymous token continues to resolve as anonymous after a claim. User privileges require a valid user token, an explicit `X-Workspace-Id`, current membership, and—when an anonymous token is also supplied—a matching recorded claim.
+The Phase 4 API does not create `analysis_run_items`. Hierarchy expansion belongs to a future `analysis_run_worker`.
 
-Raw session tokens are returned only when a session is created. They must not be logged or persisted by the server.
-
-## Active HTTP Surface
+## HTTP Surface
 
 ```text
-GET /health
-GET /openapi.json
-GET /docs
+GET  /health
+GET  /openapi.json
+GET  /docs
+POST /v1/analysis
+GET  /v1/analysis/runs/:analysisRunId
 ```
 
-Health and documentation remain unauthenticated. Ownership middleware is deliberately not mounted on the application; a future protected route must opt in explicitly.
+Health and documentation are public. Both analysis routes mount ownership middleware locally and require either:
+
+```text
+X-Anonymous-Session-Token: <anonymous-token>
+```
+
+or:
+
+```text
+Authorization: Bearer <user-token>
+X-Workspace-Id: <workspace-id>
+```
+
+A validated claimed submission may also send the anonymous token with the user credentials. The recorded anonymous origin is preserved only when its claim matches that user and workspace.
+
+## Submit an Analysis
+
+`POST /v1/analysis` requires a client-generated idempotency key:
+
+```text
+Idempotency-Key: <stable-client-key>
+```
+
+Example body:
+
+```json
+{
+  "domain": "example.com",
+  "categoryId": "1",
+  "brandId": "2"
+}
+```
+
+The hierarchy must be contiguous:
+
+```text
+domain
+domain -> category
+domain -> category -> brand
+domain -> category -> brand -> product
+domain -> category -> brand -> product -> use_context
+```
+
+The API may create the normalized domain and exact selected `entity_path`. It never creates category, brand, product, or use-context master records. Deeper relationships must already be represented by active database-controlled paths.
+
+An accepted or idempotently replayed request returns `202`:
+
+```json
+{
+  "analysisRunId": "42",
+  "startingEntityPathId": "9",
+  "status": "queued",
+  "idempotentReplay": false,
+  "createdAt": "2026-07-24T10:00:00.000Z"
+}
+```
+
+Reusing a key for the same owner and normalized request returns the existing run. Reusing it for a different normalized request returns `409 CONFLICT`. The same client key may be used independently by another owner.
+
+## Reliable Handoff
+
+The run and outbox event are written in one PostgreSQL transaction:
+
+```text
+analysis_runs
+  + outbox_events (analysis_run.created)
+  -> COMMIT
+```
+
+The event is routed through `analysis_run_queue` and contains only run, path, and ownership identifiers. RabbitMQ transports the event; future workers must reload authoritative state from PostgreSQL.
 
 ## Local Setup
 
-Copy `.env.example` to `.env`, set a private `SESSION_TOKEN_PEPPER` of at least 32 characters, install dependencies, start infrastructure, and migrate:
+Copy `.env.example` to `.env`, set a private `SESSION_TOKEN_PEPPER`, then:
 
 ```bash
 npm install
 npm run infra:up
 npm run migrate
+npm run dev
 ```
 
-Start the HTTP shell and outbox dispatcher in separate terminals:
+Run the outbox dispatcher separately when delivery is needed:
 
 ```bash
-npm run dev
 npm run outbox:dev
 ```
 
-## Identity Credentials
-
-The ownership middleware recognizes these credentials when attached to a protected route:
-
-```text
-Authorization: Bearer <user-session-token>
-X-Workspace-Id: <workspace-id>
-X-Anonymous-Session-Token: <anonymous-session-token>
-```
-
-- Anonymous token only: anonymous context
-- User token plus workspace: logged-in workspace context
-- User token, workspace, and anonymous token: user context only when the anonymous claim matches
-- Workspace without user token: validation error
-- No credentials: rejected by protected middleware only
-
 ## Verification
-
-Run regular checks:
 
 ```bash
 npm run typecheck
@@ -73,25 +122,25 @@ npm test
 npm run build
 ```
 
-Run database and messaging integration tests:
+Integration suites:
 
 ```bash
 npm run infra:test:up
 npm run test:migrations
 npm run test:phase2
 npm run test:phase3
+npm run test:phase4
 npm run infra:test:down
 ```
 
-The integration launchers wait for their dependencies. Test schema resets are guarded by a `_test` database-name suffix.
+Integration launchers wait for their dependencies. Destructive test schema setup is guarded by a `_test` database suffix.
 
-## Phase Boundary
+## Not Implemented
 
-Phase 3 does not add:
-
-- Analysis or identity HTTP APIs
-- Globally mounted authentication or ownership middleware
 - RabbitMQ business consumers
-- Analysis, prompt, provider, scheduler, or notification workers
-- Provider integrations
-- Scoring or report generation
+- `analysis_run_worker` or `analysis_run_items` expansion
+- LLM runs or prompt jobs
+- Provider jobs, execution, or results
+- Budget enforcement
+- Scoring or reports
+- Scheduler or notification execution

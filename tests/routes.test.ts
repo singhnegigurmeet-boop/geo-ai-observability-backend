@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { Server } from "node:http";
 import { after, before, describe, it } from "node:test";
+import { Router } from "express";
 import { createApp } from "../src/app.js";
 
 describe("Production Core shell routes", () => {
@@ -8,8 +9,14 @@ describe("Production Core shell routes", () => {
   let baseUrl: string;
 
   before(async () => {
+    const protectedAnalysisRouter = Router();
+    protectedAnalysisRouter.use((_request, response) => {
+      response.status(401).json({ status: "error" });
+    });
     server = await new Promise<Server>((resolve) => {
-      const listeningServer = createApp().listen(0, "127.0.0.1", () => resolve(listeningServer));
+      const listeningServer = createApp({
+        analysisRouter: protectedAnalysisRouter
+      }).listen(0, "127.0.0.1", () => resolve(listeningServer));
     });
 
     const address = server.address();
@@ -40,7 +47,7 @@ describe("Production Core shell routes", () => {
     assert.deepEqual(await response.json(), { status: "ok" });
   });
 
-  it("GET /openapi.json documents only the shell health API", async () => {
+  it("GET /openapi.json documents the Phase 4 HTTP surface", async () => {
     const response = await fetch(`${baseUrl}/openapi.json`);
     const document = (await response.json()) as {
       info: { version: string };
@@ -48,8 +55,12 @@ describe("Production Core shell routes", () => {
     };
 
     assert.equal(response.status, 200);
-    assert.equal(document.info.version, "0.1.0-phase3");
-    assert.deepEqual(Object.keys(document.paths), ["/health"]);
+    assert.equal(document.info.version, "0.1.0-phase4");
+    assert.deepEqual(Object.keys(document.paths), [
+      "/health",
+      "/v1/analysis",
+      "/v1/analysis/runs/{analysisRunId}"
+    ]);
   });
 
   it("GET /docs serves Swagger UI", async () => {
@@ -61,11 +72,13 @@ describe("Production Core shell routes", () => {
     assert.match(body, /Swagger UI/);
   });
 
-  it("does not expose removed analysis or discovery APIs", async () => {
-    const analysisResponse = await fetch(`${baseUrl}/v1/analysis`);
+  it("protects analysis while leaving removed discovery unavailable", async () => {
+    const analysisResponse = await fetch(`${baseUrl}/v1/analysis`, {
+      method: "POST"
+    });
     const discoveryResponse = await fetch(`${baseUrl}/v1/discovery`);
 
-    assert.equal(analysisResponse.status, 404);
+    assert.equal(analysisResponse.status, 401);
     assert.equal(discoveryResponse.status, 404);
   });
 });

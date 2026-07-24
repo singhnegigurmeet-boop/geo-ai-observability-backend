@@ -1,9 +1,14 @@
 import type { Server } from "node:http";
 import { createApp } from "./app.js";
 import { env } from "./config/env.js";
-import { elasticsearch, pool, redisConnection } from "./container.js";
+import {
+  analysisRouter,
+  elasticsearch,
+  pool,
+  redisConnection
+} from "./container.js";
 
-const app = createApp();
+const app = createApp({ analysisRouter });
 
 const server = app.listen(env.PORT, () => {
   console.log(`GEO V6 Production Core shell listening on port ${env.PORT}`);
