@@ -1,77 +1,77 @@
-# Phase 1 Runtime and Migration Flow
+# Phase 2 Outbox Delivery Flow
 
-## HTTP Runtime
-
-```text
-src/main.ts
-  -> load validated environment
-  -> create shared PostgreSQL, Redis, and Elasticsearch clients
-  -> create Express app
-  -> expose health and documentation routes
-  -> listen on the configured port
-```
-
-The application does not run migrations automatically. It also does not start queues, workers, schedulers, provider calls, or analysis orchestration.
-
-## Migration Flow
+## Process Boundaries
 
 ```text
-npm run migrate
-  -> discover ordered NNN_name.sql files
-  -> acquire PostgreSQL advisory lock
-  -> create geo_meta.schema_migrations when absent
-  -> verify filenames and SHA-256 checksums of applied migrations
-  -> reject a non-empty legacy public schema on first initialization
-  -> apply each pending file in its own transaction
-  -> record the applied version, filename, checksum, and timestamp
-  -> release the advisory lock
+HTTP process
+  -> health and OpenAPI endpoints only
+
+Outbox dispatcher process
+  -> PostgreSQL outbox repository
+  -> RabbitMQ confirm publisher
 ```
 
-The ordered migrations create enums first, then the frozen 26 production tables, followed by integrity triggers and indexes. A second run skips every recorded migration without changing data.
+The HTTP process does not start the dispatcher. No business consumers or workers exist in Phase 2.
 
-## Production Data Path Encoded by the Schema
+## Reliable Handoff
+
+Future business transactions will write authoritative state and an `outbox_events` row in the same PostgreSQL transaction.
 
 ```text
-validated input
-  -> analysis_runs
-  -> entity_paths expansion
-  -> analysis_run_items
-  -> llm_runs
-  -> prompt_jobs
-  -> provider_jobs
-  -> provider_results
-  -> token_usage
-  -> provider_scores
-  -> reports
+PostgreSQL transaction commits
+  -> outbox event becomes pending
+  -> dispatcher claims event in a short transaction
+  -> event becomes publishing with a lease and incremented attempt
+  -> transaction commits
+  -> dispatcher publishes a persistent message
+  -> RabbitMQ confirms responsibility
+  -> dispatcher conditionally marks the owned lease published
 ```
 
-This is a database relationship contract only. Phase 1 does not implement the services that execute the flow.
+The database transaction is never held open while waiting for RabbitMQ.
 
-`outbox_events` provides the future reliable database-to-queue handoff boundary. RabbitMQ and outbox delivery are not implemented in this phase.
+## Claiming and Recovery
 
-## Ownership Contract
+Eligible rows are:
 
-- Anonymous activity uses `anonymous_sessions`, without fake user or workspace IDs.
-- Logged-in runs require both `user_id` and `workspace_id`, backed by workspace membership.
-- Claimed runs retain their original `anonymous_session_id` while gaining user/workspace ownership.
-- Workspace roles live in `workspace_members`; requested changes live in `workspace_role_change_requests`.
+- `pending` or `failed` with `available_at <= now()`
+- `publishing` with an expired `locked_at` lease
 
-## Shutdown
+Claims use `FOR UPDATE SKIP LOCKED`, allowing multiple dispatcher processes to divide work without selecting the same row. A failed publication clears its lease, records the error, and advances `available_at` with capped exponential backoff.
+
+Rows already marked `published` are never selected again. A crash between broker confirmation and the database success update can still produce a duplicate after lease recovery, so delivery semantics are at least once.
+
+## RabbitMQ Topology
+
+```text
+geo.v6.main (durable direct exchange)
+  -> 13 frozen durable quorum queues
+
+each main queue
+  -> geo.v6.dlx on rejected/non-requeued delivery
+  -> <main-queue>.dlq
+```
+
+Routing keys are the frozen queue names. Outbox `headers.queueName` must contain one of those names. Messages contain stable identifiers and metadata; future workers must reload state from PostgreSQL.
+
+Publisher failure retries remain in PostgreSQL. Broker retry queues are deferred until consumer retry behavior is implemented and frozen.
+
+## Dispatcher Shutdown
 
 ```text
 SIGINT or SIGTERM
-  -> stop accepting HTTP requests
-  -> close Redis client
+  -> abort polling
+  -> finish the current claimed batch
+  -> close RabbitMQ channel and connection
   -> close PostgreSQL pool
-  -> close Elasticsearch client
 ```
 
 ## Explicitly Not Implemented
 
-- V6 business APIs and application services
-- RabbitMQ or other queue runtime
-- Workers and providers
-- Analysis execution
+- Business APIs or application services
+- RabbitMQ business consumers
+- Analysis or prompt workers
+- Provider execution
 - Score computation
 - Report generation
 - Notification delivery

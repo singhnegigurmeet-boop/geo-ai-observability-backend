@@ -9,6 +9,7 @@ services:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
       REDIS_URL: redis://redis:6379
       ELASTICSEARCH_NODE: http://elasticsearch:9200
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
     ports:
       - "4000:4000"
     depends_on:
@@ -17,6 +18,31 @@ services:
       redis:
         condition: service_healthy
       elasticsearch:
+        condition: service_healthy
+
+  outbox-dispatcher:
+    build: .
+    container_name: geo-outbox-dispatcher
+    command: node dist/outbox/main.js
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_NODE: http://elasticsearch:9200
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
+      RABBITMQ_EXCHANGE: geo.v6.main
+      RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
+      RABBITMQ_CONFIRM_TIMEOUT_MS: 10000
+      OUTBOX_BATCH_SIZE: 25
+      OUTBOX_POLL_INTERVAL_MS: 1000
+      OUTBOX_LOCK_TIMEOUT_MS: 60000
+      OUTBOX_RETRY_BASE_MS: 1000
+      OUTBOX_RETRY_MAX_MS: 60000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
 
   postgres:
@@ -54,6 +80,37 @@ services:
       timeout: 5s
       retries: 20
 
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    container_name: geo-rabbitmq
+    hostname: geo-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  rabbitmq-test:
+    image: rabbitmq:4.1-management-alpine
+    container_name: geo-rabbitmq-test
+    hostname: geo-rabbitmq-test
+    profiles: ["test"]
+    ports:
+      - "5673:5672"
+      - "15673:15672"
+    tmpfs:
+      - /var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 2s
+      timeout: 10s
+      retries: 30
+
   redis:
     image: redis:7-alpine
     container_name: geo-redis
@@ -87,5 +144,6 @@ services:
 
 volumes:
   postgres_data:
+  rabbitmq_data:
   redis_data:
   elasticsearch_data:

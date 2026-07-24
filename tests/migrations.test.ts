@@ -128,12 +128,13 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
     );
 
     const sourceDirectory = getDefaultMigrationsDirectory();
-    const correctiveMigration = migrationFilenames.at(-1);
-    if (correctiveMigration !== "013_seal_phase1_invariants.sql") {
-      throw new Error("Expected 013_seal_phase1_invariants.sql to be the final migration");
+    const correctiveMigration = "013_seal_phase1_invariants.sql";
+    const correctiveIndex = migrationFilenames.indexOf(correctiveMigration);
+    if (correctiveIndex < 4) {
+      throw new Error("Expected the Phase 1 corrective migration after the first four migrations");
     }
 
-    for (const filename of migrationFilenames.slice(4, -1)) {
+    for (const filename of migrationFilenames.slice(4, correctiveIndex)) {
       await cp(
         path.join(sourceDirectory, filename),
         path.join(temporaryMigrationsDirectory, filename)
@@ -144,7 +145,7 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       pool,
       migrationsDirectory: temporaryMigrationsDirectory
     });
-    assert.equal(baselineRun.applied.length, migrationFilenames.length - 5);
+    assert.equal(baselineRun.applied.length, correctiveIndex - 4);
     assert.equal(baselineRun.skipped.length, 4);
 
     await cp(
@@ -156,7 +157,23 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       migrationsDirectory: temporaryMigrationsDirectory
     });
     assert.equal(correctiveRun.applied.length, 1);
-    assert.equal(correctiveRun.skipped.length, migrationFilenames.length - 1);
+    assert.equal(correctiveRun.skipped.length, correctiveIndex);
+
+    for (const filename of migrationFilenames.slice(correctiveIndex + 1)) {
+      await cp(
+        path.join(sourceDirectory, filename),
+        path.join(temporaryMigrationsDirectory, filename)
+      );
+    }
+    const laterRun = await runMigrations({
+      pool,
+      migrationsDirectory: temporaryMigrationsDirectory
+    });
+    assert.equal(
+      laterRun.applied.length,
+      migrationFilenames.length - correctiveIndex - 1
+    );
+    assert.equal(laterRun.skipped.length, correctiveIndex + 1);
 
     const retained = await pool.query<{ normalized_domain: string }>(
       "SELECT normalized_domain FROM domains WHERE normalized_domain = $1",

@@ -48,7 +48,7 @@ describe("Production Core shell routes", () => {
     };
 
     assert.equal(response.status, 200);
-    assert.equal(document.info.version, "0.1.0-phase1");
+    assert.equal(document.info.version, "0.1.0-phase2");
     assert.deepEqual(Object.keys(document.paths), ["/health"]);
   });
 
