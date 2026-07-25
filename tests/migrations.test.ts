@@ -8,6 +8,7 @@ import {
   getDefaultMigrationsDirectory,
   runMigrations
 } from "../src/db/migration-runner.js";
+import type { PromptJobRow } from "../src/types/database.types.js";
 
 const runDatabaseTests = process.env.RUN_MIGRATION_TESTS === "true";
 const expectedTables = [
@@ -178,7 +179,18 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
     assert.equal(correctiveRun.applied.length, 1);
     assert.equal(correctiveRun.skipped.length, correctiveIndex);
 
-    for (const filename of migrationFilenames.slice(correctiveIndex + 1)) {
+    const promptPlanningMigration =
+      "017_allow_unrendered_prompt_jobs.sql";
+    const promptPlanningIndex =
+      migrationFilenames.indexOf(promptPlanningMigration);
+    if (promptPlanningIndex <= correctiveIndex) {
+      throw new Error("Expected migration 017 after the Phase 1 corrective migration");
+    }
+
+    for (const filename of migrationFilenames.slice(
+      correctiveIndex + 1,
+      promptPlanningIndex
+    )) {
       await cp(
         path.join(sourceDirectory, filename),
         path.join(temporaryMigrationsDirectory, filename)
@@ -190,9 +202,83 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
     });
     assert.equal(
       laterRun.applied.length,
-      migrationFilenames.length - correctiveIndex - 1
+      promptPlanningIndex - correctiveIndex - 1
     );
     assert.equal(laterRun.skipped.length, correctiveIndex + 1);
+
+    const historicalPrompt = await pool.query<{ prompt_job_id: string }>(`
+      WITH anonymous_session AS (
+        INSERT INTO anonymous_sessions (token_hash, expires_at)
+        VALUES ('migration-017-anonymous', now() + interval '1 day')
+        RETURNING anonymous_session_id
+      ),
+      analysis_run AS (
+        INSERT INTO analysis_runs (
+          idempotency_key,
+          anonymous_session_id,
+          starting_entity_path_id,
+          request_payload
+        )
+        SELECT
+          'migration-017-run',
+          anonymous_session.anonymous_session_id,
+          path.entity_path_id,
+          '{}'::jsonb
+        FROM anonymous_session
+        CROSS JOIN LATERAL (
+          SELECT entity_path_id FROM entity_paths ORDER BY entity_path_id LIMIT 1
+        ) AS path
+        RETURNING analysis_run_id, starting_entity_path_id
+      ),
+      analysis_item AS (
+        INSERT INTO analysis_run_items (
+          idempotency_key,
+          analysis_run_id,
+          entity_path_id,
+          item_ordinal
+        )
+        SELECT
+          'migration-017-item',
+          analysis_run_id,
+          starting_entity_path_id,
+          0
+        FROM analysis_run
+        RETURNING analysis_run_item_id
+      ),
+      llm_run AS (
+        INSERT INTO llm_runs (idempotency_key, analysis_run_item_id)
+        SELECT 'migration-017-llm', analysis_run_item_id
+        FROM analysis_item
+        RETURNING llm_run_id
+      )
+      INSERT INTO prompt_jobs (
+        idempotency_key,
+        llm_run_id,
+        prompt_type,
+        prompt_version,
+        prompt_text
+      )
+      SELECT
+        'migration-017-rendered-prompt',
+        llm_run_id,
+        'ranking',
+        'v1',
+        'Existing rendered prompt'
+      FROM llm_run
+      RETURNING prompt_job_id
+    `);
+    assert.equal(historicalPrompt.rowCount, 1);
+
+    await cp(
+      path.join(sourceDirectory, promptPlanningMigration),
+      path.join(temporaryMigrationsDirectory, promptPlanningMigration)
+    );
+    const promptPlanningRun = await runMigrations({
+      pool,
+      migrationsDirectory: temporaryMigrationsDirectory
+    });
+    assert.equal(promptPlanningRun.applied.length, 1);
+    assert.equal(promptPlanningRun.skipped.length, promptPlanningIndex);
 
     const retained = await pool.query<{
       normalized_domain: string;
@@ -211,6 +297,17 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       "SELECT count(*) FROM domain_categories"
     );
     assert.equal(relationshipBackfill.rows[0]?.count, "0");
+    const retainedPrompt = await pool.query<{ prompt_text: string | null }>(
+      `
+        SELECT prompt_text
+        FROM prompt_jobs
+        WHERE idempotency_key = 'migration-017-rendered-prompt'
+      `
+    );
+    assert.equal(
+      retainedPrompt.rows[0]?.prompt_text,
+      "Existing rendered prompt"
+    );
   });
 
   it("is a no-op on the second complete run", async () => {
@@ -253,6 +350,66 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
         AND table_type = 'BASE TABLE'
     `);
     assert.deepEqual(decoyTables.rows, []);
+  });
+
+  it("allows null or nonblank prompt text and rejects blank rendered text", async () => {
+    const nullableContract: PromptJobRow["prompt_text"] = null;
+    assert.equal(nullableContract, null);
+
+    const llmRun = await pool.query<{ llm_run_id: string }>(
+      `
+        SELECT llm_run_id
+        FROM llm_runs
+        WHERE idempotency_key = 'migration-017-llm'
+      `
+    );
+    const llmRunId = llmRun.rows[0]!.llm_run_id;
+
+    await pool.query(
+      `
+        INSERT INTO prompt_jobs (
+          idempotency_key, llm_run_id, prompt_type, prompt_version, prompt_text
+        )
+        VALUES ('migration-017-null', $1, 'competitor', 'v1', NULL)
+      `,
+      [llmRunId]
+    );
+    for (const [key, type, text] of [
+      ["migration-017-empty", "visibility", ""],
+      ["migration-017-whitespace", "price_range", "   "]
+    ]) {
+      await assert.rejects(
+        pool.query(
+          `
+            INSERT INTO prompt_jobs (
+              idempotency_key,
+              llm_run_id,
+              prompt_type,
+              prompt_version,
+              prompt_text
+            )
+            VALUES ($1, $2, $3, 'v1', $4)
+          `,
+          [key, llmRunId, type, text]
+        ),
+        hasPostgresCode("23514")
+      );
+    }
+    await pool.query(
+      `
+        INSERT INTO prompt_jobs (
+          idempotency_key, llm_run_id, prompt_type, prompt_version, prompt_text
+        )
+        VALUES (
+          'migration-017-nonblank',
+          $1,
+          'pros_cons',
+          'v1',
+          'Real prompt text'
+        )
+      `,
+      [llmRunId]
+    );
   });
 
   it("enforces normalized-domain and entity-path hierarchy uniqueness", async () => {

@@ -1,4 +1,4 @@
-# Phase 6 LLM Run Creation Flow
+# Phase 7 Prompt Planning Flow
 
 ## Process Boundaries
 
@@ -20,6 +20,11 @@ Analysis run item worker process
   -> consume analysis_run_item_queue
   -> PostgreSQL locked item transaction
   -> llm_run.created outbox event
+
+LLM run worker process
+  -> consume llm_run_queue
+  -> PostgreSQL locked planning transaction
+  -> five prompt_job.created outbox events
 ```
 
 ## Submission
@@ -169,7 +174,9 @@ worker attempt 3
 
 The `x-worker-attempt` consumer header is independent of the queue envelope's outbox publication `attempt`. If failure recording or retry publication fails, the original delivery is requeued.
 
-The same reliable consumer implementation handles Phase 5 and Phase 6 with different fixed queue names. Phase 6 retries exhaust into `analysis_run_item_queue.dlq`.
+The same reliable consumer implementation handles Phases 5, 6, and 7 with different fixed queue names. Phase 6 retries exhaust into `analysis_run_item_queue.dlq`.
+
+Phase 7 uses that same runtime with the fixed `llm_run_queue`. Technical failures are recorded for attempts one through three and exhaust into `llm_run_queue.dlq`. Malformed messages are permanent failures; authoritative-state mismatches remain retryable technical failures.
 
 ## Phase 6 Item-to-LLM-Run
 
@@ -199,6 +206,45 @@ outbox event_key: llm_run.created:<llmRunId>
 The `llm_runs` row is only a control/planning unit linked to its analysis item. It contains no prompt text and no provider/model selection. The outbox payload contains only LLM-run, item, parent-run, path, starting-path, and ownership IDs. A claimed run remains a user-owned event while preserving its anonymous-session origin.
 
 Phase 6 does not update or complete the parent `analysis_run`. It creates no `prompt_jobs`, provider work/results, token usage, scores, reports, or budgets.
+
+## Phase 7 LLM-Run-to-Prompt Planning
+
+```text
+consume llm_run.created
+  -> validate strict ID-only envelope
+  -> begin PostgreSQL transaction
+  -> SELECT llm_run FOR UPDATE
+  -> non-queued LLM run: idempotent no-op
+  -> load parent analysis_run_item and analysis_run
+  -> load active item entity_path
+  -> validate item, run, path, starting path, and ownership IDs
+  -> create/reuse five pending, unrendered prompt_jobs
+  -> create/reuse one prompt_job.created outbox event per job
+  -> mark llm_run processing
+  -> commit
+  -> acknowledge delivery
+```
+
+The plan is fixed for both anonymous and user-owned work:
+
+```text
+competitor  v1 -> competitor_prompt_queue
+ranking     v1 -> ranking_prompt_queue
+visibility  v1 -> visibility_prompt_queue
+price_range v1 -> price_range_prompt_queue
+pros_cons   v1 -> pros_cons_prompt_queue
+```
+
+Stable identities:
+
+```text
+prompt job: prompt_job:<llmRunId>:<promptType>:v1
+outbox:     prompt_job.created:<promptJobId>
+```
+
+`prompt_text` is deliberately `NULL` at this stage. Migration `017` makes that state legal while retaining a null-or-nonblank database constraint. Each outbox payload contains only IDs, ownership fields, prompt type/version, and routing metadata. It contains no prompt text, domain text, provider configuration, or model choice.
+
+Phase 7 does not update the parent item or analysis run and creates no provider jobs/results, token usage, scores, reports, budgets, scheduler jobs, or notifications.
 
 ## Ownership Storage
 
@@ -251,7 +297,7 @@ No submitted domain text, prompt content, provider configuration, expanded item,
 
 ## Explicitly Deferred
 
-- Prompt creation, rendering, and prompt/model policy
+- Prompt rendering, templates, and dynamic prompt/model policy
 - Provider execution
 - Budget enforcement
 - Scoring and reports

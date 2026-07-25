@@ -1,6 +1,6 @@
 # GEO V6 Production Core Backend
 
-This branch contains the Phase 6 LLM-run control-unit slice for GEO V6. PostgreSQL remains authoritative. The API creates a queued run, Phase 5 expands it into concrete items, and Phase 6 creates exactly one LLM planning/control unit per item.
+This branch contains the Phase 7 prompt-planning slice for GEO V6. PostgreSQL remains authoritative. The API creates a queued run, Phase 5 expands it into concrete items, Phase 6 creates one LLM control unit per item, and Phase 7 plans the five downstream prompt jobs without rendering prompt text.
 
 ## Implemented
 
@@ -18,9 +18,11 @@ This branch contains the Phase 6 LLM-run control-unit slice for GEO V6. PostgreS
 - PostgreSQL idempotency, bounded worker retries, failure history, and DLQ routing
 - One `llm_run` per queued `analysis_run_item`
 - Transactional `llm_run.created` ID-only outbox events
-- Shared reliable RabbitMQ consumer runtime for both business workers
+- Five deterministic, unrendered `prompt_jobs` per queued `llm_run`
+- Transactional `prompt_job.created` routing events
+- Shared reliable RabbitMQ consumer runtime for all three business workers
 
-The Phase 4 API still does not create `analysis_run_items`; only the Phase 5 worker does. Phase 6 consumes those item events and does not create prompts or select providers/models.
+The Phase 4 API still does not create `analysis_run_items`; only the Phase 5 worker does. Phase 7 plans prompt work but does not render prompts, select providers/models, or execute provider calls.
 
 ## HTTP Surface
 
@@ -150,6 +152,16 @@ npm run analysis-item-worker:dev
 
 Phase 6 consumes `analysis_run_item.created`, locks the queued item, validates its parent run, path, and ownership against PostgreSQL, creates/reuses one queued `llm_run` with `run_key = primary`, and emits `llm_run.created` to `llm_run_queue`. The item then moves to `processing`; the parent analysis run is not completed or otherwise updated.
 
+Run the Phase 7 prompt-planning consumer separately:
+
+```bash
+npm run llm-run-worker:dev
+```
+
+Phase 7 consumes `llm_run.created`, reloads and locks the authoritative LLM run, validates its item, run, path, starting path, and ownership, then creates exactly five pending jobs in fixed order: competitor, ranking, visibility, price range, and pros/cons. Each job uses prompt version `v1`, has `prompt_text = NULL`, and emits a `prompt_job.created` event to its dedicated prompt queue. The LLM run then moves to `processing`; its parent item and analysis run are not updated.
+
+Migration `017_allow_unrendered_prompt_jobs.sql` permits `prompt_text` to be `NULL` while continuing to reject blank rendered text. Rendering remains a later phase.
+
 ## Verification
 
 ```bash
@@ -173,6 +185,7 @@ npm run test:phase4
 npm run test:phase45
 npm run test:phase5
 npm run test:phase6
+npm run test:phase7
 npm run infra:test:down
 ```
 
@@ -180,7 +193,7 @@ Integration launchers wait for their dependencies. Destructive test schema setup
 
 ## Not Implemented
 
-- Prompt jobs, rendering, templates, or prompt/model policy
+- Prompt rendering, templates, or dynamic prompt/model policy
 - Provider jobs, execution, or results
 - Budget enforcement
 - Scoring or reports

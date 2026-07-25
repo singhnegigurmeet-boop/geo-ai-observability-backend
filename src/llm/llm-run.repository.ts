@@ -1,5 +1,6 @@
 import type { DatabaseExecutor } from "../db/database-executor.js";
 import type {
+  AnalysisRunItemRow,
   AnalysisRunRow,
   EntityPathRow,
   LlmRunRow
@@ -12,6 +13,26 @@ export class LlmRunRepository {
     const result = await this.database.query<AnalysisRunRow>(
       "SELECT * FROM analysis_runs WHERE analysis_run_id = $1",
       [analysisRunId]
+    );
+    return result.rows[0] ?? null;
+  }
+
+  async findForUpdate(llmRunId: string) {
+    const result = await this.database.query<LlmRunRow>(
+      "SELECT * FROM llm_runs WHERE llm_run_id = $1 FOR UPDATE",
+      [llmRunId]
+    );
+    return result.rows[0] ?? null;
+  }
+
+  async findParentItem(analysisRunItemId: string) {
+    const result = await this.database.query<AnalysisRunItemRow>(
+      `
+        SELECT *
+        FROM analysis_run_items
+        WHERE analysis_run_item_id = $1
+      `,
+      [analysisRunItemId]
     );
     return result.rows[0] ?? null;
   }
@@ -58,5 +79,23 @@ export class LlmRunRepository {
       throw new Error("Existing LLM run violates its stable identity");
     }
     return existing.rows[0];
+  }
+
+  async markProcessing(llmRunId: string) {
+    const result = await this.database.query<LlmRunRow>(
+      `
+        UPDATE llm_runs
+        SET status = 'processing',
+            started_at = COALESCE(started_at, now()),
+            completed_at = NULL,
+            error_code = NULL,
+            error_message = NULL,
+            updated_at = now()
+        WHERE llm_run_id = $1 AND status = 'queued'
+        RETURNING *
+      `,
+      [llmRunId]
+    );
+    return result.rows[0] ?? null;
   }
 }

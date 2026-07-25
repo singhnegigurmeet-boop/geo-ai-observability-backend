@@ -266,7 +266,7 @@ export type PromptJobRow = {
   prompt_type: PromptType;
   prompt_version: string;
   status: JobStatus;
-  prompt_text: string;
+  prompt_text: string | null;
   input_payload: JsonObject;
   priority: number;
   attempt_count: number;
