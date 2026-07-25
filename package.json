@@ -24,7 +24,7 @@
     "test:phase10": "node scripts/run-phase10-integration-tests.mjs",
     "typecheck": "npm run typecheck:src && npm run typecheck:tests",
     "typecheck:src": "tsc --noEmit -p tsconfig.json",
-    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
+    "typecheck:tests": "tsc --noEmit -p tests/tsconfig.json",
     "migrate": "tsx src/db/migrate.ts",
     "outbox:dev": "tsx watch src/outbox/main.ts",
     "outbox:start": "node dist/outbox/main.js",
