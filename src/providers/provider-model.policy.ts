@@ -6,18 +6,29 @@ export const MOCK_MODELS = [
   "mock-quality"
 ] as const;
 
+export const REAL_PROVIDER_MODELS = {
+  openai: "gpt-4o-mini",
+  gemini: "gemini-1.5-flash",
+  claude: "claude-3-5-sonnet"
+} as const;
+
 export type MockModel = (typeof MOCK_MODELS)[number];
 
 export type ProviderModelSelection = {
-  provider: "mock";
-  model: MockModel;
-  queueName: "mock_queue";
+  provider: ProviderName;
+  model: string;
+  queueName:
+    | "mock_queue"
+    | "openai_queue"
+    | "gemini_queue"
+    | "claude_queue";
 };
 
 export type ProviderModelPolicyContext = {
   actorType: "anonymous" | "user";
   requestedProvider: ProviderName | null;
   requestedModel: string | null;
+  realProvidersEnabled?: boolean;
 };
 
 export class InvalidProviderModelSelectionError extends Error {
@@ -48,17 +59,29 @@ export function selectProviderModel(
 
   const provider = context.requestedProvider ?? "mock";
   const model = context.requestedModel ?? "mock-standard";
-  if (provider !== "mock") {
+  if (provider === "mock") {
+    if (!isMockModel(model)) {
+      throw new InvalidProviderModelSelectionError(
+        `Unsupported mock model: ${model}`
+      );
+    }
+    return { provider, model, queueName: "mock_queue" };
+  }
+  if (!context.realProvidersEnabled) {
     throw new InvalidProviderModelSelectionError(
-      "Only the mock provider is allowed in Phase 8"
+      "Real providers are disabled"
     );
   }
-  if (!isMockModel(model)) {
+  if (REAL_PROVIDER_MODELS[provider] !== model) {
     throw new InvalidProviderModelSelectionError(
-      `Unsupported mock model: ${model}`
+      `Unsupported ${provider} model: ${model}`
     );
   }
-  return { provider, model, queueName: "mock_queue" };
+  return {
+    provider,
+    model,
+    queueName: `${provider}_queue`
+  };
 }
 
 export function isMockModel(value: string): value is MockModel {

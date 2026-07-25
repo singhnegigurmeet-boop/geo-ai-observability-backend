@@ -13,10 +13,18 @@ const outputTokensByPrompt: Record<PromptType, number> = {
   pros_cons: 72
 };
 
-const modelOutputMultiplier: Record<string, number> = {
-  "mock-fast": 0.75,
-  "mock-standard": 1,
-  "mock-quality": 1.25
+const modelOutputMultiplier: Record<
+  ProviderName,
+  Record<string, number>
+> = {
+  mock: {
+    "mock-fast": 0.75,
+    "mock-standard": 1,
+    "mock-quality": 1.25
+  },
+  openai: { "gpt-4o-mini": 1 },
+  gemini: { "gemini-1.5-flash": 1 },
+  claude: { "claude-3-5-sonnet": 1.25 }
 };
 
 export class TokenEstimatorService {
@@ -30,10 +38,10 @@ export class TokenEstimatorService {
     if (!input.promptText.trim()) {
       throw new Error("Cannot estimate tokens for a blank prompt");
     }
-    const multiplier = modelOutputMultiplier[input.model];
-    if (input.provider !== "mock" || multiplier === undefined) {
+    const multiplier = modelOutputMultiplier[input.provider][input.model];
+    if (multiplier === undefined) {
       throw new Error(
-        `Phase 10 cannot estimate ${input.provider}/${input.model}`
+        `Cannot estimate ${input.provider}/${input.model}`
       );
     }
     const inputTokens = Math.max(1, Math.ceil(input.promptText.length / 4));
@@ -54,7 +62,9 @@ export class TokenEstimatorService {
       costMicros: estimateCostMicros({
         provider: input.provider,
         model: input.model,
-        totalTokens
+        totalTokens,
+        inputTokens,
+        outputTokens
       })
     };
   }

@@ -1,6 +1,6 @@
 # GEO V6 Production Core Backend
 
-This branch contains the Phase 10 provider-budget enforcement slice for GEO V6. PostgreSQL remains authoritative. Provider workers now reserve deterministic estimated usage before execution, reconcile accounting to immutable actual usage, and move work to the `paused_budget` business state before evidence is created when a provider budget is unavailable.
+This branch contains the Phase 11 real-provider execution slice for GEO V6. PostgreSQL remains authoritative. Allowlisted OpenAI, Gemini, Claude, and mock adapters execute only after the Phase 10 budget reservation; immutable provider evidence continues through backend-owned scoring and reporting.
 
 ## Implemented
 
@@ -32,8 +32,10 @@ This branch contains the Phase 10 provider-budget enforcement slice for GEO V6. 
 - Concurrency-safe hard limits and one-crossing-prompt soft limits using PostgreSQL policy locks
 - Budget pause propagation across provider deliveries, prompts, LLM runs, run items, and analysis runs
 - Shared reliable RabbitMQ consumer runtime across the business workers
+- Injectable REST adapters for OpenAI `gpt-4o-mini`, Gemini `gemini-1.5-flash`, and Claude `claude-3-5-sonnet`
+- Provider-specific queues, bounded timeouts, normalized evidence, usage extraction, and deterministic usage fallback
 
-Phase 10 does not call any external provider, use AI to generate reports, or implement billing. OpenAI, Gemini, and Claude queues remain declared for later implementation, but mock and scoring work never routes to them.
+Real providers are disabled by default. Phase 11 does not use provider output as a score/report, add provider racing/fallback, or implement billing.
 
 ## HTTP Surface
 
@@ -231,6 +233,22 @@ The prompt worker consumes all five prompt-type queues. It locks each pending jo
 
 The mock provider worker rejects unrendered prompts. For valid budget-approved work it stores deterministic evidence in immutable `provider_results`, records deterministic model-priced `actual` token usage in integer micros, and marks both jobs succeeded. Stable database identities make both stages safe under redelivery.
 
+## Phase 11 Real Providers
+
+Real provider selection is available only to logged-in/claimed requests when `ENABLE_REAL_PROVIDERS=true`, and only for these exact pairs:
+
+```text
+openai -> gpt-4o-mini
+gemini -> gemini-1.5-flash
+claude -> claude-3-5-sonnet
+```
+
+Anonymous work remains fixed on `mock/mock-fast`; the default user path remains `mock/mock-standard`. Start a configured worker with `npm run openai-provider-worker:dev`, `npm run gemini-provider-worker:dev`, or `npm run claude-provider-worker:dev`. Each requires its corresponding API key and uses its configured timeout.
+
+All adapters receive the already-rendered prompt. The provider worker reserves estimated usage under every applicable budget policy before making the HTTP call. Successful responses preserve raw JSON and normalized evidence in immutable `provider_results`. Provider-returned input/output usage is used when available; missing components fall back to the deterministic reservation estimate. Actual usage is locally priced in integer micros and replaces estimated usage in budget accounting.
+
+Timeouts, rate limits, network errors, and 5xx responses are retryable technical errors. Missing keys, invalid provider/model pairs, other 4xx responses, and malformed success responses are permanent technical errors. They follow the existing failure-record/retry/DLQ runtime; budget pause remains an acknowledged business state and never enters that path. Tests inject HTTP clients and make no real provider calls.
+
 Migration `018_require_rendered_prompt_for_provider_jobs.sql` enforces the render-before-provider invariant inside PostgreSQL, including direct inserts outside the service path.
 
 Migration `019_add_analysis_run_model_preference.sql` adds nullable run-level provider/model preference columns. New anonymous runs keep them null; new user/claimed runs persist the validated or default mock selection.
@@ -262,6 +280,7 @@ npm run test:phase7
 npm run test:phase8
 npm run test:phase9
 npm run test:phase10
+npm run test:phase11
 npm run infra:test:down
 ```
 
@@ -270,7 +289,7 @@ Integration launchers wait for their dependencies. Destructive test schema setup
 ## Not Implemented
 
 - Dynamic prompt/model policy or prompt experimentation
-- Real OpenAI, Gemini, or Claude execution and provider fallback
+- Provider fallback, racing, or advanced comparison
 - Advanced billing, payments, and external pricing/tokenizer APIs
 - Advanced scoring science, premium reports, and report diffs
 - Scheduler or notification execution

@@ -1,6 +1,11 @@
 import "dotenv/config";
 import { z } from "zod";
 
+const optionalSecret = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(1).optional()
+);
+
 const envSchema = z
   .object({
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -17,6 +22,17 @@ const envSchema = z
     LLM_RUN_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
     PROMPT_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
     MOCK_PROVIDER_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
+    REAL_PROVIDER_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(5),
+    ENABLE_REAL_PROVIDERS: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    OPENAI_API_KEY: optionalSecret,
+    GEMINI_API_KEY: optionalSecret,
+    CLAUDE_API_KEY: optionalSecret,
+    OPENAI_TIMEOUT_MS: z.coerce.number().int().min(100).default(30_000),
+    GEMINI_TIMEOUT_MS: z.coerce.number().int().min(100).default(30_000),
+    CLAUDE_TIMEOUT_MS: z.coerce.number().int().min(100).default(30_000),
     SCORING_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
     SESSION_TOKEN_PEPPER: z.string().min(32),
     USER_SESSION_TTL_SECONDS: z.coerce.number().int().positive().default(2_592_000),

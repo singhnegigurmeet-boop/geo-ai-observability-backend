@@ -31,7 +31,11 @@ const runtimes: PromptWorkerRuntime[] = [];
 
 async function main() {
   const channel = await rabbitMq.getConfirmChannel();
-  const execution = new PromptExecutionService(pool);
+  const execution = new PromptExecutionService(
+    pool,
+    undefined,
+    env.ENABLE_REAL_PROVIDERS
+  );
   const failures = new FailureRecordRepository(pool);
   for (const [promptType, queueName] of promptRoutes) {
     const runtime = new PromptWorkerRuntime(

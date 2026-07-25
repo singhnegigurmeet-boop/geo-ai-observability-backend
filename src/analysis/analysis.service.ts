@@ -26,7 +26,8 @@ type AnalysisDatabase = DatabaseExecutor & TransactionPool;
 export class AnalysisService {
   constructor(
     private readonly database: AnalysisDatabase,
-    private readonly hierarchy: HierarchyService = new HierarchyService()
+    private readonly hierarchy: HierarchyService = new HierarchyService(),
+    private readonly realProvidersEnabled = false
   ) {}
 
   async create(
@@ -34,7 +35,11 @@ export class AnalysisService {
     clientIdempotencyKey: string,
     owner: OwnershipContext
   ): Promise<CreateAnalysisResponse> {
-    const modelPreference = resolveModelPreference(request, owner);
+    const modelPreference = resolveModelPreference(
+      request,
+      owner,
+      this.realProvidersEnabled
+    );
     return inTransaction(this.database, async (client) => {
       const resolved = await this.hierarchy.resolveStartingPath(client, {
         domain: request.domain,
@@ -212,13 +217,15 @@ function sameCanonicalRequest(
 
 function resolveModelPreference(
   request: CreateAnalysisRequest,
-  owner: OwnershipContext
+  owner: OwnershipContext,
+  realProvidersEnabled: boolean
 ) {
   try {
     const selection = selectProviderModel({
       actorType: owner.actorType,
       requestedProvider: request.preferredProvider ?? null,
-      requestedModel: request.preferredModel ?? null
+      requestedModel: request.preferredModel ?? null,
+      realProvidersEnabled
     });
     return owner.actorType === "anonymous"
       ? {

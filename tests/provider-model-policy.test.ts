@@ -63,4 +63,31 @@ describe("Phase 8 provider/model policy", () => {
       );
     }
   });
+
+  it("allows one exact real model per provider only when enabled", () => {
+    for (const [provider, model, queueName] of [
+      ["openai", "gpt-4o-mini", "openai_queue"],
+      ["gemini", "gemini-1.5-flash", "gemini_queue"],
+      ["claude", "claude-3-5-sonnet", "claude_queue"]
+    ] as const) {
+      assert.deepEqual(
+        selectProviderModel({
+          actorType: "user",
+          requestedProvider: provider,
+          requestedModel: model,
+          realProvidersEnabled: true
+        }),
+        { provider, model, queueName }
+      );
+      assert.throws(
+        () =>
+          selectProviderModel({
+            actorType: "user",
+            requestedProvider: provider,
+            requestedModel: model
+          }),
+        InvalidProviderModelSelectionError
+      );
+    }
+  });
 });

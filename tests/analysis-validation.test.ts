@@ -45,12 +45,20 @@ describe("analysis submission validation", () => {
     }
   });
 
-  it("accepts only the bounded Phase 8 mock preference fields", () => {
+  it("accepts only bounded provider/model preference pairs", () => {
     assert.equal(
       createAnalysisRequestSchema.safeParse({
         domain: "example.com",
         preferredProvider: "mock",
         preferredModel: "mock-quality"
+      }).success,
+      true
+    );
+    assert.equal(
+      createAnalysisRequestSchema.safeParse({
+        domain: "example.com",
+        preferredProvider: "openai",
+        preferredModel: "gpt-4o-mini"
       }).success,
       true
     );

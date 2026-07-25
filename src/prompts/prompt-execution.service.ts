@@ -32,7 +32,8 @@ export class PromptExecutionError extends Error {
 export class PromptExecutionService {
   constructor(
     private readonly database: PromptExecutionDatabase,
-    private readonly renderer = new PromptRendererService()
+    private readonly renderer = new PromptRendererService(),
+    private readonly realProvidersEnabled = false
   ) {}
 
   async execute(
@@ -91,7 +92,8 @@ export class PromptExecutionService {
       const selection = selectProviderModel({
         actorType,
         requestedProvider: state.requested_provider,
-        requestedModel: state.requested_model
+        requestedModel: state.requested_model,
+        realProvidersEnabled: this.realProvidersEnabled
       });
       const providerJob = await new ProviderJobRepository(
         client

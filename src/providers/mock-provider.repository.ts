@@ -20,7 +20,7 @@ export type MockProviderExecutionState = ProviderJobRow & {
 };
 
 export class MockProviderRepository {
-  constructor(private readonly database: DatabaseExecutor) {}
+  constructor(protected readonly database: DatabaseExecutor) {}
 
   async findForUpdate(providerJobId: string) {
     const result = await this.database.query<MockProviderExecutionState>(

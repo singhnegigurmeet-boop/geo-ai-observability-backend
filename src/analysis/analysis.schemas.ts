@@ -13,13 +13,60 @@ export const createAnalysisRequestSchema = z
     brandId: databaseId.optional(),
     productId: databaseId.optional(),
     useContextId: databaseId.optional(),
-    preferredProvider: z.literal("mock").optional(),
+    preferredProvider: z
+      .enum(["mock", "openai", "gemini", "claude"])
+      .optional(),
     preferredModel: z
-      .enum(["mock-fast", "mock-standard", "mock-quality"])
+      .enum([
+        "mock-fast",
+        "mock-standard",
+        "mock-quality",
+        "gpt-4o-mini",
+        "gemini-1.5-flash",
+        "claude-3-5-sonnet"
+      ])
       .optional()
   })
   .strict()
   .superRefine((value, context) => {
+    const modelProvider = value.preferredModel?.startsWith("mock-")
+      ? "mock"
+      : value.preferredModel === "gpt-4o-mini"
+        ? "openai"
+        : value.preferredModel === "gemini-1.5-flash"
+          ? "gemini"
+          : value.preferredModel === "claude-3-5-sonnet"
+            ? "claude"
+            : null;
+    if (
+      value.preferredProvider &&
+      value.preferredProvider !== "mock" &&
+      modelProvider !== value.preferredProvider
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["preferredModel"],
+        message: "Real provider selection requires its exact allowed model"
+      });
+    }
+    if (
+      modelProvider &&
+      value.preferredProvider &&
+      modelProvider !== value.preferredProvider
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["preferredModel"],
+        message: "preferredProvider and preferredModel must match"
+      });
+    }
+    if (modelProvider && modelProvider !== "mock" && !value.preferredProvider) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["preferredProvider"],
+        message: "preferredModel requires preferredProvider"
+      });
+    }
     if (value.brandId && !value.categoryId) {
       addDependencyIssue(context, "brandId", "categoryId");
     }

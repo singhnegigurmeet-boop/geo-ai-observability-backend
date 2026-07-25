@@ -744,7 +744,7 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
     await assert.rejects(
       pool.query(
         `UPDATE analysis_runs
-         SET requested_provider = 'openai', requested_model = 'gpt-4o-mini'
+         SET requested_provider = 'openai', requested_model = 'gemini-1.5-flash'
          WHERE analysis_run_id = $1`,
         [loggedInRun]
       ),
@@ -872,6 +872,61 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       ),
       hasPostgresCode("23514")
     );
+  });
+
+  it("allows only the Phase 11 provider/model pairs for owned runs", async () => {
+    const ownership = await getOwnershipFixture(pool);
+    const path = await getDomainEntityPath(pool);
+    for (const [provider, model] of [
+      ["openai", "gpt-4o-mini"],
+      ["gemini", "gemini-1.5-flash"],
+      ["claude", "claude-3-5-sonnet"]
+    ]) {
+      await pool.query(
+        `
+          INSERT INTO analysis_runs (
+            idempotency_key, user_id, workspace_id,
+            starting_entity_path_id, requested_provider,
+            requested_model, request_payload
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb)
+        `,
+        [
+          `phase11-model:${provider}`,
+          ownership.memberUserId,
+          ownership.workspaceId,
+          path.entityPathId,
+          provider,
+          model
+        ]
+      );
+    }
+    for (const [provider, model] of [
+      ["openai", "gemini-1.5-flash"],
+      ["gemini", "arbitrary-model"]
+    ]) {
+      await assert.rejects(
+        pool.query(
+          `
+            INSERT INTO analysis_runs (
+              idempotency_key, user_id, workspace_id,
+              starting_entity_path_id, requested_provider,
+              requested_model, request_payload
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb)
+          `,
+          [
+            `phase11-invalid:${provider}:${model}`,
+            ownership.memberUserId,
+            ownership.workspaceId,
+            path.entityPathId,
+            provider,
+            model
+          ]
+        ),
+        hasPostgresCode("23514")
+      );
+    }
   });
 
   it("enforces workflow idempotency and immutable provider evidence", async () => {

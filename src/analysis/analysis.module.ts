@@ -17,6 +17,7 @@ export type AnalysisModuleOptions = {
   sessionTokenPepper: string;
   userSessionTtlSeconds: number;
   anonymousSessionTtlSeconds: number;
+  realProvidersEnabled?: boolean;
 };
 
 export function createAnalysisModule(
@@ -43,7 +44,11 @@ export function createAnalysisModule(
       new WorkspaceMemberRepository(database)
     )
   );
-  const analyses = new AnalysisService(database);
+  const analyses = new AnalysisService(
+    database,
+    undefined,
+    options.realProvidersEnabled ?? false
+  );
   const controller = new AnalysisController(analyses);
 
   return createAnalysisRouter(

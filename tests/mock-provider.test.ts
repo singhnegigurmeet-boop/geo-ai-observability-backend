@@ -22,7 +22,7 @@ describe("provider_job.created validation and mock worker", () => {
     assert.deepEqual(received, envelope().payload);
   });
 
-  it("rejects malformed aggregate, provider, and model values", () => {
+  it("rejects malformed aggregate and provider/model pairs", () => {
     for (const invalid of [
       { ...envelope(), aggregateId: "999" },
       {

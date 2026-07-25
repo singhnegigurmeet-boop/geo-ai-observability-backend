@@ -33,7 +33,7 @@ describe("Phase 10 token and pricing estimation", () => {
     );
   });
 
-  it("uses integer micros and rejects providers without a Phase 10 policy", () => {
+  it("uses integer micros for mock and allowed real provider models", () => {
     assert.equal(
       estimateCostMicros({
         provider: "mock",
@@ -42,11 +42,21 @@ describe("Phase 10 token and pricing estimation", () => {
       }),
       4
     );
-    assert.throws(() =>
+    assert.equal(
       estimateCostMicros({
         provider: "openai",
         model: "gpt-4o-mini",
-        totalTokens: 100
+        inputTokens: 100,
+        outputTokens: 50
+      }),
+      45
+    );
+    assert.throws(() =>
+      estimateCostMicros({
+        provider: "openai",
+        model: "gemini-1.5-flash",
+        inputTokens: 100,
+        outputTokens: 50
       })
     );
   });

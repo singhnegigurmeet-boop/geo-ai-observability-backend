@@ -11,6 +11,7 @@ services:
       ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
+      ENABLE_REAL_PROVIDERS: ${ENABLE_REAL_PROVIDERS:-false}
     ports:
       - "4000:4000"
     depends_on:
@@ -130,6 +131,7 @@ services:
       RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
       RABBITMQ_CONFIRM_TIMEOUT_MS: 10000
       PROMPT_WORKER_PREFETCH: 10
+      ENABLE_REAL_PROVIDERS: ${ENABLE_REAL_PROVIDERS:-false}
       SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
     depends_on:
       postgres:
@@ -153,6 +155,69 @@ services:
       RABBITMQ_CONFIRM_TIMEOUT_MS: 10000
       MOCK_PROVIDER_WORKER_PREFETCH: 10
       SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  openai-provider-worker:
+    profiles: ["real-providers"]
+    build: .
+    command: node dist/provider-worker/main.js openai
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_NODE: http://elasticsearch:9200
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
+      SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
+      ENABLE_REAL_PROVIDERS: "true"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_TIMEOUT_MS: ${OPENAI_TIMEOUT_MS:-30000}
+      REAL_PROVIDER_WORKER_PREFETCH: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  gemini-provider-worker:
+    profiles: ["real-providers"]
+    build: .
+    command: node dist/provider-worker/main.js gemini
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_NODE: http://elasticsearch:9200
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
+      SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
+      ENABLE_REAL_PROVIDERS: "true"
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_TIMEOUT_MS: ${GEMINI_TIMEOUT_MS:-30000}
+      REAL_PROVIDER_WORKER_PREFETCH: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  claude-provider-worker:
+    profiles: ["real-providers"]
+    build: .
+    command: node dist/provider-worker/main.js claude
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_NODE: http://elasticsearch:9200
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
+      SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
+      ENABLE_REAL_PROVIDERS: "true"
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
+      CLAUDE_TIMEOUT_MS: ${CLAUDE_TIMEOUT_MS:-30000}
+      REAL_PROVIDER_WORKER_PREFETCH: 5
     depends_on:
       postgres:
         condition: service_healthy

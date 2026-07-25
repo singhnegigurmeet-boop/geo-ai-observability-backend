@@ -8,9 +8,9 @@ export const openApiDocument = {
   openapi: "3.0.3",
   info: {
     title: "GEO V6 Production Core API",
-    version: "0.1.0-phase10",
+    version: "0.1.0-phase11",
     description:
-      "GEO V6 Production Core through Phase 10. Provider/model-aware platform, workspace, user, anonymous-session, and analysis-run budgets are enforced before execution; exhaustion is exposed as paused_budget business state."
+      "GEO V6 Production Core through Phase 11. Allowlisted OpenAI, Gemini, Claude, and mock execution remains budget-gated; provider output is evidence and backend-v1 scoring/basic-v1 reports remain backend-owned."
   },
   servers: [
     {
@@ -189,12 +189,20 @@ export const openApiDocument = {
           useContextId: { $ref: "#/components/schemas/DatabaseId" },
           preferredProvider: {
             type: "string",
-            enum: ["mock"],
-            description: "Logged-in requests only. Omit for anonymous requests."
+            enum: ["mock", "openai", "gemini", "claude"],
+            description:
+              "Logged-in requests only. Real providers also require ENABLE_REAL_PROVIDERS=true."
           },
           preferredModel: {
             type: "string",
-            enum: ["mock-fast", "mock-standard", "mock-quality"],
+            enum: [
+              "mock-fast",
+              "mock-standard",
+              "mock-quality",
+              "gpt-4o-mini",
+              "gemini-1.5-flash",
+              "claude-3-5-sonnet"
+            ],
             description:
               "Logged-in requests only. Defaults to mock-standard."
           }

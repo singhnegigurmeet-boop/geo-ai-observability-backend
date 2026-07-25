@@ -2,7 +2,8 @@ import type {
   AnalysisExecutionStatus,
   AnalysisRunSource,
   EntityPathType,
-  JsonObject
+  JsonObject,
+  ProviderName
 } from "../types/database.types.js";
 
 export type CanonicalAnalysisRequest = JsonObject & {
@@ -11,7 +12,7 @@ export type CanonicalAnalysisRequest = JsonObject & {
   brandId: string | null;
   productId: string | null;
   useContextId: string | null;
-  requestedProvider: "mock" | null;
+  requestedProvider: ProviderName | null;
   requestedModel: string | null;
 };
 

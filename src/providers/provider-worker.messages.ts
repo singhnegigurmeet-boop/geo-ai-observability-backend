@@ -8,10 +8,24 @@ const payloadSchema = z
   .object({
     providerJobId: databaseId,
     promptJobId: databaseId,
-    provider: z.literal("mock"),
-    model: z.enum(["mock-fast", "mock-standard", "mock-quality"])
+    provider: z.enum(["mock", "openai", "gemini", "claude"]),
+    model: z.enum([
+      "mock-fast",
+      "mock-standard",
+      "mock-quality",
+      "gpt-4o-mini",
+      "gemini-1.5-flash",
+      "claude-3-5-sonnet"
+    ])
   })
   .strict();
+
+const allowedModels = {
+  mock: new Set(["mock-fast", "mock-standard", "mock-quality"]),
+  openai: new Set(["gpt-4o-mini"]),
+  gemini: new Set(["gemini-1.5-flash"]),
+  claude: new Set(["claude-3-5-sonnet"])
+} as const;
 
 const envelopeSchema = z
   .object({
@@ -29,6 +43,12 @@ const envelopeSchema = z
       context.addIssue({
         code: z.ZodIssueCode.custom,
         message: "aggregateId must match payload.providerJobId"
+      });
+    }
+    if (!allowedModels[message.payload.provider].has(message.payload.model)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "provider and model do not form an allowed pair"
       });
     }
   });

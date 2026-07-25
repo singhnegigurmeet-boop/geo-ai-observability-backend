@@ -332,7 +332,24 @@ consume provider_job.created from mock_queue
 
 Evidence uses `provider = mock`, the exact resolved model (`mock-fast`, `mock-standard`, or `mock-quality`), a structured evidence array, and no score or report fields. Actual mock usage uses a deterministic prompt-length estimate, fixed output tokens, and local model-specific integer micro-cost. The schema links usage to provider/model through `provider_jobs`; those values are not duplicated in `token_usage`.
 
-Technical failures roll the whole stage back and use the shared three-attempt retry/failure-record/DLQ behavior. Malformed messages are permanent failures. A budget rejection instead commits `paused_budget` state and returns normally, so the delivery is acknowledged without a failure record or DLQ. No external provider network calls occur.
+Technical failures roll the whole stage back and use the shared three-attempt retry/failure-record/DLQ behavior. Malformed messages are permanent failures. A budget rejection instead commits `paused_budget` state and returns normally, so the delivery is acknowledged without a failure record or DLQ.
+
+## Phase 11 Real Provider Execution
+
+```text
+openai_queue | gemini_queue | claude_queue
+  -> validate exact provider/model message and queue match
+  -> lock authoritative provider/prompt/run state
+  -> reserve against all applicable Phase 10 policies
+  -> resolve one enabled provider adapter
+  -> call its minimal text-generation REST endpoint with a bounded timeout
+  -> preserve raw JSON and normalize answer/refusal as evidence
+  -> use returned token usage or deterministic per-component fallback
+  -> store immutable actual usage with local integer-micro pricing
+  -> emit the existing provider_result.created scoring event
+```
+
+The allowlist is `openai/gpt-4o-mini`, `gemini/gemini-1.5-flash`, and `claude/claude-3-5-sonnet`. Real providers are disabled by default and never become the anonymous or user default. Valid refusals are evidence; adapters never compute scores or reports. Timeout, 429, network, and 5xx errors retry. Missing keys, invalid models, other 4xx responses, and malformed successful responses are permanent technical failures. All automated tests use injected clients and perform no real network calls.
 
 ## Phase 10 Budget Enforcement
 
@@ -455,7 +472,7 @@ No submitted domain text, prompt content, provider configuration, expanded item,
 
 ## Explicitly Deferred
 
-- Real provider execution and provider fallback
+- Provider fallback, racing, and advanced provider comparison
 - Advanced billing, payment integration, and external pricing/tokenizer APIs
 - Advanced scoring science, premium reports, and report diffs
 - Scheduler and notifications
