@@ -64,3 +64,23 @@ export type AnalysisRunStatusResponse = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type AnalysisReportRecord = {
+  analysis_run_id: string;
+  report_id: string;
+  report_version: string;
+  status: "completed" | "partial" | "failed";
+  report_data: JsonObject;
+  rendered_text: string | null;
+  generated_at: Date;
+};
+
+export type AnalysisReportResponse = {
+  analysisRunId: string;
+  reportId: string;
+  reportVersion: string;
+  status: "completed" | "partial" | "failed";
+  report: JsonObject;
+  renderedText: string | null;
+  generatedAt: string;
+};

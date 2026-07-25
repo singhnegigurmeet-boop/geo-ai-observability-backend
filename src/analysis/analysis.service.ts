@@ -16,6 +16,7 @@ import type { CreateAnalysisRequest } from "./analysis.schemas.js";
 import { AnalysisRepository } from "./analysis.repository.js";
 import type {
   AnalysisRunStatusResponse,
+  AnalysisReportResponse,
   CanonicalAnalysisRequest,
   CreateAnalysisResponse
 } from "./analysis.types.js";
@@ -130,6 +131,30 @@ export class AnalysisService {
       completedAt: toIso(record.completed_at),
       createdAt: record.created_at.toISOString(),
       updatedAt: record.updated_at.toISOString()
+    };
+  }
+
+  async getReport(
+    analysisRunId: string,
+    owner: OwnershipContext
+  ): Promise<AnalysisReportResponse> {
+    const record = await new AnalysisRepository(
+      this.database
+    ).findOwnedReport(analysisRunId, owner);
+    if (!record) {
+      throw new ApplicationError(
+        "NOT_FOUND",
+        "Completed basic report was not found"
+      );
+    }
+    return {
+      analysisRunId: record.analysis_run_id,
+      reportId: record.report_id,
+      reportVersion: record.report_version,
+      status: record.status,
+      report: record.report_data,
+      renderedText: record.rendered_text,
+      generatedAt: record.generated_at.toISOString()
     };
   }
 }

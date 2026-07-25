@@ -244,6 +244,32 @@ describe(
       assert.equal(usage[0]?.cost_micros, "0");
       assert.equal((await promptState(pool, fixture.promptJobId)).status, "succeeded");
       assert.equal((await providerJobs(pool, fixture.promptJobId))[0]?.status, "succeeded");
+      const scoreEvent = await pool.query<{
+        event_key: string;
+        payload: Record<string, unknown>;
+        headers: Record<string, unknown>;
+      }>(
+        `
+          SELECT event_key, payload, headers
+          FROM outbox_events
+          WHERE event_type = 'provider_result.created'
+            AND aggregate_id = $1
+        `,
+        [completed.providerResultId]
+      );
+      assert.equal(
+        scoreEvent.rows[0]?.event_key,
+        `provider_result.created:${completed.providerResultId}`
+      );
+      assert.deepEqual(scoreEvent.rows[0]?.headers, {
+        queueName: "scoring_queue"
+      });
+      assert.deepEqual(scoreEvent.rows[0]?.payload, {
+        providerResultId: completed.providerResultId,
+        providerJobId: planned.providerJobId,
+        promptJobId: fixture.promptJobId,
+        analysisRunId: fixture.runId
+      });
 
       assert.deepEqual(await new MockProviderService(pool).execute(payload), {
         outcome: "noop",

@@ -17,6 +17,7 @@ const envSchema = z
     LLM_RUN_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
     PROMPT_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
     MOCK_PROVIDER_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
+    SCORING_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
     SESSION_TOKEN_PEPPER: z.string().min(32),
     USER_SESSION_TTL_SECONDS: z.coerce.number().int().positive().default(2_592_000),
     ANONYMOUS_SESSION_TTL_SECONDS: z.coerce.number().int().positive().default(604_800),

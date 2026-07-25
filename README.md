@@ -1,6 +1,6 @@
 # GEO V6 Production Core Backend
 
-This branch contains the Phase 8 prompt-rendering and mock-provider slice for GEO V6. PostgreSQL remains authoritative. Phase 7 creates a reduced three-job plan for anonymous work and a richer five-job plan for user/claimed work. Phase 8 renders the selected versions and stores deterministic mock provider evidence.
+This branch contains the Phase 9 scoring and basic-report slice for GEO V6. PostgreSQL remains authoritative. Phase 8 stores immutable mock provider evidence; Phase 9 interprets that evidence with deterministic backend scoring and creates an ownership-protected basic report only when every planned prompt is scored.
 
 ## Implemented
 
@@ -24,9 +24,12 @@ This branch contains the Phase 8 prompt-rendering and mock-provider slice for GE
 - Policy-isolated anonymous/user mock-model selection
 - Idempotent provider jobs, immutable mock provider results, and actual token usage
 - A dedicated `mock_queue` and DLQ; mock work is never routed to a real-provider queue
+- ID-only `provider_result.created` events routed through a dedicated `scoring_queue` and DLQ
+- Immutable `backend-v1` provider scores computed independently of provider-supplied score fields
+- Idempotent `basic-v1` reports with prompt-type breakdown, provider/model provenance, and usage totals
 - Shared reliable RabbitMQ consumer runtime across the business workers
 
-Phase 8 does not call any external provider. OpenAI, Gemini, and Claude queues remain declared for later implementation, but no Phase 8 code publishes mock work to them or consumes them.
+Phase 9 does not call any external provider or use AI to generate reports. OpenAI, Gemini, and Claude queues remain declared for later implementation, but mock and scoring work never routes to them.
 
 ## HTTP Surface
 
@@ -36,9 +39,10 @@ GET  /openapi.json
 GET  /docs
 POST /v1/analysis
 GET  /v1/analysis/runs/:analysisRunId
+GET  /v1/analysis/runs/:analysisRunId/report
 ```
 
-Health and documentation are public. Both analysis routes mount ownership middleware locally and require either:
+Health and documentation are public. Analysis and report routes mount ownership middleware locally and require either:
 
 ```text
 X-Anonymous-Session-Token: <anonymous-token>
@@ -177,6 +181,24 @@ npm run llm-run-worker:dev
 ```
 
 Phase 7 consumes `llm_run.created`, reloads and locks the authoritative LLM run, validates its item, run, path, starting path, and ownership, then calls the actor-aware prompt policy. Anonymous work gets visibility, competitor, and ranking jobs at `v1_light`. Logged-in and valid claimed work gets visibility, competitor, ranking, price range, and pros/cons jobs at `v1`. Every planned job has `prompt_text = NULL` and emits `prompt_job.created` to its dedicated queue.
+
+Run the Phase 8 prompt and mock-provider consumers, followed by the Phase 9 scoring consumer:
+
+```bash
+npm run prompt-worker:dev
+npm run mock-provider-worker:dev
+npm run scoring-worker:dev
+```
+
+The scoring worker consumes ID-only `provider_result.created` events. It reloads immutable evidence from PostgreSQL, computes one versioned backend score, and checks report readiness from existing prompt jobs. Anonymous runs naturally complete after their three planned prompts; logged-in and claimed runs complete after their five planned prompts. No actor count is hardcoded in report aggregation.
+
+Retrieve a completed report with:
+
+```text
+GET /v1/analysis/runs/:analysisRunId/report
+```
+
+The same anonymous-session or user/workspace ownership rules used by status reads apply. A missing, incomplete, or differently owned report returns `404`.
 
 Migration `017_allow_unrendered_prompt_jobs.sql` permits the Phase 7 planned state (`prompt_text = NULL`) while continuing to reject blank rendered text. Phase 8 fills that field before creating provider work.
 

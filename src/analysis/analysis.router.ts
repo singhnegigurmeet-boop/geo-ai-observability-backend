@@ -26,6 +26,11 @@ export function createAnalysisRouter(
     validateParams(analysisRunParamsSchema),
     asyncApiHandler(controller.status)
   );
+  router.get(
+    "/runs/:analysisRunId/report",
+    validateParams(analysisRunParamsSchema),
+    asyncApiHandler(controller.report)
+  );
   return router;
 }
 

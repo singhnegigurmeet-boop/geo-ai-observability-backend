@@ -505,7 +505,6 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       ),
       hasPostgresCode("23505")
     );
-
     const hierarchy = await createHierarchyFixture(pool);
 
     await assert.rejects(
@@ -957,6 +956,16 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       ),
       hasPostgresCode("23505")
     );
+    await assert.rejects(
+      pool.query(
+        `
+          UPDATE provider_scores
+          SET score = 1
+          WHERE idempotency_key = 'score-workflow'
+        `
+      ),
+      hasPostgresCode("23514")
+    );
 
     await pool.query(
       `
@@ -986,6 +995,12 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
         [runId]
       ),
       hasPostgresCode("23505")
+    );
+    await assert.rejects(
+      pool.query(
+        "DELETE FROM reports WHERE idempotency_key = 'report-workflow'"
+      ),
+      hasPostgresCode("23514")
     );
 
     await pool.query(

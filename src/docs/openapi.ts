@@ -8,9 +8,9 @@ export const openApiDocument = {
   openapi: "3.0.3",
   info: {
     title: "GEO V6 Production Core API",
-    version: "0.1.0-phase8",
+    version: "0.1.0-phase9",
     description:
-      "GEO V6 Production Core through Phase 8. Analysis submission accepts bounded logged-in mock-model preference; scoring and reports remain unimplemented."
+      "GEO V6 Production Core through Phase 9. Stored provider evidence is interpreted by deterministic backend scoring and exposed through ownership-protected basic reports."
   },
   servers: [
     {
@@ -108,6 +108,40 @@ export const openApiDocument = {
           "401": { description: "Missing or invalid session" },
           "403": { description: "Workspace or claim access denied" },
           "404": { description: "Run not found for this owner" }
+        }
+      }
+    },
+    "/v1/analysis/runs/{analysisRunId}/report": {
+      get: {
+        tags: ["Analysis"],
+        summary: "Read an owned completed basic report",
+        description:
+          "Returns the immutable backend-generated basic-v1 report after every planned prompt has a valid provider result and backend score.",
+        security: ownershipSecurity,
+        parameters: [
+          {
+            name: "analysisRunId",
+            in: "path",
+            required: true,
+            schema: { type: "string", pattern: "^[1-9][0-9]*$" }
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Owned completed basic report",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AnalysisReportResponse"
+                }
+              }
+            }
+          },
+          "401": { description: "Missing or invalid session" },
+          "403": { description: "Workspace or claim access denied" },
+          "404": {
+            description: "Run is not owned by this actor or its report is not ready"
+          }
         }
       }
     }
@@ -227,6 +261,31 @@ export const openApiDocument = {
           },
           createdAt: { type: "string", format: "date-time" },
           updatedAt: { type: "string", format: "date-time" }
+        }
+      },
+      AnalysisReportResponse: {
+        type: "object",
+        required: [
+          "analysisRunId",
+          "reportId",
+          "reportVersion",
+          "status",
+          "report",
+          "renderedText",
+          "generatedAt"
+        ],
+        properties: {
+          analysisRunId: { $ref: "#/components/schemas/DatabaseId" },
+          reportId: { $ref: "#/components/schemas/DatabaseId" },
+          reportVersion: { type: "string", enum: ["basic-v1"] },
+          status: { type: "string", enum: ["completed"] },
+          report: {
+            type: "object",
+            description:
+              "Deterministic basic report with overallScore, prompt-type breakdown, providerModels, and token usage."
+          },
+          renderedText: { type: "string", nullable: true },
+          generatedAt: { type: "string", format: "date-time" }
         }
       },
       StartingEntityPath: {

@@ -11,6 +11,7 @@ export const QUEUE_NAMES = [
   "gemini_queue",
   "claude_queue",
   "mock_queue",
+  "scoring_queue",
   "scheduler_queue",
   "notification_queue"
 ] as const;

@@ -11,6 +11,7 @@ export type MockProviderExecutionState = ProviderJobRow & {
   prompt_status: string;
   prompt_text: string | null;
   prompt_type: PromptType;
+  analysis_run_id: string;
 };
 
 export class MockProviderRepository {
@@ -23,10 +24,15 @@ export class MockProviderRepository {
           provider_job.*,
           prompt.status AS prompt_status,
           prompt.prompt_text,
-          prompt.prompt_type
+          prompt.prompt_type,
+          item.analysis_run_id
         FROM provider_jobs AS provider_job
         JOIN prompt_jobs AS prompt
           ON prompt.prompt_job_id = provider_job.prompt_job_id
+        JOIN llm_runs AS llm
+          ON llm.llm_run_id = prompt.llm_run_id
+        JOIN analysis_run_items AS item
+          ON item.analysis_run_item_id = llm.analysis_run_item_id
         WHERE provider_job.provider_job_id = $1
         FOR UPDATE OF provider_job, prompt
       `,

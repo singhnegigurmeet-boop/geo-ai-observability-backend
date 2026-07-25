@@ -55,11 +55,12 @@ describe("Production Core shell routes", () => {
     };
 
     assert.equal(response.status, 200);
-    assert.equal(document.info.version, "0.1.0-phase8");
+    assert.equal(document.info.version, "0.1.0-phase9");
     assert.deepEqual(Object.keys(document.paths), [
       "/health",
       "/v1/analysis",
-      "/v1/analysis/runs/{analysisRunId}"
+      "/v1/analysis/runs/{analysisRunId}",
+      "/v1/analysis/runs/{analysisRunId}/report"
     ]);
   });
 

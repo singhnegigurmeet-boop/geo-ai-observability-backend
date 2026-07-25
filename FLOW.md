@@ -1,4 +1,4 @@
-# Phase 8 Prompt Rendering and Mock Evidence Flow
+# Phase 9 Backend Scoring and Basic Report Flow
 
 ## Process Boundaries
 
@@ -35,6 +35,14 @@ Mock provider worker process
   -> consume mock_queue
   -> PostgreSQL locked evidence transaction
   -> provider_results + actual token_usage
+  -> provider_result.created outbox event
+
+Provider score worker process
+  -> consume scoring_queue
+  -> PostgreSQL locked scoring transaction
+  -> immutable provider_scores
+  -> run-level report readiness check
+  -> immutable basic report when all planned prompts are scored
 ```
 
 ## Submission
@@ -312,6 +320,7 @@ consume provider_job.created from mock_queue
   -> verify provider/model and nonblank rendered prompt
   -> create/reuse immutable deterministic provider_result
   -> create/reuse deterministic actual token_usage
+  -> create/reuse ID-only provider_result.created outbox event
   -> mark provider_job and prompt_job succeeded
   -> commit
 ```
@@ -319,6 +328,39 @@ consume provider_job.created from mock_queue
 Evidence uses `provider = mock`, the exact resolved model (`mock-fast`, `mock-standard`, or `mock-quality`), a structured evidence array, and no score or report fields. Actual mock usage uses a deterministic prompt-length estimate, fixed output tokens, and zero cost. The schema links usage to provider/model through `provider_jobs`; those values are not duplicated in `token_usage`.
 
 Technical failures roll the whole stage back and use the shared three-attempt retry/failure-record/DLQ behavior. Malformed messages are permanent failures. No external provider network calls occur.
+
+## Phase 9 Backend Scoring and Reporting
+
+```text
+consume provider_result.created from scoring_queue
+  -> validate strict ID-only envelope
+  -> begin PostgreSQL transaction
+  -> lock provider_result, provider_job, and prompt_job
+  -> validate message IDs against authoritative state
+  -> require valid evidence and succeeded jobs
+  -> calculate deterministic backend-v1 prompt-type score
+  -> create/reuse immutable provider_score
+  -> lock analysis_run to serialize concurrent final-score events
+  -> count existing prompt_jobs and their valid versioned scores
+  -> if incomplete: commit score without a report
+  -> if complete: create/reuse immutable basic-v1 report
+  -> complete llm_runs, analysis_run_items, and analysis_run
+  -> commit
+```
+
+RabbitMQ carries provider-result, provider-job, prompt-job, and run IDs only. Evidence is reloaded from PostgreSQL. A provider-supplied `score` field is ignored; the backend formula uses a prompt-type baseline and bounded evidence confidence.
+
+Report readiness derives from the prompt jobs already planned for the run:
+
+```text
+anonymous plan -> three scored prompts
+user plan      -> five scored prompts
+claimed plan   -> five scored prompts
+```
+
+No actor-specific counts are duplicated in report code. Run-row locking and existing score/report uniqueness constraints make concurrent completion and redelivery safe. The basic report contains overall score, prompt-type breakdown, evidence counts, provider/model provenance, and actual usage totals. It is deterministic backend output, not AI-written content.
+
+`GET /v1/analysis/runs/:analysisRunId/report` applies the existing ownership rules and returns only the owned completed `basic-v1` report. An incomplete or differently owned report is not disclosed.
 
 ## Ownership Storage
 
@@ -333,7 +375,7 @@ validated claim
   -> preserved anonymous_session_id + user_id + workspace_id
 ```
 
-Anonymous status access requires the same anonymous session and an anonymous-only run. User status access requires the same user and workspace. Missing or mismatched runs return `NOT_FOUND`.
+Anonymous status/report access requires the same anonymous session and an anonymous-only run. User status/report access requires the same user and workspace. Missing or mismatched runs and reports return `NOT_FOUND`.
 
 ## Transactional Outbox
 
@@ -371,10 +413,9 @@ No submitted domain text, prompt content, provider configuration, expanded item,
 
 ## Explicitly Deferred
 
-- Dynamic prompt/model policy and prompt experimentation
 - Real provider execution and provider fallback
 - Budget enforcement
-- Scoring and reports
+- Advanced scoring science, premium reports, and report diffs
 - Scheduler and notifications
 - Redis cache, rate limiting, locks, and deduplication
 - Country, market, and global scope

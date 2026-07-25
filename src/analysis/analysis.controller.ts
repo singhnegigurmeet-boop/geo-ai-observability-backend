@@ -5,7 +5,10 @@ import type { CreateAnalysisRequest } from "./analysis.schemas.js";
 import { parseIdempotencyKey } from "./analysis.schemas.js";
 import type { AnalysisService } from "./analysis.service.js";
 
-type AnalysisServiceContract = Pick<AnalysisService, "create" | "getStatus">;
+type AnalysisServiceContract = Pick<
+  AnalysisService,
+  "create" | "getStatus" | "getReport"
+>;
 
 export class AnalysisController {
   constructor(private readonly analyses: AnalysisServiceContract) {}
@@ -26,6 +29,15 @@ export class AnalysisController {
   status = async (request: Request) => {
     const owner = requireOwnershipContext(request);
     const result = await this.analyses.getStatus(
+      request.params.analysisRunId as string,
+      owner
+    );
+    return apiResult(200, result);
+  };
+
+  report = async (request: Request) => {
+    const owner = requireOwnershipContext(request);
+    const result = await this.analyses.getReport(
       request.params.analysisRunId as string,
       owner
     );

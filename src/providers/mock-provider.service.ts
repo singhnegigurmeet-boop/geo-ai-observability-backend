@@ -3,6 +3,7 @@ import type {
   TransactionPool
 } from "../db/database-executor.js";
 import { inTransaction } from "../db/database-executor.js";
+import { OutboxEventWriterRepository } from "../outbox/outbox-event-writer.repository.js";
 import type { JsonObject } from "../types/database.types.js";
 import { MockProviderRepository } from "./mock-provider.repository.js";
 import { isMockModel } from "./provider-model.policy.js";
@@ -85,6 +86,20 @@ export class MockProviderService {
         providerJobId: state.provider_job_id,
         inputTokens: Math.max(1, Math.ceil(state.prompt_text.length / 4)),
         outputTokens: 32
+      });
+      await new OutboxEventWriterRepository(client).createOrReuse({
+        eventKey: `provider_result.created:${result.provider_result_id}`,
+        eventType: "provider_result.created",
+        eventVersion: 1,
+        aggregateType: "provider_result",
+        aggregateId: result.provider_result_id,
+        headers: { queueName: "scoring_queue" },
+        payload: {
+          providerResultId: result.provider_result_id,
+          providerJobId: state.provider_job_id,
+          promptJobId: state.prompt_job_id,
+          analysisRunId: state.analysis_run_id
+        }
       });
       if (
         !(await repository.markSucceeded(

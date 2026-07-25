@@ -159,6 +159,28 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  scoring-worker:
+    build: .
+    container_name: geo-scoring-worker
+    command: node dist/scoring-worker/main.js
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_NODE: http://elasticsearch:9200
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
+      RABBITMQ_EXCHANGE: geo.v6.main
+      RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
+      RABBITMQ_CONFIRM_TIMEOUT_MS: 10000
+      SCORING_WORKER_PREFETCH: 10
+      SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
   postgres:
     image: postgres:16-alpine
     container_name: geo-postgres

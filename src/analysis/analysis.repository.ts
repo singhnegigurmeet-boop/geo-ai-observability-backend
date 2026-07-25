@@ -5,7 +5,10 @@ import type {
   JsonObject,
   ProviderName
 } from "../types/database.types.js";
-import type { AnalysisRunStatusRecord } from "./analysis.types.js";
+import type {
+  AnalysisReportRecord,
+  AnalysisRunStatusRecord
+} from "./analysis.types.js";
 
 export type CreateAnalysisRunRecord = {
   idempotencyKey: string;
@@ -63,23 +66,7 @@ export class AnalysisRepository {
   }
 
   async findOwnedStatus(analysisRunId: string, owner: OwnershipContext) {
-    const ownership =
-      owner.actorType === "anonymous"
-        ? {
-            clause: `
-              run.anonymous_session_id = $2
-              AND run.user_id IS NULL
-              AND run.workspace_id IS NULL
-            `,
-            values: [analysisRunId, owner.anonymousSessionId]
-          }
-        : {
-            clause: `
-              run.user_id = $2
-              AND run.workspace_id = $3
-            `,
-            values: [analysisRunId, owner.userId, owner.workspaceId]
-          };
+    const ownership = ownedRunClause(analysisRunId, owner);
 
     const result = await this.database.query<AnalysisRunStatusRecord>(
       `
@@ -113,4 +100,50 @@ export class AnalysisRepository {
     );
     return result.rows[0] ?? null;
   }
+
+  async findOwnedReport(analysisRunId: string, owner: OwnershipContext) {
+    const ownership = ownedRunClause(analysisRunId, owner);
+    const result = await this.database.query<AnalysisReportRecord>(
+      `
+        SELECT
+          run.analysis_run_id,
+          report.report_id,
+          report.report_version,
+          report.status,
+          report.report_data,
+          report.rendered_text,
+          report.generated_at
+        FROM analysis_runs AS run
+        JOIN reports AS report
+          ON report.analysis_run_id = run.analysis_run_id
+         AND report.report_version = 'basic-v1'
+        WHERE run.analysis_run_id = $1
+          AND ${ownership.clause}
+      `,
+      ownership.values
+    );
+    return result.rows[0] ?? null;
+  }
+}
+
+function ownedRunClause(
+  analysisRunId: string,
+  owner: OwnershipContext
+) {
+  return owner.actorType === "anonymous"
+    ? {
+        clause: `
+          run.anonymous_session_id = $2
+          AND run.user_id IS NULL
+          AND run.workspace_id IS NULL
+        `,
+        values: [analysisRunId, owner.anonymousSessionId]
+      }
+    : {
+        clause: `
+          run.user_id = $2
+          AND run.workspace_id = $3
+        `,
+        values: [analysisRunId, owner.userId, owner.workspaceId]
+      };
 }

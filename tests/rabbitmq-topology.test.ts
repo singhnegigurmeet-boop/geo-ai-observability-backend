@@ -10,7 +10,7 @@ import {
 } from "../src/messaging/rabbitmq.topology.js";
 
 describe("RabbitMQ topology declaration", () => {
-  it("declares every production queue, including mock, with a dedicated DLQ", async () => {
+  it("declares every production queue, including mock and scoring, with a dedicated DLQ", async () => {
     const exchanges: Array<{ name: string; type: string; options: unknown }> = [];
     const queues: Array<{ name: string; options: Record<string, unknown> }> = [];
     const bindings: Array<{ queue: string; exchange: string; key: string }> = [];
@@ -45,6 +45,7 @@ describe("RabbitMQ topology declaration", () => {
     assert.equal(queues.length, QUEUE_NAMES.length * 2);
     assert.equal(bindings.length, QUEUE_NAMES.length * 2);
     assert.ok(QUEUE_NAMES.includes("mock_queue"));
+    assert.ok(QUEUE_NAMES.includes("scoring_queue"));
 
     for (const queueName of QUEUE_NAMES) {
       const dlqName = deadLetterQueueName(queueName);
