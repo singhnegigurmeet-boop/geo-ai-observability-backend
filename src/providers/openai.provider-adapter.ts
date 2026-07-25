@@ -64,7 +64,7 @@ export class OpenAiProviderAdapter implements ProviderAdapter {
     const content = stringAt(message?.content);
     const refusal = stringAt(message?.refusal);
     const text = content ?? refusal;
-    if (!choice || !message || text === null) throw malformed("OpenAI");
+    if (!choice || !message || text === null) throw malformed("OpenAI", raw);
     const usage = objectAt(raw.usage);
     return {
       rawResponse: raw,

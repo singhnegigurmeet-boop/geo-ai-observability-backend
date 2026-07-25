@@ -52,7 +52,7 @@ export class ProviderScoreRepository {
         JOIN analysis_run_items AS item
           ON item.analysis_run_item_id = llm.analysis_run_item_id
         WHERE result.provider_result_id = $1
-        FOR UPDATE OF result, job, prompt
+        FOR UPDATE OF result
       `,
       [providerResultId]
     );

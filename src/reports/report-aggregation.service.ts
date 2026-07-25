@@ -1,145 +1,255 @@
-import type { JsonObject, PromptType } from "../types/database.types.js";
+import type {
+  JsonObject,
+  PromptType,
+  ReportStatus
+} from "../types/database.types.js";
 import {
-  BASIC_REPORT_VERSION,
-  SCORING_VERSION,
-  type BasicReportData,
-  type ReportScoreRecord
+  MULTI_PROVIDER_REPORT_VERSION,
+  SCORING_VERSION
 } from "../scoring/score.types.js";
-import { ReportRepository } from "./report.repository.js";
+import {
+  ReportRepository,
+  type ReportExecutionRecord
+} from "./report.repository.js";
 
 export type ReportAggregationResult =
   | { outcome: "not_ready"; reportId: null }
-  | { outcome: "completed"; reportId: string; created: boolean };
+  | {
+      outcome: "snapshot";
+      reportId: string;
+      revision: number;
+      status: ReportStatus;
+      lifecycleState: string;
+      created: boolean;
+    };
 
 export class ReportAggregationService {
   constructor(private readonly reports: ReportRepository) {}
 
-  async createIfReady(
-    analysisRunId: string
-  ): Promise<ReportAggregationResult> {
-    const readiness = await this.reports.readiness(
+  async createIfReady(analysisRunId: string): Promise<ReportAggregationResult> {
+    const run = await this.reports.lockRun(analysisRunId);
+    if (!run) throw new Error(`Analysis run ${analysisRunId} does not exist`);
+    const records = await this.reports.executionRecords(
       analysisRunId,
       SCORING_VERSION
     );
-    const promptCount = Number(readiness.prompt_count);
-    const scoredPromptCount = Number(readiness.scored_prompt_count);
-    if (promptCount === 0 || scoredPromptCount !== promptCount) {
+    if (records.length === 0) return { outcome: "not_ready", reportId: null };
+    const data = buildMultiProviderReport(analysisRunId, records, run.status);
+    if (data.counts.scored === 0 && data.counts.nonterminal > 0) {
       return { outcome: "not_ready", reportId: null };
     }
-
-    const scores = await this.reports.scoreRecords(
+    const reportStatus: ReportStatus =
+      data.lifecycleState === "partial" ||
+      data.lifecycleState === "budget_paused_partial" ||
+      data.lifecycleState === "cancelled_partial"
+        ? "partial"
+        : data.lifecycleState === "failed_empty" ||
+            data.lifecycleState === "cancelled_empty"
+          ? "failed"
+          : "completed";
+    const report = await this.reports.createRevision({
       analysisRunId,
-      SCORING_VERSION
-    );
-    if (scores.length !== promptCount) {
-      throw new Error(
-        "Ready report did not resolve exactly one score per prompt job"
-      );
-    }
-    const reportData = buildBasicReport(analysisRunId, scores);
-    const report = await this.reports.createOrReuse({
-      analysisRunId,
-      reportVersion: BASIC_REPORT_VERSION,
-      reportData,
-      renderedText: renderBasicReport(reportData)
+      reportVersion: MULTI_PROVIDER_REPORT_VERSION,
+      status: reportStatus,
+      reportData: data,
+      renderedText: renderReport(data)
     });
-    await this.reports.markRunCompleted(analysisRunId);
+    if (data.counts.nonterminal === 0 && data.counts.pausedBudget === 0) {
+      const finalRunStatus =
+        data.counts.scored > 0
+          ? data.counts.failed + data.counts.invalid + data.counts.cancelled > 0
+            ? "partial_success"
+            : "completed"
+          : data.counts.cancelled === data.counts.expected
+            ? "cancelled"
+            : "failed";
+      await this.reports.markRunFinal(analysisRunId, finalRunStatus);
+    }
     return {
-      outcome: "completed",
+      outcome: "snapshot",
       reportId: report.row.report_id,
+      revision: report.row.revision,
+      status: report.row.status,
+      lifecycleState: data.lifecycleState,
       created: report.created
     };
   }
 }
 
-export function buildBasicReport(
+export function buildMultiProviderReport(
   analysisRunId: string,
-  scores: ReportScoreRecord[]
-): BasicReportData {
-  const grouped = new Map<PromptType, ReportScoreRecord[]>();
-  for (const score of scores) {
-    const existing = grouped.get(score.prompt_type) ?? [];
-    existing.push(score);
-    grouped.set(score.prompt_type, existing);
-  }
-  const breakdown = [...grouped.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([promptType, records]) => {
-      const score = round(
-        records.reduce((total, record) => total + Number(record.score), 0) /
-          records.length
-      );
-      return {
-        promptType,
-        score,
-        summary: summaryFor(promptType, score),
-        evidenceCount: records.reduce(
-          (total, record) =>
-            total + evidenceCount(record.parsed_response),
-          0
-        )
-      };
-    });
-  const overallScore = round(
-    scores.reduce((total, score) => total + Number(score.score), 0) /
-      scores.length
-  );
-  const providerModels = [
-    ...new Map(
-      scores.map((score) => [
-        `${score.provider}:${score.model}`,
-        { provider: score.provider, model: score.model }
-      ])
-    ).values()
-  ].sort((left, right) =>
-    `${left.provider}:${left.model}`.localeCompare(
-      `${right.provider}:${right.model}`
-    )
-  );
-  const usage = scores.reduce(
-    (total, score) => ({
-      inputTokens: total.inputTokens + (score.input_tokens ?? 0),
-      outputTokens: total.outputTokens + (score.output_tokens ?? 0),
-      costMicros: total.costMicros + Number(score.cost_micros ?? 0)
-    }),
-    { inputTokens: 0, outputTokens: 0, costMicros: 0 }
-  );
+  records: ReportExecutionRecord[],
+  runStatus: string
+) {
+  const nonterminal = records.filter(
+    (record) =>
+      record.provider_job_status === "pending" ||
+      record.provider_job_status === "queued" ||
+      record.provider_job_status === "processing" ||
+      (record.result_status === "valid" && record.score === null)
+  ).length;
+  const scored = records.filter((record) => record.score !== null).length;
+  const invalid = records.filter(
+    (record) => record.result_status === "invalid"
+  ).length;
+  const failed = records.filter(
+    (record) =>
+      record.provider_job_status === "failed" &&
+      record.result_status !== "invalid"
+  ).length;
+  const pausedBudget = records.filter(
+    (record) => record.provider_job_status === "paused_budget"
+  ).length;
+  const cancelled = records.filter(
+    (record) => record.provider_job_status === "cancelled"
+  ).length;
+  const lifecycleState =
+    pausedBudget > 0
+      ? scored > 0
+        ? "budget_paused_partial"
+        : "failed_empty"
+      : runStatus === "cancelled" || cancelled === records.length
+        ? scored > 0
+          ? "cancelled_partial"
+          : "cancelled_empty"
+        : nonterminal > 0
+          ? "partial"
+          : scored === 0
+            ? "failed_empty"
+            : failed + invalid + cancelled > 0
+              ? "completed_with_gaps"
+              : "completed";
 
+  const providerResults = records.map((record) => ({
+    promptJobId: record.prompt_job_id,
+    promptType: record.prompt_type,
+    promptVersion: record.prompt_version,
+    providerJobId: record.provider_job_id,
+    provider: record.provider,
+    model: record.model,
+    state: record.provider_job_status,
+    evidenceStatus: record.result_status ?? "missing",
+    score: record.score === null ? null : Number(record.score),
+    scoringVersion: record.scoring_version,
+    errorCode: record.error_code,
+    evidenceCount:
+      record.parsed_response &&
+      Array.isArray(record.parsed_response.evidence)
+        ? record.parsed_response.evidence.length
+        : 0,
+    usage: {
+      inputTokens: record.input_tokens ?? 0,
+      outputTokens: record.output_tokens ?? 0,
+      costMicros: Number(record.cost_micros ?? 0)
+    }
+  }));
+  const prompts = new Map<string, ReportExecutionRecord[]>();
+  for (const record of records) {
+    const group = prompts.get(record.prompt_job_id) ?? [];
+    group.push(record);
+    prompts.set(record.prompt_job_id, group);
+  }
+  const promptScores = [...prompts.entries()].map(([promptJobId, group]) => {
+    const validScores = group
+      .filter((record) => record.score !== null)
+      .map((record) => Number(record.score));
+    return {
+      promptJobId,
+      promptType: group[0]!.prompt_type,
+      promptVersion: group[0]!.prompt_version,
+      score: validScores.length ? mean(validScores) : null,
+      scoredProviders: validScores.length,
+      expectedProviders: group.length
+    };
+  });
+  const byType = new Map<PromptType, number[]>();
+  for (const prompt of promptScores) {
+    if (prompt.score === null) continue;
+    const values = byType.get(prompt.promptType) ?? [];
+    values.push(prompt.score);
+    byType.set(prompt.promptType, values);
+  }
+  const breakdown = [...byType.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([promptType, scores]) => ({
+      promptType,
+      score: mean(scores),
+      promptCount: scores.length
+    }));
+  const overallScores = promptScores
+    .map((prompt) => prompt.score)
+    .filter((score): score is number => score !== null);
+  const counts = {
+    expected: records.length,
+    nonterminal,
+    scored,
+    invalid,
+    failed,
+    pausedBudget,
+    cancelled,
+    completionPercentage:
+      records.length === 0
+        ? 100
+        : Math.round(((records.length - nonterminal) / records.length) * 10_000) /
+          100
+  };
   return {
     analysisRunId,
-    reportType: "basic_report",
-    reportVersion: BASIC_REPORT_VERSION,
-    overallScore,
-    summary: `Backend-computed GEO score is ${overallScore} across ${scores.length} provider evidence records.`,
+    reportType: "multi_provider_report",
+    reportVersion: MULTI_PROVIDER_REPORT_VERSION,
+    lifecycleState,
+    final: nonterminal === 0 && pausedBudget === 0,
+    resumePossible: false,
+    summary: explanation(lifecycleState, counts),
+    overallScore: overallScores.length ? mean(overallScores) : null,
+    counts,
+    promptScores,
     breakdown,
-    providerModels,
-    usage
-  };
+    providerResults,
+    usage: providerResults.reduce(
+      (total, record) => ({
+        inputTokens: total.inputTokens + record.usage.inputTokens,
+        outputTokens: total.outputTokens + record.usage.outputTokens,
+        costMicros: total.costMicros + record.usage.costMicros
+      }),
+      { inputTokens: 0, outputTokens: 0, costMicros: 0 }
+    )
+  } satisfies JsonObject;
 }
 
-function renderBasicReport(report: BasicReportData) {
-  const lines = report.breakdown.map(
-    (entry) => `${entry.promptType}: ${entry.score} - ${entry.summary}`
+function explanation(
+  state: string,
+  counts: { expected: number; scored: number; nonterminal: number }
+) {
+  if (state === "budget_paused_partial") {
+    return `Analysis stopped because the configured budget was reached. ${counts.scored} of ${counts.expected} provider executions have scored evidence.`;
+  }
+  if (state === "partial") {
+    return `${counts.scored} of ${counts.expected} provider executions have scored evidence; ${counts.nonterminal} remain unfinished.`;
+  }
+  if (state === "failed_empty") {
+    return "No valid scored provider evidence is available.";
+  }
+  if (state.startsWith("cancelled")) {
+    return "Analysis was cancelled before provider execution completed.";
+  }
+  return `${counts.scored} of ${counts.expected} provider executions contributed scored evidence.`;
+}
+
+function renderReport(report: ReturnType<typeof buildMultiProviderReport>) {
+  return [
+    report.summary,
+    ...report.breakdown.map(
+      (entry) => `${entry.promptType}: ${entry.score}`
+    )
+  ].join("\n");
+}
+
+function mean(values: number[]) {
+  return (
+    Math.round(
+      (values.reduce((total, value) => total + value, 0) / values.length) *
+        10_000
+    ) / 10_000
   );
-  return [report.summary, ...lines].join("\n");
-}
-
-function evidenceCount(response: JsonObject) {
-  return Array.isArray(response.evidence) ? response.evidence.length : 0;
-}
-
-function summaryFor(promptType: PromptType, score: number) {
-  const level = score >= 75 ? "strong" : score >= 60 ? "moderate" : "limited";
-  const labels: Record<PromptType, string> = {
-    visibility: "visibility",
-    competitor: "competitor presence",
-    ranking: "ranking",
-    price_range: "price positioning",
-    pros_cons: "strength and weakness"
-  };
-  return `Backend interpretation indicates ${level} ${labels[promptType]} evidence.`;
-}
-
-function round(value: number) {
-  return Math.round(value * 10_000) / 10_000;
 }

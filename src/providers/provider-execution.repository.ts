@@ -21,6 +21,52 @@ export type ProviderExecutionState = ProviderJobRow & {
 };
 
 export class ProviderExecutionRepository extends MockProviderRepository {
+  async createOrReuseInvalidProviderResult(input: {
+    providerJobId: string;
+    provider: ProviderName;
+    modelVersion: string;
+    rawResponse: unknown;
+    validationErrors: string[];
+  }) {
+    const idempotencyKey = `provider_result:${input.providerJobId}`;
+    const rawResponse = JSON.stringify(input.rawResponse ?? null);
+    const result = await this.database.query<ProviderResultRow>(
+      `
+        INSERT INTO provider_results (
+          idempotency_key, provider_job_id, provider, status,
+          model_version, raw_response, parsed_response, validation_errors,
+          latency_ms, received_at
+        )
+        VALUES ($1, $2, $3, 'invalid', $4, $5, NULL, $6, 0, now())
+        ON CONFLICT (provider_job_id) DO NOTHING
+        RETURNING *
+      `,
+      [
+        idempotencyKey,
+        input.providerJobId,
+        input.provider,
+        input.modelVersion,
+        rawResponse,
+        JSON.stringify(input.validationErrors)
+      ]
+    );
+    if (result.rows[0]) return result.rows[0];
+    const existing = await this.database.query<ProviderResultRow>(
+      `
+        SELECT *
+        FROM provider_results
+        WHERE provider_job_id = $1
+          AND idempotency_key = $2
+          AND status = 'invalid'
+      `,
+      [input.providerJobId, idempotencyKey]
+    );
+    if (!existing.rows[0]) {
+      throw new Error("Existing provider result conflicts with invalid evidence");
+    }
+    return existing.rows[0];
+  }
+
   async createOrReuseProviderResult(input: {
     providerJobId: string;
     provider: ProviderName;

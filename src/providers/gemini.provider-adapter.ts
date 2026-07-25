@@ -68,7 +68,7 @@ export class GeminiProviderAdapter implements ProviderAdapter {
       .filter((part): part is string => part !== null)
       .join("");
     const blockReason = stringAt(objectAt(raw.promptFeedback)?.blockReason);
-    if (!candidate && !blockReason) throw malformed("Gemini");
+    if (!candidate && !blockReason) throw malformed("Gemini", raw);
     const answer = text || `Gemini refusal: ${blockReason ?? "empty response"}`;
     const usage = objectAt(raw.usageMetadata);
     return {

@@ -7,6 +7,10 @@ import { BudgetCheckService } from "../budgets/budget-check.service.js";
 import { BudgetRepository } from "../budgets/budget.repository.js";
 import { estimateCostMicros } from "../budgets/provider-pricing.policy.js";
 import { OutboxEventWriterRepository } from "../outbox/outbox-event-writer.repository.js";
+import { ExecutionStateService } from "../execution/execution-state.service.js";
+import type { ProviderName } from "../types/database.types.js";
+import { ReportAggregationService } from "../reports/report-aggregation.service.js";
+import { ReportRepository } from "../reports/report.repository.js";
 import { ProviderAdapterRegistry } from "./provider-adapter.registry.js";
 import { ProviderExecutionError } from "./provider-execution.error.js";
 import { ProviderExecutionRepository } from "./provider-execution.repository.js";
@@ -31,7 +35,8 @@ export class ProviderExecutionService {
   ) {}
 
   async execute(
-    payload: ProviderJobCreatedPayload
+    payload: ProviderJobCreatedPayload,
+    expectedProvider?: ProviderName
   ): Promise<ProviderExecutionOutcome> {
     return inTransaction(this.database, async (client) => {
       const repository = new ProviderExecutionRepository(client);
@@ -45,14 +50,10 @@ export class ProviderExecutionService {
       if (state.status !== "queued") {
         return { outcome: "noop", providerResultId: null };
       }
-      if (
-        payload.promptJobId !== state.prompt_job_id ||
-        payload.provider !== state.provider ||
-        payload.model !== state.model
-      ) {
+      if (expectedProvider && expectedProvider !== state.provider) {
         throw new ProviderExecutionError(
-          "PROVIDER_JOB_MESSAGE_MISMATCH",
-          "Message identifiers or provider selection do not match authoritative state",
+          "PROVIDER_QUEUE_MISMATCH",
+          `Provider job does not belong on the ${expectedProvider} queue`,
           true
         );
       }
@@ -70,6 +71,10 @@ export class ProviderExecutionService {
       }
       if (state.analysis_run_status === "paused_budget") {
         await pauseCurrentJob(repository, state);
+        await new ExecutionStateService(client).recalculateRun(
+          state.analysis_run_id
+        );
+        await createReportSnapshot(client, state.analysis_run_id);
         return {
           outcome: "paused_budget",
           providerResultId: null,
@@ -92,22 +97,63 @@ export class ProviderExecutionService {
       });
       if (!budget.allowed) {
         await pauseCurrentJob(repository, state);
+        await new ExecutionStateService(client).recalculateRun(
+          state.analysis_run_id
+        );
+        await createReportSnapshot(client, state.analysis_run_id);
         return {
           outcome: "paused_budget",
           providerResultId: null,
           budgetPolicyId: budget.decision.budgetPolicyId
         };
       }
+      if (!(await repository.markProcessing(state.provider_job_id))) {
+        throw new ProviderExecutionError(
+          "PROVIDER_JOB_TRANSITION_FAILED",
+          "Provider job could not transition to processing"
+        );
+      }
 
-      const execution = await adapter.execute({
-        providerJobId: state.provider_job_id,
-        provider: state.provider,
-        model: state.model,
-        promptText: state.prompt_text,
-        promptType: state.prompt_type,
-        promptVersion: state.prompt_version,
-        timeoutMs: this.timeoutMs
-      });
+      let execution;
+      try {
+        execution = await adapter.execute({
+          providerJobId: state.provider_job_id,
+          provider: state.provider,
+          model: state.model,
+          promptText: state.prompt_text,
+          promptType: state.prompt_type,
+          promptVersion: state.prompt_version,
+          timeoutMs: this.timeoutMs
+        });
+      } catch (error) {
+        if (
+          error instanceof ProviderExecutionError &&
+          error.invalidEvidence
+        ) {
+          const result =
+            await repository.createOrReuseInvalidProviderResult({
+              providerJobId: state.provider_job_id,
+              provider: state.provider,
+              modelVersion: state.model,
+              rawResponse: error.invalidEvidence.rawResponse,
+              validationErrors: error.invalidEvidence.validationErrors
+            });
+          await repository.markFailed(
+            state.provider_job_id,
+            "INVALID_PROVIDER_EVIDENCE",
+            "Provider returned evidence that could not be validated"
+          );
+          await new ExecutionStateService(client).recalculateRun(
+            state.analysis_run_id
+          );
+          await createReportSnapshot(client, state.analysis_run_id);
+          return {
+            outcome: "completed",
+            providerResultId: result.provider_result_id
+          };
+        }
+        throw error;
+      }
       const inputTokens = execution.inputTokens ?? budget.estimate.inputTokens;
       const outputTokens =
         execution.outputTokens ?? budget.estimate.outputTokens;
@@ -141,29 +187,35 @@ export class ProviderExecutionService {
         aggregateId: result.provider_result_id,
         headers: { queueName: "scoring_queue" },
         payload: {
-          providerResultId: result.provider_result_id,
-          providerJobId: state.provider_job_id,
-          promptJobId: state.prompt_job_id,
-          analysisRunId: state.analysis_run_id
+          providerResultId: result.provider_result_id
         }
       });
       if (
-        !(await repository.markSucceeded(
-          state.provider_job_id,
-          state.prompt_job_id
-        ))
+        !(await repository.markSucceeded(state.provider_job_id))
       ) {
         throw new ProviderExecutionError(
           "PROVIDER_JOB_TRANSITION_FAILED",
           "Provider and prompt jobs could not transition to succeeded"
         );
       }
+      await new ExecutionStateService(client).recalculateRun(
+        state.analysis_run_id
+      );
       return {
         outcome: "completed",
         providerResultId: result.provider_result_id
       };
     });
   }
+}
+
+function createReportSnapshot(
+  database: DatabaseExecutor,
+  analysisRunId: string
+) {
+  return new ReportAggregationService(
+    new ReportRepository(database)
+  ).createIfReady(analysisRunId);
 }
 
 async function pauseCurrentJob(

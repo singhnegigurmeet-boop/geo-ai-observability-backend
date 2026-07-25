@@ -67,7 +67,7 @@ export class ClaudeProviderAdapter implements ProviderAdapter {
       })
       .filter((part): part is string => part !== null)
       .join("");
-    if (!text) throw malformed("Claude");
+    if (!text) throw malformed("Claude", raw);
     const usage = objectAt(raw.usage);
     const inputTokens = nonnegativeInteger(usage?.input_tokens);
     const outputTokens = nonnegativeInteger(usage?.output_tokens);

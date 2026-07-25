@@ -25,7 +25,13 @@ export class ReliableQueueWorkerRuntime {
   constructor(
     private readonly channel: ConsumerChannel,
     private readonly worker: { process(input: unknown): Promise<unknown> },
-    private readonly failures: Pick<FailureRecordRepository, "createOrReuse">,
+    private readonly failures: Pick<FailureRecordRepository, "createOrReuse"> &
+      Partial<
+        Pick<
+          FailureRecordRepository,
+          "terminalizeBusinessFailure" | "createAndTerminalize"
+        >
+      >,
     private readonly options: ReliableQueueWorkerOptions,
     private readonly logger: WorkerLogger = console
   ) {}
@@ -66,8 +72,9 @@ export class ReliableQueueWorkerRuntime {
       this.channel.ack(message);
     } catch (error) {
       const normalized = normalizeWorkerError(error);
+      const terminal = normalized.permanent || attempt >= 3;
       try {
-        await this.failures.createOrReuse({
+        const failure = {
           queueName: this.options.queueName,
           messageId: identity.messageId,
           aggregateType: identity.aggregateType,
@@ -76,7 +83,12 @@ export class ReliableQueueWorkerRuntime {
           errorCode: normalized.code,
           errorMessage: normalized.message,
           errorDetails: { permanent: normalized.permanent }
-        });
+        };
+        if (terminal && this.failures.createAndTerminalize) {
+          await this.failures.createAndTerminalize(failure);
+        } else {
+          await this.failures.createOrReuse(failure);
+        }
       } catch (recordError) {
         this.logger.error(
           `Could not record ${this.options.workerLabel} failure.`,
@@ -86,7 +98,27 @@ export class ReliableQueueWorkerRuntime {
         return;
       }
 
-      if (normalized.permanent || attempt >= 3) {
+      if (terminal) {
+        if (
+          !this.failures.createAndTerminalize &&
+          this.failures.terminalizeBusinessFailure
+        ) {
+          try {
+            await this.failures.terminalizeBusinessFailure({
+              aggregateType: identity.aggregateType,
+              aggregateId: identity.aggregateId,
+              errorCode: normalized.code,
+              errorMessage: normalized.message
+            });
+          } catch (terminalError) {
+            this.logger.error(
+              `Could not terminalize ${this.options.workerLabel} business state.`,
+              terminalError
+            );
+            this.channel.nack(message, false, true);
+            return;
+          }
+        }
         this.channel.nack(message, false, false);
         return;
       }

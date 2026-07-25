@@ -2,7 +2,11 @@ export class ProviderExecutionError extends Error {
   constructor(
     readonly code: string,
     message: string,
-    readonly permanent = false
+    readonly permanent = false,
+    readonly invalidEvidence?: {
+      rawResponse: unknown;
+      validationErrors: string[];
+    }
   ) {
     super(message);
     this.name = "ProviderExecutionError";

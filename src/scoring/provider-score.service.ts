@@ -50,9 +50,12 @@ export class ProviderScoreService {
         );
       }
       if (
-        state.provider_job_id !== payload.providerJobId ||
-        state.prompt_job_id !== payload.promptJobId ||
-        state.analysis_run_id !== payload.analysisRunId
+        (payload.providerJobId !== undefined &&
+          state.provider_job_id !== payload.providerJobId) ||
+        (payload.promptJobId !== undefined &&
+          state.prompt_job_id !== payload.promptJobId) ||
+        (payload.analysisRunId !== undefined &&
+          state.analysis_run_id !== payload.analysisRunId)
       ) {
         throw new ProviderScoringError(
           "PROVIDER_RESULT_MESSAGE_MISMATCH",
@@ -62,8 +65,7 @@ export class ProviderScoreService {
       if (
         state.result_status !== "valid" ||
         state.parsed_response === null ||
-        state.provider_job_status !== "succeeded" ||
-        state.prompt_job_status !== "succeeded"
+        state.provider_job_status !== "succeeded"
       ) {
         throw new ProviderScoringError(
           "PROVIDER_RESULT_NOT_SCORABLE",
@@ -100,7 +102,7 @@ export class ProviderScoreService {
         outcome: score.created ? "scored" : "noop",
         providerScoreId: score.row.provider_score_id,
         reportId:
-          report.outcome === "completed" ? report.reportId : null
+          report.outcome === "snapshot" ? report.reportId : null
       };
     });
   }

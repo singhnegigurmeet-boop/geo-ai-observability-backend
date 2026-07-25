@@ -3,7 +3,7 @@ import { ProviderExecutionError } from "./provider-execution.error.js";
 
 export function asObject(value: unknown, provider: string): JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw malformed(provider);
+    throw malformed(provider, value);
   }
   return value as JsonObject;
 }
@@ -49,10 +49,17 @@ export function normalizedEvidence(input: {
   };
 }
 
-export function malformed(provider: string): ProviderExecutionError {
+export function malformed(
+  provider: string,
+  rawResponse: unknown = null
+): ProviderExecutionError {
   return new ProviderExecutionError(
     "MALFORMED_PROVIDER_RESPONSE",
     `${provider} returned a response that could not be normalized`,
-    true
+    true,
+    {
+      rawResponse,
+      validationErrors: [`${provider} response could not be normalized`]
+    }
   );
 }
