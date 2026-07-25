@@ -283,19 +283,19 @@ export class AnalysisRunExpansionRepository {
     );
   }
 
-  async markNoExpansionChildren(analysisRunId: string, message: string) {
+  async markNoExpansionChildren(analysisRunId: string, _message: string) {
     await this.database.query(
       `
         UPDATE analysis_runs
-        SET status = 'failed',
+        SET status = 'completed',
             started_at = COALESCE(started_at, now()),
             completed_at = now(),
-            error_code = 'NO_EXPANSION_CHILDREN',
-            error_message = $2,
+            error_code = NULL,
+            error_message = NULL,
             updated_at = now()
         WHERE analysis_run_id = $1 AND status = 'queued'
       `,
-      [analysisRunId, message]
+      [analysisRunId]
     );
   }
 

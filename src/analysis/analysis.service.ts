@@ -9,8 +9,11 @@ import { OutboxEventWriterRepository } from "../outbox/outbox-event-writer.repos
 import type { OwnershipContext } from "../ownership/ownership-context.types.js";
 import {
   InvalidProviderModelSelectionError,
-  selectProviderModel
+  resolveProviderModelSet
 } from "../providers/provider-model.policy.js";
+import { ReportAggregationService } from "../reports/report-aggregation.service.js";
+import { ReportRepository } from "../reports/report.repository.js";
+import { MULTI_PROVIDER_REPORT_VERSION } from "../scoring/score.types.js";
 import type { AnalysisRunRow } from "../types/database.types.js";
 import type { CreateAnalysisRequest } from "./analysis.schemas.js";
 import { AnalysisRepository } from "./analysis.repository.js";
@@ -35,7 +38,7 @@ export class AnalysisService {
     clientIdempotencyKey: string,
     owner: OwnershipContext
   ): Promise<CreateAnalysisResponse> {
-    const modelPreference = resolveModelPreference(
+    const providerModels = resolveModelPreferences(
       request,
       owner,
       this.realProvidersEnabled
@@ -54,7 +57,14 @@ export class AnalysisService {
         brandId: request.brandId ?? null,
         productId: request.productId ?? null,
         useContextId: request.useContextId ?? null,
-        ...modelPreference
+        requestedProvider:
+          owner.actorType === "anonymous" ? null : providerModels[0]!.provider,
+        requestedModel:
+          owner.actorType === "anonymous" ? null : providerModels[0]!.model,
+        providerModels: providerModels.map(({ provider, model }) => ({
+          provider,
+          model
+        }))
       };
       const idempotencyKey = ownerScopedIdempotencyKey(
         owner,
@@ -64,7 +74,11 @@ export class AnalysisService {
 
       const existing = await analyses.findByIdempotencyKey(idempotencyKey);
       if (existing) {
-        return replayResponse(existing, canonicalRequest);
+        return replayResponse(
+          existing,
+          canonicalRequest,
+          await analyses.findProviderModels(existing.analysis_run_id)
+        );
       }
 
       const ownership = ownershipColumns(owner);
@@ -81,8 +95,16 @@ export class AnalysisService {
         if (!raced) {
           throw new Error("Idempotent analysis run could not be loaded");
         }
-        return replayResponse(raced, canonicalRequest);
+        return replayResponse(
+          raced,
+          canonicalRequest,
+          await analyses.findProviderModels(raced.analysis_run_id)
+        );
       }
+      await analyses.createProviderModels(
+        created.analysis_run_id,
+        canonicalRequest.providerModels
+      );
 
       await new OutboxEventWriterRepository(client).create({
         eventKey: `analysis_run.created:${created.analysis_run_id}`,
@@ -92,12 +114,7 @@ export class AnalysisService {
         aggregateId: created.analysis_run_id,
         headers: { queueName: "analysis_run_queue" },
         payload: {
-          analysisRunId: created.analysis_run_id,
-          startingEntityPathId: created.starting_entity_path_id,
-          actorType: owner.actorType,
-          userId: created.user_id,
-          workspaceId: created.workspace_id,
-          anonymousSessionId: created.anonymous_session_id
+          analysisRunId: created.analysis_run_id
         }
       });
 
@@ -139,6 +156,148 @@ export class AnalysisService {
     };
   }
 
+  async cancel(analysisRunId: string, owner: OwnershipContext) {
+    return inTransaction(this.database, async (client) => {
+      const analyses = new AnalysisRepository(client);
+      const run = await analyses.findOwnedRunForUpdate(analysisRunId, owner);
+      if (!run) {
+        throw new ApplicationError("NOT_FOUND", "Analysis run was not found");
+      }
+      if (run.status === "cancelled") {
+        return { analysisRunId, status: "cancelled" as const, idempotent: true };
+      }
+      if (
+        run.status === "completed" ||
+        run.status === "partial_success" ||
+        run.status === "failed"
+      ) {
+        throw new ApplicationError(
+          "CONFLICT",
+          "Terminal analysis run cannot be cancelled"
+        );
+      }
+      const started = await client.query<{ provider_job_id: string }>(
+        `
+          SELECT job.provider_job_id
+          FROM provider_jobs AS job
+          JOIN prompt_jobs AS prompt ON prompt.prompt_job_id = job.prompt_job_id
+          JOIN llm_runs AS llm ON llm.llm_run_id = prompt.llm_run_id
+          JOIN analysis_run_items AS item
+            ON item.analysis_run_item_id = llm.analysis_run_item_id
+          WHERE item.analysis_run_id = $1
+            AND (
+              job.started_at IS NOT NULL
+              OR job.status IN ('processing', 'succeeded')
+            )
+          LIMIT 1
+          FOR UPDATE OF job
+        `,
+        [analysisRunId]
+      );
+      if (started.rows[0]) {
+        throw new ApplicationError(
+          "CONFLICT",
+          "Analysis cannot be cancelled after provider execution begins"
+        );
+      }
+      await client.query(
+        `
+          UPDATE provider_jobs AS job
+          SET status = 'cancelled', completed_at = now(), updated_at = now()
+          FROM prompt_jobs AS prompt
+          JOIN llm_runs AS llm ON llm.llm_run_id = prompt.llm_run_id
+          JOIN analysis_run_items AS item
+            ON item.analysis_run_item_id = llm.analysis_run_item_id
+          WHERE job.prompt_job_id = prompt.prompt_job_id
+            AND item.analysis_run_id = $1
+            AND job.status IN ('pending', 'queued')
+        `,
+        [analysisRunId]
+      );
+      await client.query(
+        `
+          UPDATE prompt_jobs AS prompt
+          SET status = 'cancelled', completed_at = now(), updated_at = now()
+          FROM llm_runs AS llm
+          JOIN analysis_run_items AS item
+            ON item.analysis_run_item_id = llm.analysis_run_item_id
+          WHERE prompt.llm_run_id = llm.llm_run_id
+            AND item.analysis_run_id = $1
+            AND prompt.status IN ('pending', 'queued', 'processing')
+        `,
+        [analysisRunId]
+      );
+      await client.query(
+        `
+          UPDATE llm_runs AS llm
+          SET status = 'cancelled', completed_at = now(), updated_at = now()
+          FROM analysis_run_items AS item
+          WHERE llm.analysis_run_item_id = item.analysis_run_item_id
+            AND item.analysis_run_id = $1
+            AND llm.status IN ('queued', 'processing')
+        `,
+        [analysisRunId]
+      );
+      await client.query(
+        `
+          UPDATE analysis_run_items
+          SET status = 'cancelled', completed_at = now(), updated_at = now()
+          WHERE analysis_run_id = $1
+            AND status IN ('queued', 'processing')
+        `,
+        [analysisRunId]
+      );
+      await client.query(
+        `
+          UPDATE analysis_runs
+          SET status = 'cancelled',
+              completed_at = now(),
+              error_code = NULL,
+              error_message = NULL,
+              updated_at = now()
+          WHERE analysis_run_id = $1
+        `,
+        [analysisRunId]
+      );
+      const reports = new ReportRepository(client);
+      const snapshot = await new ReportAggregationService(
+        reports
+      ).createIfReady(analysisRunId);
+      if (snapshot.outcome === "not_ready") {
+        await reports.createRevision({
+          analysisRunId,
+          reportVersion: MULTI_PROVIDER_REPORT_VERSION,
+          status: "failed",
+          reportData: {
+            analysisRunId,
+            reportType: "multi_provider_report",
+            reportVersion: MULTI_PROVIDER_REPORT_VERSION,
+            lifecycleState: "cancelled_empty",
+            final: true,
+            summary: "The analysis was cancelled before provider execution began.",
+            counts: {
+              expected: 0,
+              nonterminal: 0,
+              scored: 0,
+              invalid: 0,
+              failed: 0,
+              pausedBudget: 0,
+              cancelled: 0,
+              completionPercentage: 100
+            },
+            providerResults: [],
+            promptScores: [],
+            breakdown: [],
+            usage: { inputTokens: 0, outputTokens: 0, costMicros: 0 }
+          },
+          renderedText:
+            "The analysis was cancelled before provider execution began."
+        });
+      }
+      return { analysisRunId, status: "cancelled" as const, idempotent: false };
+    });
+  }
+
   async getReport(
     analysisRunId: string,
     owner: OwnershipContext
@@ -156,6 +315,7 @@ export class AnalysisService {
       analysisRunId: record.analysis_run_id,
       reportId: record.report_id,
       reportVersion: record.report_version,
+      revision: record.revision,
       status: record.status,
       report: record.report_data,
       renderedText: record.rendered_text,
@@ -189,9 +349,16 @@ function ownershipColumns(owner: OwnershipContext) {
 
 function replayResponse(
   existing: AnalysisRunRow,
-  canonicalRequest: CanonicalAnalysisRequest
+  canonicalRequest: CanonicalAnalysisRequest,
+  storedProviderModels: Array<{ provider: string; model: string }>
 ) {
-  if (!sameCanonicalRequest(existing.request_payload, canonicalRequest)) {
+  if (
+    !sameCanonicalRequest(
+      existing.request_payload,
+      canonicalRequest,
+      storedProviderModels
+    )
+  ) {
     throw new ApplicationError(
       "CONFLICT",
       "Idempotency-Key was already used with a different analysis request"
@@ -202,7 +369,8 @@ function replayResponse(
 
 function sameCanonicalRequest(
   stored: AnalysisRunRow["request_payload"],
-  expected: CanonicalAnalysisRequest
+  expected: CanonicalAnalysisRequest,
+  storedProviderModels: Array<{ provider: string; model: string }>
 ) {
   return (
     stored.domain === expected.domain &&
@@ -211,31 +379,26 @@ function sameCanonicalRequest(
     stored.productId === expected.productId &&
     stored.useContextId === expected.useContextId &&
     (stored.requestedProvider ?? null) === expected.requestedProvider &&
-    (stored.requestedModel ?? null) === expected.requestedModel
+    (stored.requestedModel ?? null) === expected.requestedModel &&
+    JSON.stringify(
+      storedProviderModels.map(({ provider, model }) => ({ provider, model }))
+    ) === JSON.stringify(expected.providerModels)
   );
 }
 
-function resolveModelPreference(
+function resolveModelPreferences(
   request: CreateAnalysisRequest,
   owner: OwnershipContext,
   realProvidersEnabled: boolean
 ) {
   try {
-    const selection = selectProviderModel({
+    return resolveProviderModelSet({
       actorType: owner.actorType,
       requestedProvider: request.preferredProvider ?? null,
       requestedModel: request.preferredModel ?? null,
+      requestedProviderModels: request.providerModels ?? null,
       realProvidersEnabled
     });
-    return owner.actorType === "anonymous"
-      ? {
-          requestedProvider: null,
-          requestedModel: null
-        }
-      : {
-          requestedProvider: selection.provider,
-          requestedModel: selection.model
-        };
   } catch (error) {
     if (error instanceof InvalidProviderModelSelectionError) {
       throw new ApplicationError("VALIDATION_ERROR", error.message);
