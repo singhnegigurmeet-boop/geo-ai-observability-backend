@@ -1,6 +1,6 @@
 # GEO V6 Production Core Backend
 
-This branch contains the Phase 5 analysis-run expansion slice for GEO V6. PostgreSQL remains authoritative. The API creates a queued run and its outbox event; a separate RabbitMQ consumer reloads that run and expands exactly one hierarchy level.
+This branch contains the Phase 6 LLM-run control-unit slice for GEO V6. PostgreSQL remains authoritative. The API creates a queued run, Phase 5 expands it into concrete items, and Phase 6 creates exactly one LLM planning/control unit per item.
 
 ## Implemented
 
@@ -16,8 +16,11 @@ This branch contains the Phase 5 analysis-run expansion slice for GEO V6. Postgr
 - One-level `analysis_run_worker` expansion through explicit relationships
 - Transactional `analysis_run_items` and `analysis_run_item.created` outbox events
 - PostgreSQL idempotency, bounded worker retries, failure history, and DLQ routing
+- One `llm_run` per queued `analysis_run_item`
+- Transactional `llm_run.created` ID-only outbox events
+- Shared reliable RabbitMQ consumer runtime for both business workers
 
-The Phase 4 API still does not create `analysis_run_items`; only the Phase 5 worker does.
+The Phase 4 API still does not create `analysis_run_items`; only the Phase 5 worker does. Phase 6 consumes those item events and does not create prompts or select providers/models.
 
 ## HTTP Surface
 
@@ -139,6 +142,14 @@ Run the Phase 5 consumer separately:
 npm run analysis-worker:dev
 ```
 
+Run the Phase 6 item consumer separately:
+
+```bash
+npm run analysis-item-worker:dev
+```
+
+Phase 6 consumes `analysis_run_item.created`, locks the queued item, validates its parent run, path, and ownership against PostgreSQL, creates/reuses one queued `llm_run` with `run_key = primary`, and emits `llm_run.created` to `llm_run_queue`. The item then moves to `processing`; the parent analysis run is not completed or otherwise updated.
+
 ## Verification
 
 ```bash
@@ -161,6 +172,7 @@ npm run test:phase3
 npm run test:phase4
 npm run test:phase45
 npm run test:phase5
+npm run test:phase6
 npm run infra:test:down
 ```
 
@@ -168,7 +180,7 @@ Integration launchers wait for their dependencies. Destructive test schema setup
 
 ## Not Implemented
 
-- LLM runs or prompt jobs
+- Prompt jobs, rendering, templates, or prompt/model policy
 - Provider jobs, execution, or results
 - Budget enforcement
 - Scoring or reports

@@ -1,4 +1,4 @@
-import type { AnalysisRunWorker } from "../analysis/analysis-run-worker.js";
+import type { AnalysisRunItemWorker } from "../analysis/analysis-run-item-worker.js";
 import type { ConsumerChannel } from "../messaging/rabbitmq.consumer.js";
 import type { FailureRecordRepository } from "../reliability/failure-record.repository.js";
 import {
@@ -6,19 +6,17 @@ import {
   type WorkerLogger
 } from "./reliable-queue-worker.runtime.js";
 
-export type AnalysisRunWorkerRuntimeOptions = {
+export type AnalysisRunItemWorkerRuntimeOptions = {
   mainExchange: string;
   prefetch: number;
 };
 
-export { type WorkerLogger };
-
-export class AnalysisRunWorkerRuntime extends ReliableQueueWorkerRuntime {
+export class AnalysisRunItemWorkerRuntime extends ReliableQueueWorkerRuntime {
   constructor(
     channel: ConsumerChannel,
-    worker: Pick<AnalysisRunWorker, "process">,
+    worker: Pick<AnalysisRunItemWorker, "process">,
     failures: Pick<FailureRecordRepository, "createOrReuse">,
-    options: AnalysisRunWorkerRuntimeOptions,
+    options: AnalysisRunItemWorkerRuntimeOptions,
     logger: WorkerLogger = console
   ) {
     super(
@@ -26,10 +24,10 @@ export class AnalysisRunWorkerRuntime extends ReliableQueueWorkerRuntime {
       worker,
       failures,
       {
-        queueName: "analysis_run_queue",
+        queueName: "analysis_run_item_queue",
         mainExchange: options.mainExchange,
         prefetch: options.prefetch,
-        workerLabel: "Analysis run worker"
+        workerLabel: "Analysis run item worker"
       },
       logger
     );

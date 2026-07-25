@@ -51,4 +51,35 @@ export class AnalysisRunItemRepository {
     }
     return row;
   }
+
+  async findForUpdate(analysisRunItemId: string) {
+    const result = await this.database.query<AnalysisRunItemRow>(
+      `
+        SELECT *
+        FROM analysis_run_items
+        WHERE analysis_run_item_id = $1
+        FOR UPDATE
+      `,
+      [analysisRunItemId]
+    );
+    return result.rows[0] ?? null;
+  }
+
+  async markProcessing(analysisRunItemId: string) {
+    const result = await this.database.query<AnalysisRunItemRow>(
+      `
+        UPDATE analysis_run_items
+        SET status = 'processing',
+            started_at = COALESCE(started_at, now()),
+            completed_at = NULL,
+            error_code = NULL,
+            error_message = NULL,
+            updated_at = now()
+        WHERE analysis_run_item_id = $1 AND status = 'queued'
+        RETURNING *
+      `,
+      [analysisRunItemId]
+    );
+    return result.rows[0] ?? null;
+  }
 }

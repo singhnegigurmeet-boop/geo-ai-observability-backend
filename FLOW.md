@@ -1,4 +1,4 @@
-# Phase 5 Analysis Run Expansion Flow
+# Phase 6 LLM Run Creation Flow
 
 ## Process Boundaries
 
@@ -15,6 +15,11 @@ Analysis run worker process
   -> consume analysis_run_queue
   -> PostgreSQL locked expansion transaction
   -> analysis_run_item.created outbox events
+
+Analysis run item worker process
+  -> consume analysis_run_item_queue
+  -> PostgreSQL locked item transaction
+  -> llm_run.created outbox event
 ```
 
 ## Submission
@@ -164,6 +169,37 @@ worker attempt 3
 
 The `x-worker-attempt` consumer header is independent of the queue envelope's outbox publication `attempt`. If failure recording or retry publication fails, the original delivery is requeued.
 
+The same reliable consumer implementation handles Phase 5 and Phase 6 with different fixed queue names. Phase 6 retries exhaust into `analysis_run_item_queue.dlq`.
+
+## Phase 6 Item-to-LLM-Run
+
+```text
+consume analysis_run_item.created
+  -> validate strict ID-only envelope
+  -> begin PostgreSQL transaction
+  -> SELECT analysis_run_item FOR UPDATE
+  -> non-queued item: idempotent no-op
+  -> load parent analysis_run
+  -> load active item entity_path
+  -> validate run, path, starting path, and ownership IDs
+  -> create/reuse llm_run with run_key=primary
+  -> create/reuse llm_run.created outbox event
+  -> mark analysis_run_item processing
+  -> commit
+  -> acknowledge delivery
+```
+
+Stable identities:
+
+```text
+llm_run idempotency_key: llm_run:<analysisRunItemId>
+outbox event_key: llm_run.created:<llmRunId>
+```
+
+The `llm_runs` row is only a control/planning unit linked to its analysis item. It contains no prompt text and no provider/model selection. The outbox payload contains only LLM-run, item, parent-run, path, starting-path, and ownership IDs. A claimed run remains a user-owned event while preserving its anonymous-session origin.
+
+Phase 6 does not update or complete the parent `analysis_run`. It creates no `prompt_jobs`, provider work/results, token usage, scores, reports, or budgets.
+
 ## Ownership Storage
 
 ```text
@@ -215,7 +251,7 @@ No submitted domain text, prompt content, provider configuration, expanded item,
 
 ## Explicitly Deferred
 
-- LLM and prompt pipeline
+- Prompt creation, rendering, and prompt/model policy
 - Provider execution
 - Budget enforcement
 - Scoring and reports
