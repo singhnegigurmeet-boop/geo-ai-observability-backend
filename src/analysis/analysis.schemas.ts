@@ -12,7 +12,11 @@ export const createAnalysisRequestSchema = z
     categoryId: databaseId.optional(),
     brandId: databaseId.optional(),
     productId: databaseId.optional(),
-    useContextId: databaseId.optional()
+    useContextId: databaseId.optional(),
+    preferredProvider: z.literal("mock").optional(),
+    preferredModel: z
+      .enum(["mock-fast", "mock-standard", "mock-quality"])
+      .optional()
   })
   .strict()
   .superRefine((value, context) => {

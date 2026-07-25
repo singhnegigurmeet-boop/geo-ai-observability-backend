@@ -1,6 +1,32 @@
-import type { PromptPlanEntry } from "./prompt.types.js";
+import type {
+  PromptPlanEntry,
+  PromptPlanPolicyContext
+} from "./prompt.types.js";
 
-const CORE_PROMPT_PLAN = [
+const ANONYMOUS_PROMPT_PLAN = [
+  {
+    promptType: "visibility",
+    promptVersion: "v1_light",
+    queueName: "visibility_prompt_queue"
+  },
+  {
+    promptType: "competitor",
+    promptVersion: "v1_light",
+    queueName: "competitor_prompt_queue"
+  },
+  {
+    promptType: "ranking",
+    promptVersion: "v1_light",
+    queueName: "ranking_prompt_queue"
+  }
+] as const satisfies readonly PromptPlanEntry[];
+
+const USER_PROMPT_PLAN = [
+  {
+    promptType: "visibility",
+    promptVersion: "v1",
+    queueName: "visibility_prompt_queue"
+  },
   {
     promptType: "competitor",
     promptVersion: "v1",
@@ -10,11 +36,6 @@ const CORE_PROMPT_PLAN = [
     promptType: "ranking",
     promptVersion: "v1",
     queueName: "ranking_prompt_queue"
-  },
-  {
-    promptType: "visibility",
-    promptVersion: "v1",
-    queueName: "visibility_prompt_queue"
   },
   {
     promptType: "price_range",
@@ -29,7 +50,9 @@ const CORE_PROMPT_PLAN = [
 ] as const satisfies readonly PromptPlanEntry[];
 
 export function promptPlanFor(
-  _actorType: "anonymous" | "user"
+  context: PromptPlanPolicyContext
 ): readonly PromptPlanEntry[] {
-  return CORE_PROMPT_PLAN;
+  return context.actorType === "anonymous"
+    ? ANONYMOUS_PROMPT_PLAN
+    : USER_PROMPT_PLAN;
 }

@@ -7,6 +7,10 @@ import { ApplicationError } from "../errors/application-error.js";
 import { HierarchyService } from "../hierarchy/hierarchy.service.js";
 import { OutboxEventWriterRepository } from "../outbox/outbox-event-writer.repository.js";
 import type { OwnershipContext } from "../ownership/ownership-context.types.js";
+import {
+  InvalidProviderModelSelectionError,
+  selectProviderModel
+} from "../providers/provider-model.policy.js";
 import type { AnalysisRunRow } from "../types/database.types.js";
 import type { CreateAnalysisRequest } from "./analysis.schemas.js";
 import { AnalysisRepository } from "./analysis.repository.js";
@@ -29,6 +33,7 @@ export class AnalysisService {
     clientIdempotencyKey: string,
     owner: OwnershipContext
   ): Promise<CreateAnalysisResponse> {
+    const modelPreference = resolveModelPreference(request, owner);
     return inTransaction(this.database, async (client) => {
       const resolved = await this.hierarchy.resolveStartingPath(client, {
         domain: request.domain,
@@ -42,7 +47,8 @@ export class AnalysisService {
         categoryId: request.categoryId ?? null,
         brandId: request.brandId ?? null,
         productId: request.productId ?? null,
-        useContextId: request.useContextId ?? null
+        useContextId: request.useContextId ?? null,
+        ...modelPreference
       };
       const idempotencyKey = ownerScopedIdempotencyKey(
         owner,
@@ -60,6 +66,8 @@ export class AnalysisService {
         idempotencyKey,
         ...ownership,
         startingEntityPathId: resolved.path.entity_path_id,
+        requestedProvider: canonicalRequest.requestedProvider,
+        requestedModel: canonicalRequest.requestedModel,
         requestPayload: canonicalRequest
       });
       if (!created) {
@@ -171,8 +179,37 @@ function sameCanonicalRequest(
     stored.categoryId === expected.categoryId &&
     stored.brandId === expected.brandId &&
     stored.productId === expected.productId &&
-    stored.useContextId === expected.useContextId
+    stored.useContextId === expected.useContextId &&
+    (stored.requestedProvider ?? null) === expected.requestedProvider &&
+    (stored.requestedModel ?? null) === expected.requestedModel
   );
+}
+
+function resolveModelPreference(
+  request: CreateAnalysisRequest,
+  owner: OwnershipContext
+) {
+  try {
+    const selection = selectProviderModel({
+      actorType: owner.actorType,
+      requestedProvider: request.preferredProvider ?? null,
+      requestedModel: request.preferredModel ?? null
+    });
+    return owner.actorType === "anonymous"
+      ? {
+          requestedProvider: null,
+          requestedModel: null
+        }
+      : {
+          requestedProvider: selection.provider,
+          requestedModel: selection.model
+        };
+  } catch (error) {
+    if (error instanceof InvalidProviderModelSelectionError) {
+      throw new ApplicationError("VALIDATION_ERROR", error.message);
+    }
+    throw error;
+  }
 }
 
 function createResponse(

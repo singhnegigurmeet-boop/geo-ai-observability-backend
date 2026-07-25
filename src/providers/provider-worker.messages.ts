@@ -9,7 +9,7 @@ const payloadSchema = z
     providerJobId: databaseId,
     promptJobId: databaseId,
     provider: z.literal("mock"),
-    model: z.literal("mock-fast")
+    model: z.enum(["mock-fast", "mock-standard", "mock-quality"])
   })
   .strict();
 

@@ -2,7 +2,8 @@ import type { DatabaseExecutor } from "../db/database-executor.js";
 import type { OwnershipContext } from "../ownership/ownership-context.types.js";
 import type {
   AnalysisRunRow,
-  JsonObject
+  JsonObject,
+  ProviderName
 } from "../types/database.types.js";
 import type { AnalysisRunStatusRecord } from "./analysis.types.js";
 
@@ -12,6 +13,8 @@ export type CreateAnalysisRunRecord = {
   userId: string | null;
   workspaceId: string | null;
   startingEntityPathId: string;
+  requestedProvider: ProviderName | null;
+  requestedModel: string | null;
   requestPayload: JsonObject;
 };
 
@@ -35,11 +38,13 @@ export class AnalysisRepository {
           user_id,
           workspace_id,
           starting_entity_path_id,
+          requested_provider,
+          requested_model,
           source,
           status,
           request_payload
         )
-        VALUES ($1, $2, $3, $4, $5, 'manual', 'queued', $6)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'manual', 'queued', $8)
         ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING *
       `,
@@ -49,6 +54,8 @@ export class AnalysisRepository {
         input.userId,
         input.workspaceId,
         input.startingEntityPathId,
+        input.requestedProvider,
+        input.requestedModel,
         input.requestPayload
       ]
     );

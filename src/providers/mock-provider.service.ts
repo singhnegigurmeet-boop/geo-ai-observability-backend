@@ -5,6 +5,7 @@ import type {
 import { inTransaction } from "../db/database-executor.js";
 import type { JsonObject } from "../types/database.types.js";
 import { MockProviderRepository } from "./mock-provider.repository.js";
+import { isMockModel } from "./provider-model.policy.js";
 import type { ProviderJobCreatedPayload } from "./provider-worker.messages.js";
 
 type MockProviderDatabase = DatabaseExecutor & TransactionPool;
@@ -51,10 +52,10 @@ export class MockProviderService {
           "Message identifiers or provider selection do not match authoritative state"
         );
       }
-      if (state.provider !== "mock" || state.model !== "mock-fast") {
+      if (state.provider !== "mock" || !isMockModel(state.model)) {
         throw new MockProviderExecutionError(
           "UNSUPPORTED_PROVIDER_SELECTION",
-          "Phase 8 mock worker only executes mock/mock-fast jobs"
+          "Phase 8 mock worker only executes allowed mock models"
         );
       }
       if (
@@ -70,11 +71,13 @@ export class MockProviderService {
 
       const parsedResponse = deterministicEvidence(
         state.provider_job_id,
-        state.prompt_type
+        state.prompt_type,
+        state.model
       );
       const rawResponse = JSON.stringify(parsedResponse);
       const result = await repository.createOrReuseResult({
         providerJobId: state.provider_job_id,
+        model: state.model,
         parsedResponse,
         rawResponse
       });
@@ -104,11 +107,12 @@ export class MockProviderService {
 
 function deterministicEvidence(
   providerJobId: string,
-  promptType: string
+  promptType: string,
+  model: string
 ): JsonObject {
   return {
     provider: "mock",
-    model: "mock-fast",
+    model,
     promptType,
     evidence: [
       {

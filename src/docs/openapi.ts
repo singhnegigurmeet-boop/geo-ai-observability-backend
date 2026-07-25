@@ -8,9 +8,9 @@ export const openApiDocument = {
   openapi: "3.0.3",
   info: {
     title: "GEO V6 Production Core API",
-    version: "0.1.0-phase4",
+    version: "0.1.0-phase8",
     description:
-      "GEO V6 Production Core Phase 4 API. Analysis submission creates a queued analysis run and transactional outbox event only; expansion, providers, scoring, and reports remain unimplemented."
+      "GEO V6 Production Core through Phase 8. Analysis submission accepts bounded logged-in mock-model preference; scoring and reports remain unimplemented."
   },
   servers: [
     {
@@ -41,7 +41,7 @@ export const openApiDocument = {
         tags: ["Analysis"],
         summary: "Submit an analysis run",
         description:
-          "Creates or replays a queued analysis run and atomically records its analysis_run.created outbox event.",
+          "Creates or replays a queued analysis run and atomically records its analysis_run.created outbox event. Anonymous requests cannot select a model; logged-in requests may select an allowed mock model.",
         security: ownershipSecurity,
         parameters: [
           {
@@ -152,7 +152,18 @@ export const openApiDocument = {
           categoryId: { $ref: "#/components/schemas/DatabaseId" },
           brandId: { $ref: "#/components/schemas/DatabaseId" },
           productId: { $ref: "#/components/schemas/DatabaseId" },
-          useContextId: { $ref: "#/components/schemas/DatabaseId" }
+          useContextId: { $ref: "#/components/schemas/DatabaseId" },
+          preferredProvider: {
+            type: "string",
+            enum: ["mock"],
+            description: "Logged-in requests only. Omit for anonymous requests."
+          },
+          preferredModel: {
+            type: "string",
+            enum: ["mock-fast", "mock-standard", "mock-quality"],
+            description:
+              "Logged-in requests only. Defaults to mock-standard."
+          }
         }
       },
       CreateAnalysisResponse: {

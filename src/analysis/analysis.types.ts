@@ -11,6 +11,8 @@ export type CanonicalAnalysisRequest = JsonObject & {
   brandId: string | null;
   productId: string | null;
   useContextId: string | null;
+  requestedProvider: "mock" | null;
+  requestedModel: string | null;
 };
 
 export type CreateAnalysisResponse = {

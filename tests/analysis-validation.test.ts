@@ -45,6 +45,30 @@ describe("analysis submission validation", () => {
     }
   });
 
+  it("accepts only the bounded Phase 8 mock preference fields", () => {
+    assert.equal(
+      createAnalysisRequestSchema.safeParse({
+        domain: "example.com",
+        preferredProvider: "mock",
+        preferredModel: "mock-quality"
+      }).success,
+      true
+    );
+    for (const preferred of [
+      { preferredProvider: "openai" },
+      { preferredModel: "gpt-4o-mini" },
+      { preferredModel: "arbitrary" }
+    ]) {
+      assert.equal(
+        createAnalysisRequestSchema.safeParse({
+          domain: "example.com",
+          ...preferred
+        }).success,
+        false
+      );
+    }
+  });
+
   it("requires one bounded Idempotency-Key value", () => {
     assert.equal(parseIdempotencyKey(" request-1 "), "request-1");
     assert.throws(

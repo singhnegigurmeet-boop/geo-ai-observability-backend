@@ -361,6 +361,106 @@ describe(
       );
       assert.equal(claimedRow.user_id, user.userId);
       assert.equal(claimedRow.workspace_id, user.workspaceId);
+      assert.deepEqual(
+        await runPreference(claimed.body.analysisRunId),
+        {
+          requested_provider: "mock",
+          requested_model: "mock-standard",
+          payload_provider: "mock",
+          payload_model: "mock-standard"
+        }
+      );
+    });
+
+    it("allows bounded user model selection, rejects anonymous selection, and includes it in request identity", async () => {
+      const anonymous = await createAnonymousOwner();
+      const denied = await postAnalysis(
+        {
+          domain: "anonymous-model.example",
+          preferredModel: "mock-quality"
+        },
+        "anonymous-model",
+        anonymous
+      );
+      assert.equal(denied.response.status, 400);
+      assert.equal(denied.body.details.category, "VALIDATION_ERROR");
+
+      const user = await createUserOwner(
+        "phase4-model@example.com",
+        "Phase 4 Model Workspace"
+      );
+      const defaulted = await postAnalysis(
+        { domain: "user-default-model.example" },
+        "user-default-model",
+        user.credentials
+      );
+      assert.deepEqual(
+        await runPreference(defaulted.body.analysisRunId),
+        {
+          requested_provider: "mock",
+          requested_model: "mock-standard",
+          payload_provider: "mock",
+          payload_model: "mock-standard"
+        }
+      );
+
+      const quality = await postAnalysis(
+        {
+          domain: "user-model.example",
+          preferredProvider: "mock",
+          preferredModel: "mock-quality"
+        },
+        "user-selected-model",
+        user.credentials
+      );
+      assert.equal(quality.response.status, 202);
+      assert.deepEqual(
+        await runPreference(quality.body.analysisRunId),
+        {
+          requested_provider: "mock",
+          requested_model: "mock-quality",
+          payload_provider: "mock",
+          payload_model: "mock-quality"
+        }
+      );
+      const replay = await postAnalysis(
+        {
+          domain: "USER-MODEL.EXAMPLE.",
+          preferredProvider: "mock",
+          preferredModel: "mock-quality"
+        },
+        "user-selected-model",
+        user.credentials
+      );
+      assert.equal(replay.body.analysisRunId, quality.body.analysisRunId);
+      assert.equal(replay.body.idempotentReplay, true);
+
+      const changedModel = await postAnalysis(
+        {
+          domain: "user-model.example",
+          preferredProvider: "mock",
+          preferredModel: "mock-fast"
+        },
+        "user-selected-model",
+        user.credentials
+      );
+      assert.equal(changedModel.response.status, 409);
+      assert.equal(changedModel.body.details.category, "CONFLICT");
+
+      const independentModel = await postAnalysis(
+        {
+          domain: "user-model.example",
+          preferredProvider: "mock",
+          preferredModel: "mock-fast"
+        },
+        "user-fast-model",
+        user.credentials
+      );
+      assert.equal(independentModel.response.status, 202);
+      assert.notEqual(
+        independentModel.body.analysisRunId,
+        quality.body.analysisRunId
+      );
     });
 
     it("rejects a user token for a workspace without membership", async () => {
@@ -839,6 +939,27 @@ describe(
         user_id: string | null;
         workspace_id: string | null;
       };
+    }
+
+    async function runPreference(analysisRunId: string) {
+      const result = await pool.query<{
+        requested_provider: string | null;
+        requested_model: string | null;
+        payload_provider: string | null;
+        payload_model: string | null;
+      }>(
+        `
+          SELECT
+            requested_provider,
+            requested_model,
+            request_payload ->> 'requestedProvider' AS payload_provider,
+            request_payload ->> 'requestedModel' AS payload_model
+          FROM analysis_runs
+          WHERE analysis_run_id = $1
+        `,
+        [analysisRunId]
+      );
+      return result.rows[0]!;
     }
   }
 );

@@ -62,7 +62,7 @@ export class PromptExecutionService {
         state.user_id && state.workspace_id ? "user" : "anonymous";
       const promptText = this.renderer.render({
         promptType: state.prompt_type,
-        promptVersion: state.prompt_version as "v1",
+        promptVersion: state.prompt_version as "v1" | "v1_light",
         actorType,
         normalizedDomain: state.normalized_domain,
         pathType: state.path_type,
@@ -88,7 +88,11 @@ export class PromptExecutionService {
           "Pending prompt job could not transition to processing"
         );
       }
-      const selection = selectProviderModel();
+      const selection = selectProviderModel({
+        actorType,
+        requestedProvider: state.requested_provider,
+        requestedModel: state.requested_model
+      });
       const providerJob = await new ProviderJobRepository(
         client
       ).createOrReuse({

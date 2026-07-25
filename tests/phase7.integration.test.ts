@@ -18,12 +18,17 @@ import { FailureRecordRepository } from "../src/reliability/failure-record.repos
 import { LlmRunWorkerRuntime } from "../src/runtime/llm-run-worker.runtime.js";
 
 const enabled = process.env.RUN_PHASE7_INTEGRATION_TESTS === "true";
-const promptTypes = [
+const userPromptTypes = [
+  "visibility",
   "competitor",
   "ranking",
-  "visibility",
   "price_range",
   "pros_cons"
+] as const;
+const anonymousPromptTypes = [
+  "visibility",
+  "competitor",
+  "ranking"
 ] as const;
 const queueByPromptType = {
   competitor: "competitor_prompt_queue",
@@ -92,27 +97,27 @@ describe(
       await pool?.end();
     });
 
-    it("creates the exact five unrendered pending prompt jobs and marks the LLM run processing", async () => {
+    it("creates the reduced three-job light plan for anonymous work", async () => {
       const fixture = await seedLlmRun(pool, "anonymous");
       const parentBefore = await parentState(pool, fixture);
       const result = await new PromptPlanningService(pool).plan(
         payload(fixture)
       );
-      assert.deepEqual(result, { outcome: "planned", promptJobCount: 5 });
+      assert.deepEqual(result, { outcome: "planned", promptJobCount: 3 });
 
       const jobs = await promptJobs(pool, fixture.llmRunId);
       assert.deepEqual(
         jobs.map((job) => job.prompt_type),
-        [...promptTypes]
+        [...anonymousPromptTypes]
       );
-      assert.ok(jobs.every((job) => job.prompt_version === "v1"));
+      assert.ok(jobs.every((job) => job.prompt_version === "v1_light"));
       assert.ok(jobs.every((job) => job.status === "pending"));
       assert.ok(jobs.every((job) => job.prompt_text === null));
       assert.ok(
         jobs.every(
           (job) =>
             job.idempotency_key ===
-            `prompt_job:${fixture.llmRunId}:${job.prompt_type}:v1`
+            `prompt_job:${fixture.llmRunId}:${job.prompt_type}:v1_light`
         )
       );
 
@@ -124,7 +129,19 @@ describe(
       assert.deepEqual(await parentState(pool, fixture), parentBefore);
     });
 
-    it("emits one ID-and-routing-only outbox event per prompt and preserves claimed ownership", async () => {
+    it("creates five rich jobs for logged-in and claimed work and preserves claim ownership", async () => {
+      const loggedIn = await seedLlmRun(pool, "user");
+      assert.deepEqual(
+        await new PromptPlanningService(pool).plan(payload(loggedIn)),
+        { outcome: "planned", promptJobCount: 5 }
+      );
+      const loggedJobs = await promptJobs(pool, loggedIn.llmRunId);
+      assert.deepEqual(
+        loggedJobs.map((job) => job.prompt_type),
+        [...userPromptTypes]
+      );
+      assert.ok(loggedJobs.every((job) => job.prompt_version === "v1"));
+
       const fixture = await seedLlmRun(pool, "claimed");
       await new PromptPlanningService(pool).plan(payload(fixture));
       const events = await promptOutbox(pool, fixture.llmRunId);
@@ -204,8 +221,8 @@ describe(
         outcome: "noop",
         promptJobCount: 0
       });
-      assert.equal((await promptJobs(pool, fixture.llmRunId)).length, 5);
-      assert.equal((await promptOutbox(pool, fixture.llmRunId)).length, 5);
+      assert.equal((await promptJobs(pool, fixture.llmRunId)).length, 3);
+      assert.equal((await promptOutbox(pool, fixture.llmRunId)).length, 3);
 
       const terminal = await seedLlmRun(
         pool,
@@ -335,12 +352,12 @@ type Fixture = {
   actorType: "anonymous" | "user";
   userId: string | null;
   workspaceId: string | null;
-  anonymousSessionId: string;
+  anonymousSessionId: string | null;
 };
 
 async function seedLlmRun(
   pool: pg.Pool,
-  ownership: "anonymous" | "claimed",
+  ownership: "anonymous" | "user" | "claimed",
   suffix = crypto.randomUUID()
 ): Promise<Fixture> {
   const domain = await pool.query<{ id: string }>(
@@ -355,7 +372,7 @@ async function seedLlmRun(
   );
   let userId: string | null = null;
   let workspaceId: string | null = null;
-  if (ownership === "claimed") {
+  if (ownership !== "anonymous") {
     const user = await pool.query<{ id: string }>(
       `INSERT INTO users (email) VALUES ($1) RETURNING user_id AS id`,
       [`${suffix}@phase7.example`]
@@ -373,32 +390,39 @@ async function seedLlmRun(
       [workspaceId, userId]
     );
   }
-  const anonymous = await pool.query<{ id: string }>(
-    `INSERT INTO anonymous_sessions (
-       token_hash, expires_at, claimed_by_user_id, claimed_workspace_id, claimed_at
-     )
-     VALUES ($1, now() + interval '1 day', $2, $3, $4)
-     RETURNING anonymous_session_id AS id`,
-    [
-      `phase7-${suffix}`,
-      userId,
-      workspaceId,
-      ownership === "claimed" ? new Date() : null
-    ]
-  );
+  let anonymousSessionId: string | null = null;
+  if (ownership !== "user") {
+    const anonymous = await pool.query<{ id: string }>(
+      `INSERT INTO anonymous_sessions (
+         token_hash, expires_at, claimed_by_user_id, claimed_workspace_id, claimed_at
+       )
+       VALUES ($1, now() + interval '1 day', $2, $3, $4)
+       RETURNING anonymous_session_id AS id`,
+      [
+        `phase7-${suffix}`,
+        userId,
+        workspaceId,
+        ownership === "claimed" ? new Date() : null
+      ]
+    );
+    anonymousSessionId = anonymous.rows[0]!.id;
+  }
   const run = await pool.query<{ id: string }>(
     `INSERT INTO analysis_runs (
        idempotency_key, anonymous_session_id, user_id, workspace_id,
-       starting_entity_path_id, status, request_payload, started_at
+       starting_entity_path_id, requested_provider, requested_model,
+       status, request_payload, started_at
      )
-     VALUES ($1, $2, $3, $4, $5, 'processing', '{}'::jsonb, now())
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'processing', '{}'::jsonb, now())
      RETURNING analysis_run_id AS id`,
     [
       `phase7-run-${suffix}`,
-      anonymous.rows[0]!.id,
+      anonymousSessionId,
       userId,
       workspaceId,
-      entityPath.rows[0]!.id
+      entityPath.rows[0]!.id,
+      ownership === "anonymous" ? null : "mock",
+      ownership === "anonymous" ? null : "mock-standard"
     ]
   );
   const item = await pool.query<{ id: string }>(
@@ -425,10 +449,10 @@ async function seedLlmRun(
     runId: run.rows[0]!.id,
     entityPathId: entityPath.rows[0]!.id,
     startingEntityPathId: entityPath.rows[0]!.id,
-    actorType: ownership === "claimed" ? "user" : "anonymous",
+    actorType: ownership === "anonymous" ? "anonymous" : "user",
     userId,
     workspaceId,
-    anonymousSessionId: anonymous.rows[0]!.id
+    anonymousSessionId
   };
 }
 

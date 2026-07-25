@@ -71,7 +71,15 @@ export class PromptPlanningService {
 
       const actorType =
         parent.user_id && parent.workspace_id ? "user" : "anonymous";
-      const plan = promptPlanFor(actorType);
+      const plan = promptPlanFor({
+        actorType,
+        userId: parent.user_id,
+        workspaceId: parent.workspace_id,
+        anonymousSessionId: parent.anonymous_session_id,
+        pathLevel: path.path_type,
+        requestedProvider: parent.requested_provider,
+        requestedModel: parent.requested_model
+      });
       const prompts = new PromptJobRepository(client);
       const outbox = new OutboxEventWriterRepository(client);
       for (const entry of plan) {

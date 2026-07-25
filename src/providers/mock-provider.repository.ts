@@ -37,6 +37,7 @@ export class MockProviderRepository {
 
   async createOrReuseResult(input: {
     providerJobId: string;
+    model: string;
     parsedResponse: JsonObject;
     rawResponse: string;
   }) {
@@ -58,7 +59,7 @@ export class MockProviderRepository {
           received_at
         )
         VALUES (
-          $1, $2, 'mock', 'valid', $3, 'mock-fast', $4, $5,
+          $1, $2, 'mock', 'valid', $3, $4, $5, $6,
           '[]'::jsonb, 'mock_complete', 0, now()
         )
         ON CONFLICT (provider_job_id) DO NOTHING
@@ -68,6 +69,7 @@ export class MockProviderRepository {
         idempotencyKey,
         input.providerJobId,
         `mock:${input.providerJobId}`,
+        input.model,
         input.rawResponse,
         input.parsedResponse
       ]
@@ -84,14 +86,15 @@ export class MockProviderRepository {
           AND provider = 'mock'
           AND status = 'valid'
           AND provider_request_id = $3
-          AND model_version = 'mock-fast'
-          AND raw_response = $4
-          AND parsed_response = $5::jsonb
+          AND model_version = $4
+          AND raw_response = $5
+          AND parsed_response = $6::jsonb
       `,
       [
         input.providerJobId,
         idempotencyKey,
         `mock:${input.providerJobId}`,
+        input.model,
         input.rawResponse,
         input.parsedResponse
       ]

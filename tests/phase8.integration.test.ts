@@ -23,12 +23,17 @@ import { PromptWorkerRuntime } from "../src/runtime/prompt-worker.runtime.js";
 import type { PromptType } from "../src/types/database.types.js";
 
 const enabled = process.env.RUN_PHASE8_INTEGRATION_TESTS === "true";
-const promptTypes: PromptType[] = [
+const userPromptTypes: PromptType[] = [
+  "visibility",
   "competitor",
   "ranking",
-  "visibility",
   "price_range",
   "pros_cons"
+];
+const anonymousPromptTypes: PromptType[] = [
+  "visibility",
+  "competitor",
+  "ranking"
 ];
 
 describe(
@@ -99,8 +104,8 @@ describe(
       await pool?.end();
     });
 
-    it("renders all five canonical v1 prompts and idempotently enqueues mock/mock-fast jobs", async () => {
-      for (const promptType of promptTypes) {
+    it("renders reduced anonymous prompts with mock-fast and rich user prompts with mock-standard", async () => {
+      for (const promptType of anonymousPromptTypes) {
         const fixture = await seedPrompt(
           pool,
           promptType,
@@ -143,6 +148,27 @@ describe(
         );
         assert.equal((await providerJobs(pool, fixture.promptJobId)).length, 1);
       }
+
+      for (const promptType of userPromptTypes) {
+        const fixture = await seedPrompt(
+          pool,
+          promptType,
+          "user",
+          crypto.randomUUID()
+        );
+        await new PromptExecutionService(pool).execute(promptPayload(fixture));
+        const prompt = await promptState(pool, fixture.promptJobId);
+        assert.equal(prompt.status, "processing");
+        assert.ok(prompt.prompt_text?.trim());
+        assert.match(prompt.prompt_text!, /actor_policy=user/);
+        const job = (await providerJobs(pool, fixture.promptJobId))[0]!;
+        assert.equal(job.provider, "mock");
+        assert.equal(job.model, "mock-standard");
+        assert.equal(
+          job.idempotency_key,
+          `provider_job:${fixture.promptJobId}:mock:mock-standard`
+        );
+      }
     });
 
     it("renders claimed work with user policy while preserving its anonymous origin validation", async () => {
@@ -152,6 +178,10 @@ describe(
       assert.match(prompt.prompt_text!, /actor_policy=user/);
       assert.equal(fixture.actorType, "user");
       assert.ok(fixture.anonymousSessionId);
+      assert.equal(
+        (await providerJobs(pool, fixture.promptJobId))[0]?.model,
+        "mock-standard"
+      );
     });
 
     it("rejects message-state mismatches and blank rendering with complete rollback", async () => {
@@ -181,7 +211,13 @@ describe(
     });
 
     it("stores immutable deterministic evidence and actual token usage exactly once", async () => {
-      const fixture = await seedPrompt(pool, "pros_cons", "anonymous");
+      const fixture = await seedPrompt(
+        pool,
+        "pros_cons",
+        "user",
+        crypto.randomUUID(),
+        "mock-quality"
+      );
       const planned = await new PromptExecutionService(pool).execute(
         promptPayload(fixture)
       );
@@ -194,9 +230,9 @@ describe(
       const result = await providerResult(pool, planned.providerJobId);
       assert.equal(result.provider, "mock");
       assert.equal(result.status, "valid");
-      assert.equal(result.model_version, "mock-fast");
+      assert.equal(result.model_version, "mock-quality");
       assert.equal(result.parsed_response.provider, "mock");
-      assert.equal(result.parsed_response.model, "mock-fast");
+      assert.equal(result.parsed_response.model, "mock-quality");
       assert.equal(result.parsed_response.promptType, "pros_cons");
       assert.equal(result.latency_ms, 0);
 
@@ -253,7 +289,7 @@ describe(
     });
 
     it("rolls provider evidence, usage, and status back together on technical failure", async () => {
-      const fixture = await seedPrompt(pool, "price_range", "anonymous");
+      const fixture = await seedPrompt(pool, "price_range", "user");
       const planned = await new PromptExecutionService(pool).execute(
         promptPayload(fixture)
       );
@@ -439,17 +475,20 @@ type Fixture = {
   entityPathId: string;
   startingEntityPathId: string;
   promptType: PromptType;
+  promptVersion: "v1" | "v1_light";
+  expectedModel: "mock-fast" | "mock-standard" | "mock-quality";
   actorType: "anonymous" | "user";
   userId: string | null;
   workspaceId: string | null;
-  anonymousSessionId: string;
+  anonymousSessionId: string | null;
 };
 
 async function seedPrompt(
   pool: pg.Pool,
   promptType: PromptType,
-  ownership: "anonymous" | "claimed",
-  suffix = crypto.randomUUID()
+  ownership: "anonymous" | "user" | "claimed",
+  suffix = crypto.randomUUID(),
+  requestedModel: "mock-fast" | "mock-standard" | "mock-quality" | null = null
 ): Promise<Fixture> {
   const domain = await pool.query<{ id: string }>(
     `INSERT INTO domains (normalized_domain)
@@ -468,7 +507,7 @@ async function seedPrompt(
   );
   let userId: string | null = null;
   let workspaceId: string | null = null;
-  if (ownership === "claimed") {
+  if (ownership !== "anonymous") {
     userId = (
       await pool.query<{ id: string }>(
         "INSERT INTO users (email) VALUES ($1) RETURNING user_id AS id",
@@ -488,8 +527,10 @@ async function seedPrompt(
       [workspaceId, userId]
     );
   }
-  const anonymousSessionId = (
-    await pool.query<{ id: string }>(
+  let anonymousSessionId: string | null = null;
+  if (ownership !== "user") {
+    anonymousSessionId = (
+      await pool.query<{ id: string }>(
       `INSERT INTO anonymous_sessions (
          token_hash, expires_at, claimed_by_user_id, claimed_workspace_id, claimed_at
        )
@@ -501,22 +542,30 @@ async function seedPrompt(
         workspaceId,
         ownership === "claimed" ? new Date() : null
       ]
-    )
-  ).rows[0]!.id;
+      )
+    ).rows[0]!.id;
+  }
+  const resolvedModel =
+    ownership === "anonymous"
+      ? null
+      : (requestedModel ?? "mock-standard");
   const runId = (
     await pool.query<{ id: string }>(
       `INSERT INTO analysis_runs (
          idempotency_key, anonymous_session_id, user_id, workspace_id,
-         starting_entity_path_id, status, request_payload, started_at
+         starting_entity_path_id, requested_provider, requested_model,
+         status, request_payload, started_at
        )
-       VALUES ($1, $2, $3, $4, $5, 'processing', '{}'::jsonb, now())
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'processing', '{}'::jsonb, now())
        RETURNING analysis_run_id AS id`,
       [
         `phase8-run-${suffix}`,
         anonymousSessionId,
         userId,
         workspaceId,
-        path.rows[0]!.id
+        path.rows[0]!.id,
+        ownership === "anonymous" ? null : "mock",
+        resolvedModel
       ]
     )
   ).rows[0]!.id;
@@ -547,9 +596,14 @@ async function seedPrompt(
          idempotency_key, llm_run_id, prompt_type, prompt_version,
          status, prompt_text
        )
-       VALUES ($1, $2, $3, 'v1', 'pending', NULL)
+       VALUES ($1, $2, $3, $4, 'pending', NULL)
        RETURNING prompt_job_id AS id`,
-      [`phase8-prompt-${suffix}`, llmRunId, promptType]
+      [
+        `phase8-prompt-${suffix}`,
+        llmRunId,
+        promptType,
+        ownership === "anonymous" ? "v1_light" : "v1"
+      ]
     )
   ).rows[0]!.id;
   return {
@@ -560,7 +614,9 @@ async function seedPrompt(
     entityPathId: path.rows[0]!.id,
     startingEntityPathId: path.rows[0]!.id,
     promptType,
-    actorType: ownership === "claimed" ? "user" : "anonymous",
+    promptVersion: ownership === "anonymous" ? "v1_light" : "v1",
+    expectedModel: resolvedModel ?? "mock-fast",
+    actorType: ownership === "anonymous" ? "anonymous" : "user",
     userId,
     workspaceId,
     anonymousSessionId
@@ -576,7 +632,7 @@ function promptPayload(fixture: Fixture): PromptJobCreatedPayload {
     entityPathId: fixture.entityPathId,
     startingEntityPathId: fixture.startingEntityPathId,
     promptType: fixture.promptType,
-    promptVersion: "v1",
+    promptVersion: fixture.promptVersion,
     actorType: fixture.actorType,
     userId: fixture.userId,
     workspaceId: fixture.workspaceId,
@@ -604,7 +660,7 @@ function providerPayload(
     providerJobId,
     promptJobId: fixture.promptJobId,
     provider: "mock",
-    model: "mock-fast"
+    model: fixture.expectedModel
   };
 }
 

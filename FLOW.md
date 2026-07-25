@@ -24,7 +24,7 @@ Analysis run item worker process
 LLM run worker process
   -> consume llm_run_queue
   -> PostgreSQL locked planning transaction
-  -> five prompt_job.created outbox events
+  -> actor-specific prompt_job.created outbox events
 
 Prompt worker process
   -> consume five prompt-type queues
@@ -69,9 +69,13 @@ categoryId
 brandId
 productId
 useContextId
+requestedProvider
+requestedModel
 ```
 
-Missing hierarchy IDs are stored as `null`. This canonical form makes casing and a trailing domain dot idempotently equivalent.
+Missing hierarchy IDs are stored as `null`. Anonymous model fields are null because policy fixes its cheap model. User/claimed fields contain the resolved mock provider and selected/default model. This canonical form makes casing and a trailing domain dot idempotently equivalent while keeping model choices distinct.
+
+Migration `019` stores the authoritative user/claimed preference on `analysis_runs`. Anonymous runs cannot store a selection. The resolved provider/model also participates in canonical request comparison, so a model change cannot replay an incompatible run.
 
 Future network-fetch code must still resolve and validate destination addresses at fetch time and after redirects; normalization does not replace an SSRF-safe network policy.
 
@@ -91,6 +95,9 @@ same owner + same key + different canonical request
 
 different owner + same client key
   -> independent run
+
+same owner + same key + different resolved model
+  -> 409 CONFLICT
 ```
 
 Only a newly inserted run gets an outbox event. Concurrent inserts rely on the database uniqueness constraint and reload the winning row.
@@ -228,21 +235,28 @@ consume llm_run.created
   -> load parent analysis_run_item and analysis_run
   -> load active item entity_path
   -> validate item, run, path, starting path, and ownership IDs
-  -> create/reuse five pending, unrendered prompt_jobs
+  -> call actor-aware prompt policy
+  -> create/reuse the selected pending, unrendered prompt_jobs
   -> create/reuse one prompt_job.created outbox event per job
   -> mark llm_run processing
   -> commit
   -> acknowledge delivery
 ```
 
-The plan is fixed for both anonymous and user-owned work:
+The plans are differentiated:
 
 ```text
-competitor  v1 -> competitor_prompt_queue
-ranking     v1 -> ranking_prompt_queue
-visibility  v1 -> visibility_prompt_queue
-price_range v1 -> price_range_prompt_queue
-pros_cons   v1 -> pros_cons_prompt_queue
+anonymous:
+  visibility v1_light -> visibility_prompt_queue
+  competitor v1_light -> competitor_prompt_queue
+  ranking    v1_light -> ranking_prompt_queue
+
+user or valid claim:
+  visibility  v1 -> visibility_prompt_queue
+  competitor  v1 -> competitor_prompt_queue
+  ranking     v1 -> ranking_prompt_queue
+  price_range v1 -> price_range_prompt_queue
+  pros_cons   v1 -> pros_cons_prompt_queue
 ```
 
 Stable identities:
@@ -266,8 +280,8 @@ consume prompt_job.created from its prompt-type queue
   -> non-pending prompt job: idempotent no-op
   -> reload LLM run, item, run, active path, canonical names, and ownership
   -> validate every message identifier against authoritative state
-  -> render deterministic, nonblank v1 prompt text
-  -> select mock / mock-fast through provider policy
+  -> render deterministic, nonblank actor/version-specific prompt text
+  -> apply provider/model policy from authoritative run preference
   -> create/reuse queued provider_job
   -> create/reuse provider_job.created outbox event for mock_queue
   -> mark prompt_job processing
@@ -279,7 +293,7 @@ Templates exist for competitor, ranking, visibility, price range, and pros/cons.
 Stable identities:
 
 ```text
-provider job: provider_job:<promptJobId>:mock:mock-fast
+provider job: provider_job:<promptJobId>:mock:<resolvedModel>
 outbox:       provider_job.created:<providerJobId>
 ```
 
@@ -291,7 +305,7 @@ Migration `018` adds a PostgreSQL trigger that rejects any provider job whose re
 
 ```text
 consume provider_job.created from mock_queue
-  -> validate strict mock / mock-fast envelope
+  -> validate strict mock / allowed-model envelope
   -> begin PostgreSQL transaction
   -> lock provider_job and prompt_job
   -> non-queued provider job: idempotent no-op
@@ -302,7 +316,7 @@ consume provider_job.created from mock_queue
   -> commit
 ```
 
-Evidence uses `provider = mock`, `model_version = mock-fast`, a structured evidence array, and no score or report fields. Actual mock usage uses a deterministic prompt-length estimate, fixed output tokens, and zero cost. The schema links usage to provider/model through `provider_jobs`; those values are not duplicated in `token_usage`.
+Evidence uses `provider = mock`, the exact resolved model (`mock-fast`, `mock-standard`, or `mock-quality`), a structured evidence array, and no score or report fields. Actual mock usage uses a deterministic prompt-length estimate, fixed output tokens, and zero cost. The schema links usage to provider/model through `provider_jobs`; those values are not duplicated in `token_usage`.
 
 Technical failures roll the whole stage back and use the shared three-attempt retry/failure-record/DLQ behavior. Malformed messages are permanent failures. No external provider network calls occur.
 

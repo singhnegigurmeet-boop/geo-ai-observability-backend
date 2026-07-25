@@ -1,6 +1,6 @@
 # GEO V6 Production Core Backend
 
-This branch contains the Phase 8 prompt-rendering and mock-provider slice for GEO V6. PostgreSQL remains authoritative. Phase 7 plans five prompt jobs; Phase 8 renders them from canonical database context and stores deterministic mock provider evidence.
+This branch contains the Phase 8 prompt-rendering and mock-provider slice for GEO V6. PostgreSQL remains authoritative. Phase 7 creates a reduced three-job plan for anonymous work and a richer five-job plan for user/claimed work. Phase 8 renders the selected versions and stores deterministic mock provider evidence.
 
 ## Implemented
 
@@ -20,8 +20,8 @@ This branch contains the Phase 8 prompt-rendering and mock-provider slice for GE
 - Transactional `llm_run.created` ID-only outbox events
 - Five deterministic, unrendered `prompt_jobs` per queued `llm_run`
 - Transactional `prompt_job.created` routing events
-- Deterministic code-based v1 templates for all five prompt types
-- Policy-isolated `mock` / `mock-fast` provider selection
+- Deterministic code-based `v1_light` and `v1` prompt templates
+- Policy-isolated anonymous/user mock-model selection
 - Idempotent provider jobs, immutable mock provider results, and actual token usage
 - A dedicated `mock_queue` and DLQ; mock work is never routed to a real-provider queue
 - Shared reliable RabbitMQ consumer runtime across the business workers
@@ -71,6 +71,18 @@ Example body:
 }
 ```
 
+Logged-in requests may also select an allowed Phase 8 mock model:
+
+```json
+{
+  "domain": "example.com",
+  "preferredProvider": "mock",
+  "preferredModel": "mock-quality"
+}
+```
+
+Allowed models are `mock-fast`, `mock-standard`, and `mock-quality`. Logged-in and claimed requests default to `mock-standard`. Anonymous requests cannot send either preference and use the fixed `mock-fast` policy.
+
 The hierarchy must be contiguous:
 
 ```text
@@ -108,6 +120,8 @@ An accepted or idempotently replayed request returns `202`:
 ```
 
 Reusing a key for the same owner and normalized request returns the existing run. Reusing it for a different normalized request returns `409 CONFLICT`. The same client key may be used independently by another owner.
+
+Resolved provider/model selection is part of the canonical request identity. The same owner, path, and model replay idempotently; changing the model changes the request and conflicts when the same idempotency key is reused.
 
 ## Reliable Handoff
 
@@ -162,7 +176,7 @@ Run the Phase 7 prompt-planning consumer separately:
 npm run llm-run-worker:dev
 ```
 
-Phase 7 consumes `llm_run.created`, reloads and locks the authoritative LLM run, validates its item, run, path, starting path, and ownership, then creates exactly five pending jobs in fixed order: competitor, ranking, visibility, price range, and pros/cons. Each job uses prompt version `v1`, has `prompt_text = NULL`, and emits a `prompt_job.created` event to its dedicated prompt queue. The LLM run then moves to `processing`; its parent item and analysis run are not updated.
+Phase 7 consumes `llm_run.created`, reloads and locks the authoritative LLM run, validates its item, run, path, starting path, and ownership, then calls the actor-aware prompt policy. Anonymous work gets visibility, competitor, and ranking jobs at `v1_light`. Logged-in and valid claimed work gets visibility, competitor, ranking, price range, and pros/cons jobs at `v1`. Every planned job has `prompt_text = NULL` and emits `prompt_job.created` to its dedicated queue.
 
 Migration `017_allow_unrendered_prompt_jobs.sql` permits the Phase 7 planned state (`prompt_text = NULL`) while continuing to reject blank rendered text. Phase 8 fills that field before creating provider work.
 
@@ -173,11 +187,13 @@ npm run prompt-worker:dev
 npm run mock-provider-worker:dev
 ```
 
-The prompt worker consumes all five prompt-type queues. It locks each pending job, reloads its canonical hierarchy and ownership context, renders a nonblank v1 prompt, selects `provider = mock` and `model = mock-fast` through policy, creates one queued provider job, and emits `provider_job.created` to `mock_queue`.
+The prompt worker consumes all five prompt-type queues. It locks each pending job, reloads canonical hierarchy, ownership, and run model preference, renders the chosen `v1_light` or `v1` template, then applies provider/model policy. Anonymous uses `mock-fast`; logged-in/claimed uses its validated selection or defaults to `mock-standard`.
 
 The mock provider worker rejects unrendered prompts. For valid work it stores deterministic evidence in immutable `provider_results`, records deterministic `actual` token usage with zero cost, and marks both jobs succeeded. Stable database identities make both stages safe under redelivery.
 
 Migration `018_require_rendered_prompt_for_provider_jobs.sql` enforces the render-before-provider invariant inside PostgreSQL, including direct inserts outside the service path.
+
+Migration `019_add_analysis_run_model_preference.sql` adds nullable run-level provider/model preference columns. New anonymous runs keep them null; new user/claimed runs persist the validated or default mock selection.
 
 ## Verification
 

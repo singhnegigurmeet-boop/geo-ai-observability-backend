@@ -16,7 +16,7 @@ describe("Phase 8 prompt renderer", () => {
   it("renders every v1 prompt deterministically from canonical DB context", () => {
     const renderer = new PromptRendererService();
     for (const promptType of promptTypes) {
-      const context = renderingContext(promptType);
+      const context = renderingContext(promptType, "user");
       const first = renderer.render(context);
       assert.equal(renderer.render(context), first);
       assert.ok(first.trim().length > 0);
@@ -29,30 +29,33 @@ describe("Phase 8 prompt renderer", () => {
 
   it("preserves actor-aware rendering and rejects unknown versions", () => {
     const renderer = new PromptRendererService();
-    const anonymous = renderer.render(renderingContext("visibility"));
-    const user = renderer.render({
-      ...renderingContext("visibility"),
-      actorType: "user"
-    });
+    const anonymous = renderer.render(
+      renderingContext("visibility", "anonymous")
+    );
+    const user = renderer.render(renderingContext("visibility", "user"));
     assert.notEqual(anonymous, user);
+    assert.ok(anonymous.length < user.length);
     assert.match(anonymous, /actor_policy=anonymous/);
     assert.match(user, /actor_policy=user/);
     assert.throws(
       () =>
         renderer.render({
-          ...renderingContext("visibility"),
-          promptVersion: "v2" as "v1"
+          ...renderingContext("visibility", "user"),
+          promptVersion: "v2" as "v1" | "v1_light"
         }),
       /Unsupported prompt template/
     );
   });
 });
 
-function renderingContext(promptType: PromptType): PromptRenderingContext {
+function renderingContext(
+  promptType: PromptType,
+  actorType: "anonymous" | "user"
+): PromptRenderingContext {
   return {
     promptType,
-    promptVersion: "v1",
-    actorType: "anonymous",
+    promptVersion: actorType === "anonymous" ? "v1_light" : "v1",
+    actorType,
     normalizedDomain: "example.com",
     pathType: "brand",
     categoryName: "Software",

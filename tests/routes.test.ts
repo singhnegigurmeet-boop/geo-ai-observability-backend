@@ -47,7 +47,7 @@ describe("Production Core shell routes", () => {
     assert.deepEqual(await response.json(), { status: "ok" });
   });
 
-  it("GET /openapi.json documents the Phase 4 HTTP surface", async () => {
+  it("GET /openapi.json documents the current analysis HTTP surface", async () => {
     const response = await fetch(`${baseUrl}/openapi.json`);
     const document = (await response.json()) as {
       info: { version: string };
@@ -55,7 +55,7 @@ describe("Production Core shell routes", () => {
     };
 
     assert.equal(response.status, 200);
-    assert.equal(document.info.version, "0.1.0-phase4");
+    assert.equal(document.info.version, "0.1.0-phase8");
     assert.deepEqual(Object.keys(document.paths), [
       "/health",
       "/v1/analysis",

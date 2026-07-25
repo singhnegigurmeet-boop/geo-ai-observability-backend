@@ -68,7 +68,7 @@ function envelope() {
       entityPathId: "1",
       startingEntityPathId: "1",
       promptType: "visibility",
-      promptVersion: "v1",
+      promptVersion: "v1_light",
       actorType: "anonymous",
       userId: null,
       workspaceId: null,

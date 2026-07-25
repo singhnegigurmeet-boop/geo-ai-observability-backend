@@ -2,7 +2,7 @@ import type { EntityPathType, PromptType } from "../types/database.types.js";
 
 export type PromptRenderingContext = {
   promptType: PromptType;
-  promptVersion: "v1";
+  promptVersion: "v1" | "v1_light";
   actorType: "anonymous" | "user";
   normalizedDomain: string;
   pathType: EntityPathType;

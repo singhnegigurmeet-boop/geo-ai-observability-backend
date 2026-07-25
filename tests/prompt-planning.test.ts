@@ -7,16 +7,35 @@ import {
 import { promptPlanFor } from "../src/prompts/prompt-plan.policy.js";
 
 describe("LLM-run prompt plan policy", () => {
-  it("returns the same deterministic five-entry v1 plan for every actor", () => {
+  it("returns a reduced light plan for anonymous work", () => {
+    const plan = promptPlanFor(policyContext("anonymous"));
+    assert.deepEqual(
+      plan.map((entry) => [
+        entry.promptType,
+        entry.promptVersion,
+        entry.queueName
+      ]),
+      [
+        ["visibility", "v1_light", "visibility_prompt_queue"],
+        ["competitor", "v1_light", "competitor_prompt_queue"],
+        ["ranking", "v1_light", "ranking_prompt_queue"]
+      ]
+    );
+  });
+
+  it("returns the richer five-job plan for users and claimed sessions", () => {
     const expected = [
+      ["visibility", "visibility_prompt_queue"],
       ["competitor", "competitor_prompt_queue"],
       ["ranking", "ranking_prompt_queue"],
-      ["visibility", "visibility_prompt_queue"],
       ["price_range", "price_range_prompt_queue"],
       ["pros_cons", "pros_cons_prompt_queue"]
     ];
-    for (const actor of ["anonymous", "user"] as const) {
-      const plan = promptPlanFor(actor);
+    for (const anonymousSessionId of [null, "9"]) {
+      const plan = promptPlanFor({
+        ...policyContext("user"),
+        anonymousSessionId
+      });
       assert.deepEqual(
         plan.map((entry) => [entry.promptType, entry.queueName]),
         expected
@@ -25,6 +44,18 @@ describe("LLM-run prompt plan policy", () => {
     }
   });
 });
+
+function policyContext(actorType: "anonymous" | "user") {
+  return {
+    actorType,
+    userId: actorType === "user" ? "1" : null,
+    workspaceId: actorType === "user" ? "2" : null,
+    anonymousSessionId: actorType === "anonymous" ? "3" : null,
+    pathLevel: "domain" as const,
+    requestedProvider: actorType === "user" ? ("mock" as const) : null,
+    requestedModel: actorType === "user" ? "mock-standard" : null
+  };
+}
 
 describe("llm_run.created message validation", () => {
   it("accepts a valid message", () => {

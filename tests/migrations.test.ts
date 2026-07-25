@@ -343,6 +343,36 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
        WHERE idempotency_key = 'migration-018-existing-provider'`
     );
     assert.equal(retainedProvider.rows[0]?.count, "1");
+
+    const modelPreferenceMigration =
+      "019_add_analysis_run_model_preference.sql";
+    const modelPreferenceIndex =
+      migrationFilenames.indexOf(modelPreferenceMigration);
+    if (modelPreferenceIndex !== providerGuardIndex + 1) {
+      throw new Error("Expected migration 019 immediately after migration 018");
+    }
+    await cp(
+      path.join(sourceDirectory, modelPreferenceMigration),
+      path.join(temporaryMigrationsDirectory, modelPreferenceMigration)
+    );
+    const modelPreferenceRun = await runMigrations({
+      pool,
+      migrationsDirectory: temporaryMigrationsDirectory
+    });
+    assert.equal(modelPreferenceRun.applied.length, 1);
+    assert.equal(modelPreferenceRun.skipped.length, modelPreferenceIndex);
+    const retainedRunPreference = await pool.query<{
+      requested_provider: string | null;
+      requested_model: string | null;
+    }>(
+      `SELECT requested_provider, requested_model
+       FROM analysis_runs
+       WHERE idempotency_key = 'migration-017-run'`
+    );
+    assert.deepEqual(retainedRunPreference.rows[0], {
+      requested_provider: null,
+      requested_model: null
+    });
   });
 
   it("is a no-op on the second complete run", async () => {
@@ -420,6 +450,7 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       ),
       hasPostgresCode("23514")
     );
+
     for (const [key, type, text] of [
       ["migration-017-empty", "visibility", ""],
       ["migration-017-whitespace", "price_range", "   "]
@@ -520,6 +551,15 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       entityPathId: hierarchy.entityPathId
     });
     assert.ok(anonymousRun);
+    await assert.rejects(
+      pool.query(
+        `UPDATE analysis_runs
+         SET requested_provider = 'mock', requested_model = 'mock-fast'
+         WHERE analysis_run_id = $1`,
+        [anonymousRun]
+      ),
+      hasPostgresCode("23514")
+    );
 
     await assert.rejects(
       insertAnalysisRun(pool, {
@@ -654,6 +694,39 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       workspaceId: ownership.workspaceId,
       entityPathId: hierarchy.entityPathId
     });
+    await assert.rejects(
+      pool.query(
+        `UPDATE analysis_runs
+         SET requested_provider = 'mock'
+         WHERE analysis_run_id = $1`,
+        [loggedInRun]
+      ),
+      hasPostgresCode("23514")
+    );
+    await pool.query(
+      `UPDATE analysis_runs
+       SET requested_provider = 'mock', requested_model = 'mock-quality'
+       WHERE analysis_run_id = $1`,
+      [loggedInRun]
+    );
+    await assert.rejects(
+      pool.query(
+        `UPDATE analysis_runs
+         SET requested_provider = 'mock', requested_model = 'arbitrary'
+         WHERE analysis_run_id = $1`,
+        [loggedInRun]
+      ),
+      hasPostgresCode("23514")
+    );
+    await assert.rejects(
+      pool.query(
+        `UPDATE analysis_runs
+         SET requested_provider = 'openai', requested_model = 'gpt-4o-mini'
+         WHERE analysis_run_id = $1`,
+        [loggedInRun]
+      ),
+      hasPostgresCode("23514")
+    );
     await assert.rejects(
       pool.query(
         `
