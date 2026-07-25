@@ -147,6 +147,10 @@ npm test
 npm run build
 ```
 
+`npm run typecheck` performs full semantic TypeScript checking for both
+`src/**/*.ts` and `tests/**/*.ts`. The test suite is not considered type-safe
+merely because `tsx` can execute it.
+
 Integration suites:
 
 ```bash
