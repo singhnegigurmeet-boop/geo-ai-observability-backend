@@ -338,13 +338,24 @@ describe(
       assert.equal(await count(pool, "reports"), 1);
     });
 
-    it("does not create budget, notification, scheduler, or real-provider state", async () => {
+    it("creates only the Phase 12 report notification around Phase 9 state", async () => {
       const fixture = await seedRun(pool, "user", richPrompts);
       for (const result of fixture.results) {
         await new ProviderScoreService(pool).process(result);
       }
       assert.equal(await count(pool, "budget_policies"), 0);
-      assert.equal(await count(pool, "notifications"), 0);
+      const notifications = await pool.query<{
+        type: string;
+        is_admin_notification: boolean;
+      }>(
+        `
+          SELECT payload->>'type' AS type, is_admin_notification
+          FROM notifications
+        `
+      );
+      assert.deepEqual(notifications.rows, [
+        { type: "report_ready", is_admin_notification: false }
+      ]);
       assert.equal(await count(pool, "scheduler_jobs"), 0);
       const providers = await pool.query<{ provider: string }>(
         "SELECT DISTINCT provider FROM provider_jobs"

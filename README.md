@@ -1,6 +1,6 @@
 # GEO V6 Production Core Backend
 
-This branch contains the Phase 11 real-provider execution slice for GEO V6. PostgreSQL remains authoritative. Allowlisted OpenAI, Gemini, Claude, and mock adapters execute only after the Phase 10 budget reservation; immutable provider evidence continues through backend-owned scoring and reporting.
+This branch contains the complete GEO V6 Production Core through Phase 12. PostgreSQL remains authoritative; RabbitMQ is transport; the outbox is the reliable handoff. Phase 12 adds DB-backed interval scheduling, internal notifications, and dependency-aware readiness without adding new intelligence or external delivery systems.
 
 ## Implemented
 
@@ -34,13 +34,18 @@ This branch contains the Phase 11 real-provider execution slice for GEO V6. Post
 - Shared reliable RabbitMQ consumer runtime across the business workers
 - Injectable REST adapters for OpenAI `gpt-4o-mini`, Gemini `gemini-1.5-flash`, and Claude `claude-3-5-sonnet`
 - Provider-specific queues, bounded timeouts, normalized evidence, usage extraction, and deterministic usage fallback
+- Concurrent-safe DB-backed `interval:<seconds>` scheduled analysis creation
+- Transactional, idempotent report-ready, budget-paused, and admin failure notifications
+- Internal delivery through the existing outbox and `notification_queue`
+- Lightweight liveness plus PostgreSQL/migration/RabbitMQ/queue readiness
 
-Real providers are disabled by default. Phase 11 does not use provider output as a score/report, add provider racing/fallback, or implement billing.
+Real providers are disabled by default. Phase 12 does not add external notification providers, provider racing/fallback, billing, crawler/RAG/agent features, Redis execution, or Elasticsearch execution.
 
 ## HTTP Surface
 
 ```text
 GET  /health
+GET  /ready
 GET  /openapi.json
 GET  /docs
 POST /v1/analysis
@@ -195,6 +200,19 @@ npm run prompt-worker:dev
 npm run mock-provider-worker:dev
 npm run scoring-worker:dev
 ```
+
+Run the Phase 12 operational workers separately:
+
+```bash
+npm run scheduler-worker:dev
+npm run notification-worker:dev
+```
+
+The scheduler polls `scheduler_jobs`, claims due rows with `FOR UPDATE SKIP LOCKED`, and uses `scheduled_analysis:<schedulerJobId>:<dueAt>` as the stable run key. Phase 12 supports UTC-only `interval:<seconds>` schedules from 60 seconds through one year. A successful tick creates/reuses the scheduled run, writes its ID-only `analysis_run.created` outbox event, and advances `next_run_at` in one transaction. Invalid schedules are paused and recorded without leaving partial runs.
+
+Report creation and transitions to `paused_budget` create owner-scoped internal notifications and ID-only `notification.created` events transactionally. Terminal or permanent failure records create admin-only notifications without user/workspace recipients. The notification worker reloads authoritative state and marks only the internal channel as sent; redelivery is a no-op. It does not claim email, SMS, webhook, or push delivery.
+
+`GET /health` is lightweight process liveness. `GET /ready` returns `503` unless PostgreSQL is reachable, the exact migration ledger matches checked-in migrations, RabbitMQ is reachable, and every main queue and DLQ exists. It exposes only `ok`/`failed` component states and never calls providers. No operations-summary endpoint is public because V6 does not yet have an admin authorization boundary.
 
 The scoring worker consumes ID-only `provider_result.created` events. It reloads immutable evidence from PostgreSQL, computes one versioned backend score, and checks report readiness from existing prompt jobs. Anonymous runs naturally complete after their three planned prompts; logged-in and claimed runs complete after their five planned prompts. No actor count is hardcoded in report aggregation.
 

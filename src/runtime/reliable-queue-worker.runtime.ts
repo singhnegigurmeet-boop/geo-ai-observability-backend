@@ -53,6 +53,7 @@ export class ReliableQueueWorkerRuntime {
       await this.channel.cancel(consumerTag);
     }
     await Promise.allSettled(this.inFlight);
+    this.logger.info(`${this.options.workerLabel} stopped.`);
   }
 
   async handleDelivery(message: ConsumeMessage) {

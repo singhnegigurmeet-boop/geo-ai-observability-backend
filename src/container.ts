@@ -1,8 +1,6 @@
 import { createAnalysisModule } from "./analysis/analysis.module.js";
 import { env } from "./config/env.js";
-export { elasticsearch } from "./lib/elasticsearch.js";
 import { pool } from "./lib/postgres.js";
-export { redisConnection } from "./lib/redis.js";
 
 export { pool };
 

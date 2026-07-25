@@ -470,13 +470,42 @@ No submitted domain text, prompt content, provider configuration, expanded item,
 
 `GET /v1/analysis/runs/:analysisRunId` returns authoritative run status and the starting path. It does not calculate progress or query run items, providers, scores, or reports.
 
-## Explicitly Deferred
+## Phase 12 Operational Core
+
+```text
+scheduler_jobs due row
+  -> transaction + FOR UPDATE SKIP LOCKED
+  -> stable tick key scheduled_analysis:<jobId>:<dueAt>
+  -> analysis_runs(source=scheduled) + analysis_run.created outbox
+  -> advance next_run_at
+  -> commit
+```
+
+The scheduler accepts UTC `interval:<seconds>` expressions from 60 through 31,536,000 seconds. Concurrent pollers cannot claim the same due row. Restart, retry, or transaction replay reuses the stable scheduled run. Invalid configuration rolls back partial tick work, pauses the job, and records a permanent failure.
+
+```text
+reports INSERT                 -> report_ready owner notification
+analysis_runs -> paused_budget -> budget_paused owner notification
+terminal/permanent failure     -> technical_failure admin notification
+
+notification row + notification.created outbox
+  -> notification_queue
+  -> reload authoritative notification by ID
+  -> mark internal delivery sent
+```
+
+Stable notification/outbox keys prevent duplication across source transitions and redelivery. Anonymous runs do not receive fake user/workspace recipients. No external delivery provider is used.
+
+`GET /health` is lightweight liveness. `GET /ready` checks PostgreSQL, the exact migration ledger, RabbitMQ, and every main queue/DLQ. Readiness returns stable component states only. There is no public operations-summary endpoint because no admin authorization boundary exists.
+
+## Explicitly Deferred to V6.5 or Later
 
 - Provider fallback, racing, and advanced provider comparison
 - Advanced billing, payment integration, and external pricing/tokenizer APIs
 - Advanced scoring science, premium reports, and report diffs
-- Scheduler and notifications
 - Redis cache, rate limiting, locks, and deduplication
 - Country, market, and global scope
+- External notification delivery and secure admin operations UI/API
+- Crawler, RAG, agents, and frontend work
 
 PostgreSQL remains the correctness and source-of-truth layer. RabbitMQ is transport, and the outbox remains the reliable database-to-broker handoff. Redis features remain deferred optimization/hardening work.

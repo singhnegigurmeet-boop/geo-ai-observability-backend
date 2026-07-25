@@ -8,9 +8,9 @@ export const openApiDocument = {
   openapi: "3.0.3",
   info: {
     title: "GEO V6 Production Core API",
-    version: "0.1.0-phase11",
+    version: "0.1.0-phase12",
     description:
-      "GEO V6 Production Core through Phase 11. Allowlisted OpenAI, Gemini, Claude, and mock execution remains budget-gated; provider output is evidence and backend-v1 scoring/basic-v1 reports remain backend-owned."
+      "GEO V6 Production Core through Phase 12, including DB-backed scheduling, internal notifications, and dependency-aware readiness."
   },
   servers: [
     {
@@ -32,6 +32,27 @@ export const openApiDocument = {
                 schema: { $ref: "#/components/schemas/HealthResponse" }
               }
             }
+          }
+        }
+      }
+    },
+    "/ready": {
+      get: {
+        tags: ["Health"],
+        summary: "Check whether required infrastructure is ready",
+        description:
+          "Checks PostgreSQL, exact migration history, RabbitMQ, and all declared queues/DLQs. It never calls providers.",
+        responses: {
+          "200": {
+            description: "All critical dependencies are ready",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ReadinessResponse" }
+              }
+            }
+          },
+          "503": {
+            description: "At least one critical dependency is unavailable or stale"
           }
         }
       }
@@ -170,6 +191,31 @@ export const openApiDocument = {
         required: ["status"],
         properties: {
           status: { type: "string", example: "ok" }
+        }
+      },
+      ReadinessResponse: {
+        type: "object",
+        required: ["status", "checks"],
+        properties: {
+          status: { type: "string", enum: ["ready", "not_ready"] },
+          checks: {
+            type: "object",
+            additionalProperties: false,
+            required: ["database", "migrations", "rabbitmq", "queues"],
+            properties: {
+              database: { $ref: "#/components/schemas/ReadinessCheck" },
+              migrations: { $ref: "#/components/schemas/ReadinessCheck" },
+              rabbitmq: { $ref: "#/components/schemas/ReadinessCheck" },
+              queues: { $ref: "#/components/schemas/ReadinessCheck" }
+            }
+          }
+        }
+      },
+      ReadinessCheck: {
+        type: "object",
+        required: ["status"],
+        properties: {
+          status: { type: "string", enum: ["ok", "failed"] }
         }
       },
       CreateAnalysisRequest: {

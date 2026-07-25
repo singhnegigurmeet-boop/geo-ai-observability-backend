@@ -15,7 +15,20 @@ describe("Production Core shell routes", () => {
     });
     server = await new Promise<Server>((resolve) => {
       const listeningServer = createApp({
-        analysisRouter: protectedAnalysisRouter
+        analysisRouter: protectedAnalysisRouter,
+        readinessService: {
+          async check() {
+            return {
+              status: "ready",
+              checks: {
+                database: { status: "ok" },
+                migrations: { status: "ok" },
+                rabbitmq: { status: "ok" },
+                queues: { status: "ok" }
+              }
+            };
+          }
+        }
       }).listen(0, "127.0.0.1", () => resolve(listeningServer));
     });
 
@@ -25,6 +38,15 @@ describe("Production Core shell routes", () => {
     }
 
     baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  it("GET /ready reports dependency readiness", async () => {
+    const response = await fetch(`${baseUrl}/ready`);
+    assert.equal(response.status, 200);
+    assert.equal(
+      (await response.json() as { status: string }).status,
+      "ready"
+    );
   });
 
   after(async () => {
@@ -55,9 +77,10 @@ describe("Production Core shell routes", () => {
     };
 
     assert.equal(response.status, 200);
-    assert.equal(document.info.version, "0.1.0-phase11");
+    assert.equal(document.info.version, "0.1.0-phase12");
     assert.deepEqual(Object.keys(document.paths), [
       "/health",
+      "/ready",
       "/v1/analysis",
       "/v1/analysis/runs/{analysisRunId}",
       "/v1/analysis/runs/{analysisRunId}/report"
@@ -78,8 +101,12 @@ describe("Production Core shell routes", () => {
       method: "POST"
     });
     const discoveryResponse = await fetch(`${baseUrl}/v1/discovery`);
+    const unsecuredOpsResponse = await fetch(
+      `${baseUrl}/v1/internal/ops/summary`
+    );
 
     assert.equal(analysisResponse.status, 401);
     assert.equal(discoveryResponse.status, 404);
+    assert.equal(unsecuredOpsResponse.status, 404);
   });
 });

@@ -3,12 +3,24 @@ import { createApp } from "./app.js";
 import { env } from "./config/env.js";
 import {
   analysisRouter,
-  elasticsearch,
-  pool,
-  redisConnection
+  pool
 } from "./container.js";
+import { RabbitMqConnection } from "./messaging/rabbitmq.connection.js";
+import { declareRabbitMqTopology } from "./messaging/rabbitmq.topology.js";
+import { ReadinessService } from "./observability/readiness.service.js";
 
-const app = createApp({ analysisRouter });
+const readinessRabbitMq = new RabbitMqConnection({
+  url: env.RABBITMQ_URL,
+  initializeChannel: (channel) =>
+    declareRabbitMqTopology(channel, {
+      mainExchange: env.RABBITMQ_EXCHANGE,
+      deadLetterExchange: env.RABBITMQ_DEAD_LETTER_EXCHANGE
+    })
+});
+const app = createApp({
+  analysisRouter,
+  readinessService: new ReadinessService(pool, readinessRabbitMq)
+});
 
 const server = app.listen(env.PORT, () => {
   console.log(`GEO V6 Production Core shell listening on port ${env.PORT}`);
@@ -22,12 +34,11 @@ async function shutdown(signal: string) {
   }
 
   shuttingDown = true;
-  console.log(`Received ${signal}. Shutting down API and infrastructure clients...`);
+  console.log(`Received ${signal}. Shutting down API infrastructure...`);
 
   await closeServer(server);
-  await redisConnection.quit();
+  await readinessRabbitMq.close();
   await pool.end();
-  await elasticsearch.close();
 
   console.log("Shutdown complete.");
 }
