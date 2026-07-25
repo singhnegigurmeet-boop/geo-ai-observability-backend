@@ -4,55 +4,55 @@ import amqp from "amqplib";
 import pg from "pg";
 
 const suites = {
-  schema: ["tests/schema.integration.test.ts", ["RUN_SCHEMA_TESTS"]],
+  schema: ["tests/integration/common/schema.integration.test.ts", ["RUN_SCHEMA_TESTS"]],
   outbox: [
-    "tests/outbox-rabbitmq.integration.test.ts",
+    "tests/integration/messaging/outbox-rabbitmq.integration.test.ts",
     ["RUN_OUTBOX_RABBITMQ_INTEGRATION_TESTS"]
   ],
   identity: [
-    "tests/identity-workspace.integration.test.ts",
+    "tests/integration/identity/identity-workspace.integration.test.ts",
     ["RUN_IDENTITY_WORKSPACE_INTEGRATION_TESTS"]
   ],
   analysis: [
-    "tests/analysis-api.integration.test.ts",
+    "tests/integration/analysis/analysis-api.integration.test.ts",
     ["RUN_ANALYSIS_API_INTEGRATION_TESTS"]
   ],
   hierarchy: [
-    "tests/hierarchy.integration.test.ts",
+    "tests/integration/hierarchy/hierarchy.integration.test.ts",
     ["RUN_HIERARCHY_INTEGRATION_TESTS"]
   ],
   expansion: [
-    "tests/expansion-reliability.integration.test.ts",
+    "tests/integration/analysis/expansion-reliability.integration.test.ts",
     ["RUN_EXPANSION_RELIABILITY_INTEGRATION_TESTS"]
   ],
-  llm: ["tests/llm-run.integration.test.ts", ["RUN_LLM_RUN_INTEGRATION_TESTS"]],
+  llm: ["tests/integration/llm/llm-run.integration.test.ts", ["RUN_LLM_RUN_INTEGRATION_TESTS"]],
   prompts: [
-    "tests/prompt-planning.integration.test.ts",
+    "tests/integration/prompts/prompt-planning.integration.test.ts",
     ["RUN_PROMPT_PLANNING_INTEGRATION_TESTS"]
   ],
   providers: [
-    "tests/prompt-provider.integration.test.ts",
+    "tests/integration/prompts/prompt-provider.integration.test.ts",
     ["RUN_PROMPT_PROVIDER_INTEGRATION_TESTS"]
   ],
   reporting: [
-    "tests/scoring-reporting.integration.test.ts",
+    "tests/integration/reports/scoring-reporting.integration.test.ts",
     ["RUN_SCORING_REPORTING_INTEGRATION_TESTS"]
   ],
   budgets: [
-    "tests/budget-concurrency.integration.test.ts",
+    "tests/integration/budgets/budget-concurrency.integration.test.ts",
     ["RUN_BUDGET_CONCURRENCY_INTEGRATION_TESTS"]
   ],
   realProviders: [
-    "tests/provider-execution.integration.test.ts",
+    "tests/integration/providers/provider-execution.integration.test.ts",
     ["RUN_PROVIDER_EXECUTION_INTEGRATION_TESTS"]
   ],
   operations: [
-    "tests/scheduler-notification-readiness.integration.test.ts",
+    "tests/integration/observability/scheduler-notification-readiness.integration.test.ts",
     ["RUN_SCHEDULER_NOTIFICATION_INTEGRATION_TESTS"]
   ],
-  e2e: ["tests/v6.e2e.test.ts", ["RUN_V6_E2E_TESTS"]],
+  e2e: ["tests/e2e/common/v6.e2e.test.ts", ["RUN_V6_E2E_TESTS"]],
   full: [
-    "tests/v6.e2e.test.ts",
+    "tests/e2e/common/v6.e2e.test.ts",
     ["RUN_V6_E2E_TESTS", "RUN_V6_FULL_E2E_TESTS"]
   ]
 };

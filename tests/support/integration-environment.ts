@@ -3,13 +3,13 @@ import pg from "pg";
 import {
   getDefaultMigrationsDirectory,
   runMigrations
-} from "../../src/db/migration-runner.js";
+} from "../../src/common/database/migration-runner.js";
 import {
   QUEUE_NAMES,
   deadLetterQueueName
-} from "../../src/messaging/queue-names.js";
-import { RabbitMqConnection } from "../../src/messaging/rabbitmq.connection.js";
-import { declareRabbitMqTopology } from "../../src/messaging/rabbitmq.topology.js";
+} from "../../src/common/messaging/queue-names.js";
+import { RabbitMqConnection } from "../../src/common/messaging/rabbitmq.connection.js";
+import { declareRabbitMqTopology } from "../../src/common/messaging/rabbitmq.topology.js";
 
 export const TEST_MAIN_EXCHANGE = "geo.v6.test.main";
 export const TEST_DLX = "geo.v6.test.dlx";

@@ -1,13 +1,13 @@
 import type { Server } from "node:http";
 import { createApp } from "./app.js";
-import { env } from "./config/env.js";
+import { env } from "./common/config/env.js";
 import {
   analysisRouter,
   pool
 } from "./container.js";
-import { RabbitMqConnection } from "./messaging/rabbitmq.connection.js";
-import { declareRabbitMqTopology } from "./messaging/rabbitmq.topology.js";
-import { ReadinessService } from "./observability/readiness.service.js";
+import { RabbitMqConnection } from "./common/messaging/rabbitmq.connection.js";
+import { declareRabbitMqTopology } from "./common/messaging/rabbitmq.topology.js";
+import { ReadinessService } from "./modules/observability/services/readiness.service.js";
 
 const readinessRabbitMq = new RabbitMqConnection({
   url: env.RABBITMQ_URL,

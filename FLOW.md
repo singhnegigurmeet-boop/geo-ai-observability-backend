@@ -1,24 +1,229 @@
-# GEO V6 Runtime Flow
+# GEO V6 Runtime Flow and Business Logic
 
-PostgreSQL is authoritative business truth. RabbitMQ is asynchronous transport.
-The transactional outbox is the only database-to-broker handoff. Queue order is
-never required for correctness.
+This document describes the behavior implemented by GEO V6 Production Core.
+PostgreSQL is the authoritative source of business state. RabbitMQ transports
+work asynchronously, and the transactional outbox is the database-to-broker
+handoff. Queue ordering is not required for correctness.
 
-A `prompt_job` is one logical, rendered, versioned question. A `provider_job` is
-one execution of that question by one frozen provider/model pair. Providers run
-independently; parallel execution is not racing and there is no fallback.
-`provider_result` is immutable evidence. `provider_score` and `report` are
-backend interpretations. A partial report is not final. A budget pause is not a
-technical failure. A DLQ is operational transport history, not business state.
+A `prompt_job` is one rendered, versioned question. A `provider_job` is one
+execution of that question by one frozen provider/model pair. Providers execute
+independently; they are not fallbacks for one another. A `provider_result` is
+stored evidence, while a `provider_score` and a `report` are interpretations of
+that evidence.
 
-## Transaction and lock discipline
+## Core business rules
 
-Workers begin by loading and locking the aggregate named by the event. Local
-state, immutable child rows, parent lifecycle derivation, and downstream outbox
-events are committed together. Duplicate delivery observes the committed state
-and becomes a no-op.
+### Ownership and access
 
-The consistent lock direction is:
+Requests enter with either:
+
+- an anonymous session token; or
+- a user session and workspace ID.
+
+A claimed-session request may carry both. Claiming an anonymous session does
+not rewrite historical run ownership. Access is derived from the exact
+originating anonymous session and the active user/workspace membership.
+
+Protected reads and cancellation use the shared ownership predicates. Creation
+derives and persists ownership columns from the resolved ownership context; it
+does not execute the same SQL predicate used by read and cancellation queries.
+
+The authoritative identity tables are `anonymous_sessions`, `users`,
+`user_sessions`, `workspaces`, and `workspace_members`. Session creation and
+claiming are atomic.
+
+### Hierarchy validation and expansion
+
+Analysis accepts a normalized domain and an optional contiguous
+category/brand/product/use-context path. Master tables and relationship tables
+are hierarchy truth. `entity_paths` stores only a validated active chain.
+
+Expansion applies these rules:
+
+| Selected path | Expansion behavior |
+| --- | --- |
+| No path or a non-leaf path | Select eligible children exactly one level below the selected node |
+| `use_context` leaf | Create one analysis item for the selected leaf itself |
+| No eligible target | Create a `completed_empty` report outcome; this is not a technical failure |
+
+Anonymous work deterministically selects at most three eligible targets. User
+and claimed work select at most five.
+
+### Provider-set policy
+
+Provider/model pairs are validated against the supported configuration,
+deduplicated, stably sorted, and frozen in
+`analysis_run_provider_models`. Later configuration changes do not alter an
+existing run.
+
+| Actor | Default/allowed policy |
+| --- | --- |
+| Anonymous | Cannot explicitly submit provider models; resolves to `mock/mock-fast` |
+| User or claimed | Defaults to `mock/mock-standard`; an explicit set must contain one to four supported pairs |
+
+Real-provider pairs are also subject to their feature/configuration gates.
+
+### Idempotency
+
+For `POST /v1/analysis`, the database idempotency key is the client-provided key
+namespaced by the resolved owner. The stored canonical request contains the
+normalized domain, validated hierarchy IDs, and normalized provider/model set.
+The request source is not part of that canonical request.
+
+- The same owner key and the same canonical request return the existing run.
+- The same owner key with a different canonical request conflicts.
+- Different owners do not share an idempotency namespace.
+
+Scheduled runs use the scheduler identity
+`scheduled_analysis:<schedulerJobId>:<dueAt>`. Their stored request payload
+captures the validated scheduled inputs, including the frozen provider set.
+
+### Prompt-plan policy
+
+Anonymous analyses use the reduced three-prompt plan. User and claimed analyses
+use the five-prompt plan. Each prompt identity is the LLM run, prompt type, and
+prompt version.
+
+### Provider evidence
+
+- A valid answer is stored as valid, immutable evidence and is eligible for
+  scoring.
+- A valid provider refusal remains valid, scorable evidence.
+- A successful response with an invalid structure is stored as terminal invalid
+  evidence and is not scored.
+- Transport, timeout, authentication, and configuration errors are technical
+  failures.
+- Successful siblings remain independently usable when another provider fails.
+
+### Budget admission and usage
+
+Before calling a provider, the worker locks the provider job and applicable
+active budget policies. Policies are ordered deterministically by scope and
+identity. The most restrictive applicable scope controls admission.
+
+| Condition | Result |
+| --- | --- |
+| Hard limit would be exceeded | Pause the provider job before the call |
+| Soft limit is not yet crossed | Allow the current reservation, including the one crossing the limit |
+| Soft limit is already crossed | Pause later work |
+
+A budget pause is a business-terminal state. It creates no technical failure
+record, retry, or DLQ message.
+
+Estimated and actual `token_usage` rows are immutable records. Actual usage does
+not physically replace the estimate. Budget accounting selects one effective
+row per provider job, preferring actual usage when present and otherwise using
+the estimate. This prevents retries from double-counting a job.
+
+### Derived lifecycle
+
+Lifecycle is derived from persisted child states rather than in-memory
+counters. The shared derivation applies these principles:
+
+- any active child keeps its parent active;
+- a paused child can produce `paused_budget`;
+- all successful children produce success;
+- a mixture of successful and failed/cancelled children produces
+  `partial_success`;
+- all cancelled children produce cancellation;
+- otherwise terminal unsuccessful children produce failure.
+
+After provider execution completes, scoring and report aggregation finalize the
+run outcome. A completed child is never intentionally moved backward.
+
+### Report readiness and outcomes
+
+Report aggregation counts frozen provider/model outcomes. Only valid scored
+evidence contributes to the arithmetic mean; invalid, failed, cancelled, and
+missing evidence is excluded rather than counted as zero. Scored siblings have
+equal weight.
+
+The aggregate lifecycle decision is:
+
+| Condition | `report_data.lifecycleState` |
+| --- | --- |
+| Budget-paused outcomes and at least one score | `budget_paused_partial` |
+| Budget-paused outcomes and no score | `failed_empty` |
+| Cancelled run/outcomes and at least one score | `cancelled_partial` |
+| Cancelled run/outcomes and no score | `cancelled_empty` |
+| Required work is still nonterminal | `partial` |
+| No score exists after terminal work | `failed_empty` |
+| At least one score and at least one failed, invalid, or cancelled gap | `completed_with_gaps` |
+| All required outcomes are scored | `completed` |
+| Expansion produced no item | `completed_empty` |
+
+`completed_empty` and `cancelled_empty` are produced by the empty-outcome
+service rather than the normal score aggregator.
+
+The report row status maps `partial`, `budget_paused_partial`, and
+`cancelled_partial` to `partial`; maps `failed_empty` and `cancelled_empty` to
+`failed`; and maps the remaining final aggregate outcomes to `completed`.
+
+A meaningful report change creates a new immutable revision. A deep-equal
+projection does not create a duplicate revision. Partial revisions may be
+created as evidence arrives and are not final.
+
+### Cancellation
+
+`POST /v1/analysis/runs/:analysisRunId/cancel` is allowed only when the caller
+owns the run and provider execution has not begun. A provider job with
+`started_at`, `processing`, or `succeeded` makes cancellation conflict.
+
+An accepted cancellation:
+
+1. locks the run;
+2. cancels unstarted provider jobs and eligible ancestors;
+3. derives parent states;
+4. creates the applicable cancelled report outcome; and
+5. relies on database notification rules for an eligible owner.
+
+Repeated cancellation of an already cancelled run is a no-op. Delayed messages
+reload state and become no-ops. Baseline owner notifications for cancellation
+are created only for user/workspace-owned runs, not anonymous runs.
+
+### Scheduler
+
+The scheduler is a polling worker, not a RabbitMQ consumer. It claims due
+`scheduler_jobs` with `SKIP LOCKED` and, for each tick, revalidates:
+
+- the active user;
+- the non-deleted workspace and active membership;
+- the hierarchy relationship chain;
+- the configured provider/model set; and
+- the UTC interval schedule.
+
+A valid tick uses `SchedulerRepository.createOrReuseRun`, which directly
+creates/reuses the scheduled analysis run, freezes provider rows, writes the
+analysis-run outbox event, and advances the schedule cursor. This is a separate
+creation path from `AnalysisService`, although it applies the corresponding
+authorization, hierarchy, provider, and idempotency policies.
+
+An invalid tick rolls back its savepoint, pauses the schedule, and records a
+permanent scheduler failure. The database trigger creates the admin
+notification. `scheduler_queue` is declared in broker topology and used as a
+failure-record queue name, but no scheduler RabbitMQ consumer currently drains
+it.
+
+### Notifications
+
+Notifications are internal database delivery records. The notification worker
+locks and reloads each row; an already-sent row is a no-op. Unsupported external
+delivery is treated as permanent because no external channel is implemented.
+
+Baseline triggers create report, budget-pause, and cancellation notifications
+only for user/workspace-owned analyses. Terminal technical failure and invalid
+scheduler notifications are administrative and are created for permanent or
+exhausted failures. The logical database transition is idempotent, while
+RabbitMQ delivery remains at least once.
+
+## Transaction and locking behavior
+
+Each stage performs its local state change, child creation, and downstream
+outbox write in a database transaction. Duplicate delivery normally observes a
+committed state or unique identity and becomes a no-op.
+
+`ExecutionStateService` locks a tree in run-to-leaf order, with rows ordered by
+ID within a level:
 
 ```text
 analysis_run
@@ -26,223 +231,183 @@ analysis_run
 -> llm_run
 -> prompt_job
 -> provider_job
--> provider_result / provider_score / report
 ```
 
-Budget policy rows are locked in deterministic scope/identity order before a
-provider reservation. Lifecycle derivation uses PostgreSQL child states, never
-in-memory counters.
+That service-level order is not a repository-wide global lock order. Some
+callers already hold a leaf lock before lifecycle recalculation:
 
-## Identity and ownership
+- provider execution locks `provider_job` first;
+- scoring locks `provider_result` first; and
+- cancellation locks the `analysis_run` before descendants.
 
-Entry is an anonymous session token, or a user session plus workspace ID. A
-request may carry both only for claimed-session access. Authoritative tables are
-`anonymous_sessions`, `users`, `user_sessions`, `workspaces`, and
-`workspace_members`.
+The implementation therefore must not be described as enforcing one universal
+root-to-leaf lock direction. Deterministic policy locking and row ordering
+reduce contention, and concurrency tests exercise important paths, but a global
+lock-order guarantee is not currently encoded.
 
-Session creation and claims are atomic. Claim access is derived from the exact
-originating anonymous session; it does not rewrite run ownership. Protected
-reads, cancellation, and creation all use the same ownership clauses.
+## Runtime stages
 
-## Hierarchy validation and canonical request identity
+### 1. Analysis creation
 
-Analysis entry accepts a domain and an optional contiguous
-category/brand/product/use-context path. Master and relationship tables are
-hierarchy truth. `entity_paths` materializes only a validated active chain.
-
-The provider-set policy applies actor defaults, validates supported pairs and
-the one-to-four user bound, deduplicates, stably sorts, and serializes the set.
-Anonymous work resolves only to `mock/mock-fast`; user and claimed work default
-to `mock/mock-standard`.
-
-The normalized domain, validated path, ownership scope, source, and normalized
-provider set form canonical idempotency identity.
-
-## Analysis creation
-
-- Entry: validated `POST /v1/analysis` or an authorized scheduler tick
-- Tables: `analysis_runs`, `analysis_run_provider_models`, `outbox_events`
-- Transaction: create/reuse the run, freeze provider rows, write its event
-- Event/queue: `analysis_run.created { analysisRunId }` /
-  `analysis_run_queue`
-- Identity: owner-scoped canonical request key
+- Entry: validated `POST /v1/analysis`, or an authorized scheduler tick through
+  its separate repository path
+- Writes: `analysis_runs`, `analysis_run_provider_models`, `outbox_events`
+- Event: `analysis_run.created { analysisRunId }`
+- Queue: `analysis_run_queue`
 - Initial state: `queued`
 
-A duplicate canonical request returns the existing run. A transaction failure
-leaves neither a run nor an outbox event.
+A transaction failure leaves neither the run nor its outbox event.
 
-## Outbox publication
+### 2. Outbox publication
 
-The dispatcher claims eligible `outbox_events` with `SKIP LOCKED`, publishes to
-the configured exchange using a confirm channel, and marks an event published
-only after confirmation. Failed publication remains retryable with bounded
-backoff. Multiple dispatchers safely divide work.
+The dispatcher claims eligible `outbox_events` with `SKIP LOCKED`, publishes
+through a RabbitMQ confirm channel, and marks an event published only after
+broker confirmation. Failed publication remains eligible for bounded backoff.
+Multiple dispatchers can divide work safely.
 
-## Analysis expansion
+### 3. Analysis expansion
 
 - Worker: analysis-run worker
-- Locked aggregate: `analysis_runs`
-- Truth: active hierarchy relationships
-- Output: `analysis_run_items` and one outbox event per item
-- Event/queue: `analysis_run_item.created { analysisRunItemId }` /
-  `analysis_run_item_queue`
-- Identity: analysis run plus materialized child path
+- Primary aggregate: `analysis_runs`
+- Writes: `analysis_run_items` and one outbox event per item
+- Event: `analysis_run_item.created { analysisRunItemId }`
+- Queue: `analysis_run_item_queue`
+- Identity: analysis run plus materialized target path
 
-Anonymous work selects the deterministic top three; user and claimed work the
-top five. Explicit deep paths expand exactly one level. No eligible target
-produces completed-empty state rather than a technical failure.
-
-## LLM-run creation
+### 4. LLM-run creation
 
 - Worker: analysis-item worker
-- Locked aggregate: `analysis_run_items`
-- Output: one primary `llm_runs` row
-- Event/queue: `llm_run.created { llmRunId }` / `llm_run_queue`
-- Identity: analysis item plus primary run key
+- Primary aggregate: `analysis_run_items`
+- Writes: one primary `llm_runs` row and its outbox event
+- Event: `llm_run.created { llmRunId }`
+- Queue: `llm_run_queue`
+- Identity: analysis item plus primary-run key
 
-The item enters processing in the same transaction as the LLM row and outbox
-event.
+The item enters processing in the same transaction.
 
-## Prompt planning
+### 5. Prompt planning
 
 - Worker: LLM-run worker
-- Locked aggregate: `llm_runs`
-- Output: logical `prompt_jobs`
-- Event/queue: `prompt_job.created { promptJobId }` / prompt-type queue
+- Primary aggregate: `llm_runs`
+- Writes: logical `prompt_jobs` and their outbox events
+- Event: `prompt_job.created { promptJobId }`
+- Queues: prompt-type queues
 - Identity: LLM run, prompt type, and prompt version
 
-Anonymous policy creates the reduced three-prompt plan. User and claimed policy
-creates the five-prompt plan.
-
-## Prompt rendering and provider fan-out
+### 6. Rendering and provider fan-out
 
 - Worker: prompt worker
-- Locked aggregate: `prompt_jobs`
-- Truth: hierarchy state plus frozen `analysis_run_provider_models`
-- Output: rendered prompt text, one `provider_jobs` row and outbox event per
-  frozen pair
+- Primary aggregate: `prompt_jobs`
+- Inputs: authoritative hierarchy plus frozen provider/model rows
+- Writes: rendered prompt, one `provider_jobs` row and outbox event per pair
 - Event: `provider_job.created { providerJobId }`
 - Queue: provider-specific queue
 - Identity: prompt job, provider, and model
 
 Rendering must succeed before fan-out. Fan-out is transactional and
-idempotent. One provider success cannot complete a prompt while a sibling is
+idempotent. A successful provider cannot complete a prompt while a sibling is
 active.
 
-## Budget admission
+### 7. Provider execution
 
-The provider worker locks the queued `provider_job`, resolves all applicable
-active `budget_policies`, then locks those policies in deterministic order.
-Estimated `token_usage` is reserved before any provider call.
-
-Hard limits pause before a call. Soft limits allow exactly one crossing
-reservation and pause later work. The most restrictive applicable scope wins.
-Budget-paused jobs are business-terminal, create no failure record, use no
-retry, and do not enter a DLQ.
-
-## Provider execution and evidence
-
-- Workers: mock or provider-specific worker
-- Locked aggregate: `provider_jobs`
-- Adapter input: authoritative rendered prompt and stored provider/model
-- Output: at most one immutable `provider_results` row and reconciled
-  `token_usage`
-- Event/queue: `provider_result.created { providerResultId }` /
-  `scoring_queue`
+- Worker: mock or provider-specific worker
+- Primary aggregate: `provider_jobs`
+- Input: stored rendered prompt and provider/model
+- Writes: at most one `provider_results` row plus usage reconciliation
+- Event: `provider_result.created { providerResultId }`
+- Queue: `scoring_queue`
 - Identity: provider job
 
-A valid refusal remains valid evidence. A structurally invalid successful
-response is stored as terminal invalid evidence and is not scored. Transport,
-timeout, authentication, and configuration failures are technical failures.
-Actual usage replaces the reservation exactly once; retries cannot double
-count.
-
-## Scoring
+### 8. Scoring and reporting
 
 - Worker: scoring worker
-- Locked aggregate: `provider_results`
-- Output: one immutable `provider_scores` row per result/scoring version
+- Primary aggregate: `provider_results`
+- Writes: one `provider_scores` row per result/scoring version, derived
+  lifecycles, and any changed report revision
 - Identity: provider result plus scoring version
 
-Only valid evidence is scored. Invalid, failed, and missing evidence is excluded
-from arithmetic rather than treated as zero. Sibling scores are accepted
-independently.
+Only valid evidence is scored. Sibling results and scores remain independent.
 
-## Lifecycle and report revisions
+## Technical retry and DLQ flow
 
-After each terminal local transition, the shared lifecycle implementation
-derives `prompt_jobs`, `llm_runs`, `analysis_run_items`, and `analysis_runs`
-from authoritative child states. Active children keep parents processing;
-completed children never move backward.
+Rabbit-backed processing uses the reliable worker runtime:
 
-Report readiness and aggregation use the same state projection. A meaningful
-change creates a new immutable `reports` revision; deep-equal state does not.
-Coverage includes every frozen provider/model outcome and retains provenance.
-Valid scored siblings contribute an equal arithmetic mean.
+1. Record the failed attempt.
+2. Before exhaustion, republish with broker confirmation and acknowledge the
+   original only after confirmation.
+3. On the third attempt, or immediately for a permanent error, record one
+   logical terminal failure.
+4. Terminalize the addressed business aggregate when that aggregate type is
+   supported by the failure repository.
+5. Reject the original message without requeue so it reaches the queue's DLQ.
 
-Partial revisions are created as evidence arrives. Budget pause after evidence
-creates a budget-paused partial. Final readiness waits until required work is
-terminal and produces completed, completed-empty, failed-empty, or an honest
-gap-aware final snapshot as applicable.
+Business terminalization is implemented for `provider_job`, `prompt_job`,
+`llm_run`, `analysis_run_item`, and `analysis_run`. It derives parent state and
+report state for those supported aggregates.
 
-## Technical failure and retry
+There is no equivalent business terminalizer for `provider_result` or
+`notification`. In particular, exhausted scoring work records the
+failure/DLQ/admin signal but can leave valid evidence unscored; report readiness
+continues to regard that result as nonterminal. This is a current implementation
+gap, not a completed-state guarantee.
 
-The reliable worker runtime handles every queue consistently:
+The scheduler uses its polling/savepoint failure path described above rather
+than the Rabbit reliable-worker retry loop.
 
-1. A retryable failure records the attempt.
-2. Attempts before exhaustion are republished with broker confirmation.
-3. Exhaustion or a permanent failure records one logical terminal failure.
-4. The addressed business aggregate is terminalized.
-5. Parent lifecycle and any report snapshot are recalculated.
-6. An applicable internal notification is created transactionally.
-7. The original message is rejected to its DLQ.
+## Queue and event contract
 
-Successful immutable siblings remain intact. Replayed terminal deliveries do
-not duplicate failures, reports, or notifications.
+Payloads carry an ID only; workers reload authoritative state from PostgreSQL.
 
-## Cancellation
+| Event | Payload field | Main queue |
+| --- | --- | --- |
+| `analysis_run.created` | `analysisRunId` | `analysis_run_queue` |
+| `analysis_run_item.created` | `analysisRunItemId` | `analysis_run_item_queue` |
+| `llm_run.created` | `llmRunId` | `llm_run_queue` |
+| `prompt_job.created` | `promptJobId` | one of the five prompt queues |
+| `provider_job.created` | `providerJobId` | provider-specific queue |
+| `provider_result.created` | `providerResultId` | `scoring_queue` |
+| `notification.created` | `notificationId` | `notification_queue` |
 
-`POST /v1/analysis/runs/:analysisRunId/cancel` locks the owned analysis.
-Cancellation is accepted only before any provider execution begins. It marks
-unstarted descendants cancelled, derives parents, creates the applicable
-cancelled report and notification, and commits atomically. Repeated cancellation
-is a no-op. Once provider processing or success exists, cancellation conflicts.
-Delayed queue events reload state and become no-ops.
-
-## Scheduler
-
-The scheduler claims due `scheduler_jobs` with `SKIP LOCKED`. For every tick it
-revalidates active user, workspace, membership, path relationship chain, and
-provider-set configuration. A valid tick calls the same analysis creation path
-and advances its cursor once. Invalid state pauses the schedule and creates one
-admin notification. Supported schedules are UTC intervals.
-
-## Notifications
-
-Report, budget-pause, cancellation, scheduler-invalid, and terminal technical
-events create idempotent `notifications` plus
-`notification.created { notificationId }`. The notification worker reloads the
-row and records internal delivery exactly once. No external delivery channel is
-implemented.
+The declared topology contains 15 main queues: three analysis/LLM queues, five
+prompt queues, four provider queues, `scoring_queue`, `scheduler_queue`, and
+`notification_queue`. Every declared main queue has a DLQ. As noted above,
+`scheduler_queue` currently has no consuming scheduler worker.
 
 ## Health and readiness
 
-`GET /health` is process liveness.
+`GET /health` reports process liveness.
 
 `GET /ready` checks:
 
-- PostgreSQL connectivity
-- the exact checksum and sole ledger row for `001_v6_final_baseline.sql`
-- RabbitMQ connectivity
-- every required main queue and DLQ
+- PostgreSQL connectivity;
+- the exact checksum and sole migration-ledger row for
+  `001_v6_final_baseline.sql`;
+- RabbitMQ connectivity; and
+- all required main queues and their DLQs.
 
-An unmigrated, missing, extra, unknown, or checksum-mismatched migration state
-is not ready. Readiness does not call providers.
+Missing, extra, unknown, or checksum-mismatched migration state is not ready.
+Readiness does not call external providers.
 
-## Public reads
+## Public reads and data exposure
 
-Run status and latest-report reads use the shared ownership policy. Public DTOs
-expose lifecycle, report revision, aggregate interpretation, provider/model
-coverage, and sanitized failure categories. Raw provider responses, raw
-upstream errors, credentials, session secrets, and RabbitMQ metadata remain
-internal.
+Run status and latest-report reads use the ownership policy. Public DTOs expose
+lifecycle state, the latest report revision, aggregate interpretation,
+provider/model coverage, and `analysis_runs.error_message`.
+
+Raw provider response bodies, credentials, session secrets, and RabbitMQ
+metadata are not included in those DTOs. However, `error_message` is currently
+returned from stored run state without a comprehensive sanitization layer.
+Code that persists technical messages must therefore avoid secrets and raw
+upstream payloads.
+
+## Current implementation boundaries
+
+The following are deliberately documented as current behavior, not guarantees:
+
+1. There is no repository-wide global lock order across all worker paths.
+2. Exhausted scoring work has no `provider_result` business terminalizer and
+   can leave report readiness waiting on an unscored valid result.
+3. The scheduler creates runs through its repository path and does not consume
+   `scheduler_queue`.
+4. Public run reads return the stored run `error_message`; arbitrary technical
+   messages are not comprehensively sanitized at the response boundary.

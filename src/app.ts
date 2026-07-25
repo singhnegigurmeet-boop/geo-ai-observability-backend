@@ -1,8 +1,8 @@
 import express, { type Router } from "express";
 import swaggerUi from "swagger-ui-express";
-import { openApiDocument } from "./docs/openapi.js";
-import { errorMiddleware } from "./middleware/error.middleware.js";
-import type { ReadinessService } from "./observability/readiness.service.js";
+import { openApiDocument } from "./common/docs/openapi.js";
+import { errorMiddleware } from "./common/middleware/error.middleware.js";
+import type { ReadinessService } from "./modules/observability/services/readiness.service.js";
 
 export type CreateAppOptions = {
   analysisRouter: Router;

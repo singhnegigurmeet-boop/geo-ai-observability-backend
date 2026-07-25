@@ -1,6 +1,6 @@
-import { createAnalysisModule } from "./analysis/analysis.module.js";
-import { env } from "./config/env.js";
-import { pool } from "./lib/postgres.js";
+import { createAnalysisModule } from "./modules/analysis/analysis.module.js";
+import { env } from "./common/config/env.js";
+import { pool } from "./common/database/postgres.js";
 
 export { pool };
 

@@ -17,6 +17,6 @@ ENV NODE_ENV=production
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json package-lock.json ./
-COPY src/db/migrations ./dist/db/migrations
+COPY src/common/database/migrations ./dist/common/database/migrations
 EXPOSE 4000
 CMD ["node", "dist/main.js"]

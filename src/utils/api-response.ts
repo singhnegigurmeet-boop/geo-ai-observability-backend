@@ -1,5 +1,5 @@
 import type { Response } from "express";
-import type { ApiErrorBody, ApiResult } from "../types/api-response.types.js";
+import type { ApiErrorBody, ApiResult } from "../common/types/api-response.types.js";
 
 export function apiResult<TBody>(statusCode: number, body: TBody): ApiResult<TBody> {
   return { statusCode, body };

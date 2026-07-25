@@ -45,6 +45,24 @@ transaction as its business state. The dispatcher publishes a minimal,
 ID-oriented event. Workers reload and lock PostgreSQL state, making duplicate
 and out-of-order delivery safe.
 
+The source layout follows feature modules:
+
+```text
+src/
+  modules/<domain>/
+    routes/ controllers/ services/ repositories/
+    types/ policies/ workers/ adapters/
+  common/       # shared database, messaging, middleware, ownership, and types
+  utils/        # reusable pure helpers
+tests/
+  unit/<domain>/
+  integration/<domain>/
+  e2e/<domain>/
+```
+
+Only folders needed by a module are present. Composition roots remain in
+`src/app.ts`, `src/container.ts`, and the module `entrypoints` folders.
+
 Final event payloads are:
 
 | Event | Payload |
@@ -60,7 +78,7 @@ Final event payloads are:
 ## Schema
 
 An empty database is bootstrapped by one migration:
-`src/db/migrations/001_v6_final_baseline.sql`. It directly creates the final
+`src/common/database/migrations/001_v6_final_baseline.sql`. It directly creates the final
 31-table schema, enums, constraints, indexes, functions, and triggers.
 
 The tables cover:
