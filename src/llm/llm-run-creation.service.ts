@@ -64,8 +64,6 @@ export class LlmRunCreationService {
       const llmRun = await llmRuns.createOrReuseForItem(
         item.analysis_run_item_id
       );
-      const actorType =
-        parent.user_id && parent.workspace_id ? "user" : "anonymous";
       await new OutboxEventWriterRepository(client).createOrReuse({
         eventKey: `llm_run.created:${llmRun.llm_run_id}`,
         eventType: "llm_run.created",
@@ -74,15 +72,7 @@ export class LlmRunCreationService {
         aggregateId: llmRun.llm_run_id,
         headers: { queueName: "llm_run_queue" },
         payload: {
-          llmRunId: llmRun.llm_run_id,
-          analysisRunItemId: item.analysis_run_item_id,
-          analysisRunId: parent.analysis_run_id,
-          entityPathId: path.entity_path_id,
-          startingEntityPathId: parent.starting_entity_path_id,
-          actorType,
-          userId: parent.user_id,
-          workspaceId: parent.workspace_id,
-          anonymousSessionId: parent.anonymous_session_id
+          llmRunId: llmRun.llm_run_id
         }
       });
 
@@ -107,24 +97,33 @@ function assertPayloadMatchesState(
 ) {
   const actorType =
     parent.user_id && parent.workspace_id ? "user" : "anonymous";
-  if (payload.analysisRunId !== item.analysis_run_id) {
+  if (
+    payload.analysisRunId !== undefined &&
+    payload.analysisRunId !== item.analysis_run_id
+  ) {
     throw new LlmRunCreationError(
       "ANALYSIS_RUN_ID_MISMATCH",
       "Message analysisRunId does not match the item"
     );
   }
-  if (payload.entityPathId !== item.entity_path_id) {
+  if (
+    payload.entityPathId !== undefined &&
+    payload.entityPathId !== item.entity_path_id
+  ) {
     throw new LlmRunCreationError(
       "ENTITY_PATH_ID_MISMATCH",
       "Message entityPathId does not match the item"
     );
   }
   if (
-    payload.startingEntityPathId !== parent.starting_entity_path_id ||
-    payload.actorType !== actorType ||
-    payload.userId !== parent.user_id ||
-    payload.workspaceId !== parent.workspace_id ||
-    payload.anonymousSessionId !== parent.anonymous_session_id
+    (payload.startingEntityPathId !== undefined &&
+      payload.startingEntityPathId !== parent.starting_entity_path_id) ||
+    (payload.actorType !== undefined && payload.actorType !== actorType) ||
+    (payload.userId !== undefined && payload.userId !== parent.user_id) ||
+    (payload.workspaceId !== undefined &&
+      payload.workspaceId !== parent.workspace_id) ||
+    (payload.anonymousSessionId !== undefined &&
+      payload.anonymousSessionId !== parent.anonymous_session_id)
   ) {
     throw new LlmRunCreationError(
       "ANALYSIS_RUN_ITEM_MESSAGE_MISMATCH",

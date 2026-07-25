@@ -1,9 +1,6 @@
 import type { PromptType } from "../types/database.types.js";
 import type { PromptExecutionService } from "./prompt-execution.service.js";
-import {
-  InvalidPromptJobMessageError,
-  parsePromptJobCreatedMessage
-} from "./prompt-worker.messages.js";
+import { parsePromptJobCreatedMessage } from "./prompt-worker.messages.js";
 
 export class PromptWorker {
   constructor(
@@ -13,11 +10,6 @@ export class PromptWorker {
 
   async process(input: unknown) {
     const message = parsePromptJobCreatedMessage(input);
-    if (message.payload.promptType !== this.promptType) {
-      throw new InvalidPromptJobMessageError(
-        `Expected ${this.promptType} prompt work`
-      );
-    }
-    return this.execution.execute(message.payload);
+    return this.execution.execute(message.payload, this.promptType);
   }
 }

@@ -7,14 +7,15 @@ const databaseId = z.string().regex(/^[1-9]\d*$/, "must be a positive database I
 const ownershipPayload = z
   .object({
     analysisRunId: databaseId,
-    startingEntityPathId: databaseId,
-    actorType: z.enum(["anonymous", "user"]),
-    userId: databaseId.nullable(),
-    workspaceId: databaseId.nullable(),
-    anonymousSessionId: databaseId.nullable()
+    startingEntityPathId: databaseId.optional(),
+    actorType: z.enum(["anonymous", "user"]).optional(),
+    userId: databaseId.nullable().optional(),
+    workspaceId: databaseId.nullable().optional(),
+    anonymousSessionId: databaseId.nullable().optional()
   })
   .strict()
   .superRefine((payload, context) => {
+    if (payload.actorType === undefined) return;
     const validAnonymous =
       payload.actorType === "anonymous" &&
       payload.anonymousSessionId !== null &&

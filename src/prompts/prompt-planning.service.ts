@@ -96,18 +96,7 @@ export class PromptPlanningService {
           aggregateId: promptJob.prompt_job_id,
           headers: { queueName: entry.queueName },
           payload: {
-            promptJobId: promptJob.prompt_job_id,
-            llmRunId: llmRun.llm_run_id,
-            analysisRunItemId: item.analysis_run_item_id,
-            analysisRunId: parent.analysis_run_id,
-            entityPathId: path.entity_path_id,
-            startingEntityPathId: parent.starting_entity_path_id,
-            promptType: entry.promptType,
-            promptVersion: entry.promptVersion,
-            actorType,
-            userId: parent.user_id,
-            workspaceId: parent.workspace_id,
-            anonymousSessionId: parent.anonymous_session_id
+            promptJobId: promptJob.prompt_job_id
           }
         });
       }
@@ -132,30 +121,42 @@ function assertPayloadMatchesState(
 ) {
   const actorType =
     parent.user_id && parent.workspace_id ? "user" : "anonymous";
-  if (payload.analysisRunItemId !== llmRun.analysis_run_item_id) {
+  if (
+    payload.analysisRunItemId !== undefined &&
+    payload.analysisRunItemId !== llmRun.analysis_run_item_id
+  ) {
     throw new PromptPlanningError(
       "ANALYSIS_RUN_ITEM_ID_MISMATCH",
       "Message analysisRunItemId does not match the LLM run"
     );
   }
-  if (payload.analysisRunId !== item.analysis_run_id) {
+  if (
+    payload.analysisRunId !== undefined &&
+    payload.analysisRunId !== item.analysis_run_id
+  ) {
     throw new PromptPlanningError(
       "ANALYSIS_RUN_ID_MISMATCH",
       "Message analysisRunId does not match the parent item"
     );
   }
-  if (payload.entityPathId !== item.entity_path_id) {
+  if (
+    payload.entityPathId !== undefined &&
+    payload.entityPathId !== item.entity_path_id
+  ) {
     throw new PromptPlanningError(
       "ENTITY_PATH_ID_MISMATCH",
       "Message entityPathId does not match the parent item"
     );
   }
   if (
-    payload.startingEntityPathId !== parent.starting_entity_path_id ||
-    payload.actorType !== actorType ||
-    payload.userId !== parent.user_id ||
-    payload.workspaceId !== parent.workspace_id ||
-    payload.anonymousSessionId !== parent.anonymous_session_id
+    (payload.startingEntityPathId !== undefined &&
+      payload.startingEntityPathId !== parent.starting_entity_path_id) ||
+    (payload.actorType !== undefined && payload.actorType !== actorType) ||
+    (payload.userId !== undefined && payload.userId !== parent.user_id) ||
+    (payload.workspaceId !== undefined &&
+      payload.workspaceId !== parent.workspace_id) ||
+    (payload.anonymousSessionId !== undefined &&
+      payload.anonymousSessionId !== parent.anonymous_session_id)
   ) {
     throw new PromptPlanningError(
       "LLM_RUN_MESSAGE_MISMATCH",

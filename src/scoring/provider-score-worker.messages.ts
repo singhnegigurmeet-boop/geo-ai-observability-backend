@@ -7,9 +7,9 @@ const databaseId = z.string().regex(/^[1-9]\d*$/, "must be a positive database I
 const payloadSchema = z
   .object({
     providerResultId: databaseId,
-    providerJobId: databaseId,
-    promptJobId: databaseId,
-    analysisRunId: databaseId
+    providerJobId: databaseId.optional(),
+    promptJobId: databaseId.optional(),
+    analysisRunId: databaseId.optional()
   })
   .strict();
 

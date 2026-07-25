@@ -7,26 +7,27 @@ const databaseId = z.string().regex(/^[1-9]\d*$/, "must be a positive database I
 const payloadSchema = z
   .object({
     promptJobId: databaseId,
-    llmRunId: databaseId,
-    analysisRunItemId: databaseId,
-    analysisRunId: databaseId,
-    entityPathId: databaseId,
-    startingEntityPathId: databaseId,
+    llmRunId: databaseId.optional(),
+    analysisRunItemId: databaseId.optional(),
+    analysisRunId: databaseId.optional(),
+    entityPathId: databaseId.optional(),
+    startingEntityPathId: databaseId.optional(),
     promptType: z.enum([
       "competitor",
       "ranking",
       "visibility",
       "price_range",
       "pros_cons"
-    ]),
-    promptVersion: z.string().min(1),
-    actorType: z.enum(["anonymous", "user"]),
-    userId: databaseId.nullable(),
-    workspaceId: databaseId.nullable(),
-    anonymousSessionId: databaseId.nullable()
+    ]).optional(),
+    promptVersion: z.string().min(1).optional(),
+    actorType: z.enum(["anonymous", "user"]).optional(),
+    userId: databaseId.nullable().optional(),
+    workspaceId: databaseId.nullable().optional(),
+    anonymousSessionId: databaseId.nullable().optional()
   })
   .strict()
   .superRefine((payload, context) => {
+    if (payload.actorType === undefined) return;
     const validAnonymous =
       payload.actorType === "anonymous" &&
       payload.anonymousSessionId !== null &&
