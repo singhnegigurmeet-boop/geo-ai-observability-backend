@@ -92,6 +92,9 @@ export class MockProviderService {
         provider: state.provider,
         model: state.model,
         workspaceId: state.workspace_id,
+        userId: state.user_id,
+        anonymousSessionId: state.anonymous_session_id,
+        analysisRunId: state.analysis_run_id,
         promptText: state.prompt_text,
         promptType: state.prompt_type,
         promptVersion: state.prompt_version

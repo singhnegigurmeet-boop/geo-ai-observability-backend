@@ -15,31 +15,61 @@ export class BudgetRepository {
 
   async lockApplicablePolicies(input: {
     provider: ProviderName;
+    model: string;
     workspaceId: string | null;
+    userId: string | null;
+    anonymousSessionId: string | null;
+    analysisRunId: string;
   }): Promise<ApplicableBudgetPolicy[]> {
     const result = await this.database.query<BudgetPolicyRow>(
       `
         SELECT *
         FROM budget_policies
         WHERE provider = $1
+          AND (model IS NULL OR model = $2)
           AND is_enabled
           AND (
             budget_scope = 'platform_default'
             OR (
               budget_scope = 'workspace'
-              AND workspace_id = $2
+              AND workspace_id = $3
+              AND $4::bigint IS NOT NULL
+            )
+            OR (
+              budget_scope = 'user'
+              AND user_id = $4
+            )
+            OR (
+              budget_scope = 'anonymous_session'
+              AND anonymous_session_id = $5
+              AND $4::bigint IS NULL
+            )
+            OR (
+              budget_scope = 'analysis_run'
+              AND analysis_run_id = $6
             )
           )
         ORDER BY budget_policy_id
         FOR UPDATE
       `,
-      [input.provider, input.workspaceId]
+      [
+        input.provider,
+        input.model,
+        input.workspaceId,
+        input.userId,
+        input.anonymousSessionId,
+        input.analysisRunId
+      ]
     );
     return result.rows.map((row) => ({
       budgetPolicyId: row.budget_policy_id,
       budgetScope: row.budget_scope,
       workspaceId: row.workspace_id,
+      userId: row.user_id,
+      anonymousSessionId: row.anonymous_session_id,
+      analysisRunId: row.analysis_run_id,
       provider: row.provider,
+      model: row.model,
       limitMode: row.limit_mode,
       windowSeconds: row.window_seconds,
       tokenLimit: row.token_limit,
@@ -70,11 +100,28 @@ export class BudgetRepository {
           JOIN analysis_runs AS run
             ON run.analysis_run_id = item.analysis_run_id
           WHERE provider_job.provider = $1
+            AND ($2::text IS NULL OR provider_job.model = $2)
             AND usage.recorded_at >=
-                now() - ($2::integer * interval '1 second')
+                now() - ($3::integer * interval '1 second')
             AND (
-              $3::text = 'platform_default'
-              OR run.workspace_id = $4::bigint
+              $4::text = 'platform_default'
+              OR (
+                $4::text = 'workspace'
+                AND run.workspace_id = $5::bigint
+              )
+              OR (
+                $4::text = 'user'
+                AND run.user_id = $6::bigint
+              )
+              OR (
+                $4::text = 'anonymous_session'
+                AND run.anonymous_session_id = $7::bigint
+                AND run.user_id IS NULL
+              )
+              OR (
+                $4::text = 'analysis_run'
+                AND run.analysis_run_id = $8::bigint
+              )
             )
           ORDER BY
             usage.provider_job_id,
@@ -87,9 +134,13 @@ export class BudgetRepository {
       `,
       [
         policy.provider,
+        policy.model,
         policy.windowSeconds,
         policy.budgetScope,
-        policy.workspaceId
+        policy.workspaceId,
+        policy.userId,
+        policy.anonymousSessionId,
+        policy.analysisRunId
       ]
     );
     return result.rows[0] as BudgetConsumption;

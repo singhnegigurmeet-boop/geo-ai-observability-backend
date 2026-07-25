@@ -30,7 +30,12 @@ export type JobStatus =
   | "cancelled";
 export type ProviderName = "mock" | "openai" | "gemini" | "claude";
 export type ProviderResultStatus = "valid" | "invalid";
-export type BudgetScope = "platform_default" | "workspace";
+export type BudgetScope =
+  | "platform_default"
+  | "workspace"
+  | "user"
+  | "anonymous_session"
+  | "analysis_run";
 export type BudgetLimitMode = "hard" | "soft";
 export type TokenUsageKind = "estimated" | "actual";
 export type ReportStatus = "completed" | "partial" | "failed";
@@ -321,7 +326,11 @@ export type BudgetPolicyRow = {
   budget_policy_id: DbId;
   budget_scope: BudgetScope;
   workspace_id: DbId | null;
+  user_id: DbId | null;
+  anonymous_session_id: DbId | null;
+  analysis_run_id: DbId | null;
   provider: ProviderName;
+  model: string | null;
   limit_mode: BudgetLimitMode;
   window_seconds: number;
   token_limit: DbId | null;

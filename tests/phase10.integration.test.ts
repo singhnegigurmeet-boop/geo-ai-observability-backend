@@ -71,14 +71,7 @@ describe(
     });
 
     beforeEach(async () => {
-      const tables = await pool.query<{ tablename: string }>(
-        "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-      );
-      await pool.query(
-        `TRUNCATE ${tables.rows
-          .map((row) => `"${row.tablename}"`)
-          .join(", ")} RESTART IDENTITY CASCADE`
-      );
+      await truncatePublicTables(pool);
       const channel = await rabbitMq.getConfirmChannel();
       for (const queue of ["mock_queue", "scoring_queue"] as const) {
         await channel.purgeQueue(queue);
@@ -144,7 +137,11 @@ describe(
         budgetPolicyId: "1",
         budgetScope: "platform_default",
         workspaceId: null,
+        userId: null,
+        anonymousSessionId: null,
+        analysisRunId: null,
         provider: "mock",
+        model: null,
         limitMode: "hard",
         windowSeconds: 3600,
         tokenLimit: "10000",
@@ -225,54 +222,78 @@ describe(
       );
     });
 
-    it("serializes concurrent hard-budget checks so only one provider job executes", async () => {
-      const fixture = await seedRun(pool, "anonymous", [
-        "visibility",
-        "ranking",
-        "competitor"
-      ]);
-      const limit = Math.max(
-        ...fixture.jobs.map((job) => estimateFor(job).totalTokens)
-      );
-      await createPolicy(pool, {
-        scope: "platform_default",
-        workspaceId: null,
-        mode: "hard",
-        tokenLimit: limit
-      });
-      const outcomes = await Promise.all(
-        fixture.jobs.map((job) =>
-          new MockProviderService(pool).execute(job.payload)
-        )
-      );
-
-      assert.equal(
-        outcomes.filter((outcome) => outcome.outcome === "completed").length,
-        1
-      );
-      assert.equal(
-        outcomes.filter((outcome) => outcome.outcome === "paused_budget")
-          .length,
-        2
-      );
-      assert.equal(await count(pool, "provider_results"), 1);
-      assert.equal(
-        Number(
-          (
-            await pool.query<{ count: string }>(
-              `
-                SELECT count(DISTINCT provider_job_id)
-                FROM token_usage
-                WHERE usage_kind = 'estimated'
-              `
-            )
-          ).rows[0]!.count
-        ),
-        1
-      );
+    it("serializes concurrent hard checks for every frozen budget scope", async () => {
+      const cases = [
+        { scope: "platform_default", actor: "anonymous" },
+        { scope: "workspace", actor: "user" },
+        { scope: "user", actor: "user" },
+        { scope: "anonymous_session", actor: "anonymous" },
+        { scope: "analysis_run", actor: "anonymous" }
+      ] as const;
+      for (const [index, testCase] of cases.entries()) {
+        if (index > 0) await truncatePublicTables(pool);
+        const fixture = await seedRun(pool, testCase.actor, [
+          "visibility",
+          "ranking",
+          "competitor"
+        ]);
+        const limit = Math.max(
+          ...fixture.jobs.map((job) => estimateFor(job).totalTokens)
+        );
+        await createPolicy(pool, {
+          scope: testCase.scope,
+          workspaceId:
+            testCase.scope === "workspace" ? fixture.workspaceId : null,
+          userId: testCase.scope === "user" ? fixture.userId : null,
+          anonymousSessionId:
+            testCase.scope === "anonymous_session"
+              ? fixture.anonymousSessionId
+              : null,
+          analysisRunId:
+            testCase.scope === "analysis_run"
+              ? fixture.analysisRunId
+              : null,
+          mode: "hard",
+          tokenLimit: limit
+        });
+        const outcomes = await Promise.all(
+          fixture.jobs.map((job) =>
+            new MockProviderService(pool).execute(job.payload)
+          )
+        );
+        assert.equal(
+          outcomes.filter((outcome) => outcome.outcome === "completed")
+            .length,
+          1,
+          testCase.scope
+        );
+        assert.equal(
+          outcomes.filter(
+            (outcome) => outcome.outcome === "paused_budget"
+          ).length,
+          2,
+          testCase.scope
+        );
+        assert.equal(await count(pool, "provider_results"), 1);
+        assert.equal(
+          Number(
+            (
+              await pool.query<{ count: string }>(
+                `
+                  SELECT count(DISTINCT provider_job_id)
+                  FROM token_usage
+                  WHERE usage_kind = 'estimated'
+                `
+              )
+            ).rows[0]!.count
+          ),
+          1,
+          testCase.scope
+        );
+      }
     });
 
-    it("applies platform policy to anonymous and platform plus workspace to user and claimed work", async () => {
+    it("does not leak workspace policies into anonymous work", async () => {
       const anonymous = await seedRun(pool, "anonymous", ["visibility"]);
       const user = await seedRun(pool, "user", ["visibility"]);
       const claimed = await seedRun(pool, "claimed", ["visibility"], {
@@ -371,6 +392,126 @@ describe(
       } finally {
         await server.close();
       }
+    });
+
+    it("selects the exact frozen scope set for anonymous, user, and claimed ownership", async () => {
+      const anonymous = await seedRun(pool, "anonymous", ["visibility"]);
+      const user = await seedRun(pool, "user", ["visibility"]);
+      const claimed = await seedRun(pool, "claimed", ["visibility"]);
+      await createPolicy(pool, {
+        scope: "platform_default",
+        workspaceId: null,
+        mode: "hard",
+        tokenLimit: 100_000
+      });
+      await createPolicy(pool, {
+        scope: "anonymous_session",
+        workspaceId: null,
+        anonymousSessionId: anonymous.anonymousSessionId,
+        mode: "hard",
+        tokenLimit: 100_000
+      });
+      await createPolicy(pool, {
+        scope: "analysis_run",
+        workspaceId: null,
+        analysisRunId: anonymous.analysisRunId,
+        mode: "hard",
+        tokenLimit: 100_000
+      });
+      for (const fixture of [user, claimed]) {
+        await createPolicy(pool, {
+          scope: "workspace",
+          workspaceId: fixture.workspaceId,
+          mode: "hard",
+          tokenLimit: 100_000
+        });
+        await createPolicy(pool, {
+          scope: "user",
+          workspaceId: null,
+          userId: fixture.userId,
+          mode: "hard",
+          tokenLimit: 100_000
+        });
+        await createPolicy(pool, {
+          scope: "analysis_run",
+          workspaceId: null,
+          analysisRunId: fixture.analysisRunId,
+          mode: "hard",
+          tokenLimit: 100_000
+        });
+      }
+      await createPolicy(pool, {
+        scope: "anonymous_session",
+        workspaceId: null,
+        anonymousSessionId: claimed.anonymousSessionId,
+        mode: "hard",
+        tokenLimit: 1
+      });
+
+      assert.deepEqual(await applicableScopes(pool, anonymous), [
+        "platform_default",
+        "anonymous_session",
+        "analysis_run"
+      ]);
+      assert.deepEqual(await applicableScopes(pool, user), [
+        "platform_default",
+        "workspace",
+        "user",
+        "analysis_run"
+      ]);
+      assert.deepEqual(await applicableScopes(pool, claimed), [
+        "platform_default",
+        "workspace",
+        "user",
+        "analysis_run"
+      ]);
+      assert.equal(
+        (
+          await new MockProviderService(pool).execute(
+            claimed.jobs[0]!.payload
+          )
+        ).outcome,
+        "completed",
+        "claimed work must not apply its preserved anonymous-session policy"
+      );
+    });
+
+    it("applies provider-wide and exact-model policies without mixing provider and model", async () => {
+      const allowed = await seedRun(pool, "anonymous", ["visibility"]);
+      await createPolicy(pool, {
+        scope: "analysis_run",
+        workspaceId: null,
+        analysisRunId: allowed.analysisRunId,
+        model: "mock-standard",
+        mode: "hard",
+        tokenLimit: 1
+      });
+      assert.equal(
+        (
+          await new MockProviderService(pool).execute(
+            allowed.jobs[0]!.payload
+          )
+        ).outcome,
+        "completed"
+      );
+
+      const blocked = await seedRun(pool, "anonymous", ["visibility"]);
+      await createPolicy(pool, {
+        scope: "analysis_run",
+        workspaceId: null,
+        analysisRunId: blocked.analysisRunId,
+        model: "mock-fast",
+        mode: "hard",
+        tokenLimit: 1
+      });
+      assert.equal(
+        (
+          await new MockProviderService(pool).execute(
+            blocked.jobs[0]!.payload
+          )
+        ).outcome,
+        "paused_budget"
+      );
     });
 
     it("acknowledges a live budget pause without retry, failure record, or DLQ", async () => {
@@ -715,8 +856,17 @@ function estimateFor(job: {
 async function createPolicy(
   pool: pg.Pool,
   input: {
-    scope: "platform_default" | "workspace";
+    scope:
+      | "platform_default"
+      | "workspace"
+      | "user"
+      | "anonymous_session"
+      | "analysis_run";
     workspaceId: string | null;
+    userId?: string | null;
+    anonymousSessionId?: string | null;
+    analysisRunId?: string | null;
+    model?: string | null;
     mode: "hard" | "soft";
     tokenLimit: number;
   }
@@ -725,15 +875,52 @@ async function createPolicy(
     await pool.query<{ budget_policy_id: string }>(
       `
         INSERT INTO budget_policies (
-          budget_scope, workspace_id, provider, limit_mode,
+          budget_scope, workspace_id, user_id, anonymous_session_id,
+          analysis_run_id, provider, model, limit_mode,
           window_seconds, token_limit
         )
-        VALUES ($1, $2, 'mock', $3, 3600, $4)
+        VALUES ($1, $2, $3, $4, $5, 'mock', $6, $7, 3600, $8)
         RETURNING budget_policy_id
       `,
-      [input.scope, input.workspaceId, input.mode, input.tokenLimit]
+      [
+        input.scope,
+        input.workspaceId,
+        input.userId ?? null,
+        input.anonymousSessionId ?? null,
+        input.analysisRunId ?? null,
+        input.model ?? null,
+        input.mode,
+        input.tokenLimit
+      ]
     )
   ).rows[0]!.budget_policy_id;
+}
+
+async function applicableScopes(
+  pool: pg.Pool,
+  fixture: Awaited<ReturnType<typeof seedRun>>
+) {
+  return (
+    await new BudgetRepository(pool).lockApplicablePolicies({
+      provider: "mock",
+      model: fixture.jobs[0]!.model,
+      workspaceId: fixture.workspaceId,
+      userId: fixture.userId,
+      anonymousSessionId: fixture.anonymousSessionId,
+      analysisRunId: fixture.analysisRunId
+    })
+  ).map((policy) => policy.budgetScope);
+}
+
+async function truncatePublicTables(pool: pg.Pool) {
+  const tables = await pool.query<{ tablename: string }>(
+    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+  );
+  await pool.query(
+    `TRUNCATE ${tables.rows
+      .map((row) => `"${row.tablename}"`)
+      .join(", ")} RESTART IDENTITY CASCADE`
+  );
 }
 
 async function count(pool: pg.Pool, table: string) {

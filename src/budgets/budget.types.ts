@@ -15,7 +15,11 @@ export type ApplicableBudgetPolicy = {
   budgetPolicyId: string;
   budgetScope: BudgetScope;
   workspaceId: string | null;
+  userId: string | null;
+  anonymousSessionId: string | null;
+  analysisRunId: string | null;
   provider: ProviderName;
+  model: string | null;
   limitMode: BudgetLimitMode;
   windowSeconds: number;
   tokenLimit: string | null;

@@ -336,14 +336,19 @@ Technical failures roll the whole stage back and use the shared three-attempt re
 
 ## Phase 10 Budget Enforcement
 
-The sealed budget policy scopes are:
+The budget policy scopes are:
 
 ```text
 platform_default -> every run for the selected provider
 workspace        -> logged-in and claimed runs in that workspace
+user             -> logged-in and claimed runs for that user
+anonymous_session -> pure anonymous runs for that session
+analysis_run     -> one exact anonymous, user, or claimed run
 ```
 
-Anonymous runs have no fake workspace and therefore receive platform policies only. Logged-in and claimed runs receive platform plus workspace policies; a claim continues to preserve its anonymous origin. User, anonymous-session, and analysis-run policy scopes are deferred because they are not present in the sealed schema.
+Anonymous runs receive platform, anonymous-session, and analysis-run policies without fake owners. Logged-in runs receive platform, workspace, user, and analysis-run policies. Claimed runs use that same logged-in scope set while preserving their anonymous origin; they do not apply anonymous-session limits.
+
+Migrations `020` and `021` extend the existing scope enum and generic `budget_policies` table with user, anonymous-session, and analysis-run foreign keys plus optional model targeting. No scope-specific budget tables are introduced.
 
 For every enabled applicable policy, the worker locks the policy row and accounts usage inside the same PostgreSQL transaction. Per provider job, accounting selects actual usage when available and estimated usage otherwise. This provides reservation and reconciliation without mutable accounting rows or an in-memory lock.
 
@@ -356,7 +361,7 @@ soft:
   current tokens/cost > limit  -> pause later prompts
 ```
 
-Policies are provider-specific. Model-specific local estimation and pricing distinguish `mock-fast`, `mock-standard`, and `mock-quality`; all token and money units are integers. No pricing API or external tokenizer is used.
+Policies are provider-specific and may optionally target one exact model. Provider-wide and exact-model policies both apply when relevant. Model-specific local estimation and pricing distinguish `mock-fast`, `mock-standard`, and `mock-quality`; all token and money units are integers. No pricing API or external tokenizer is used.
 
 On budget pause, the transaction creates no provider result and no actual usage. It moves the current locked provider/prompt work and the related LLM runs, run items, and analysis run to `paused_budget`, using the stable user-facing message:
 
@@ -451,7 +456,6 @@ No submitted domain text, prompt content, provider configuration, expanded item,
 ## Explicitly Deferred
 
 - Real provider execution and provider fallback
-- User, anonymous-session, and analysis-run budget-policy scopes
 - Advanced billing, payment integration, and external pricing/tokenizer APIs
 - Advanced scoring science, premium reports, and report diffs
 - Scheduler and notifications

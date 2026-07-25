@@ -27,7 +27,7 @@ This branch contains the Phase 10 provider-budget enforcement slice for GEO V6. 
 - ID-only `provider_result.created` events routed through a dedicated `scoring_queue` and DLQ
 - Immutable `backend-v1` provider scores computed independently of provider-supplied score fields
 - Idempotent `basic-v1` reports with prompt-type breakdown, provider/model provenance, and usage totals
-- Provider-specific platform and workspace budget policies enforced before provider execution
+- Provider/model-aware platform, workspace, user, anonymous-session, and analysis-run budget policies enforced before provider execution
 - Deterministic model-aware estimated token/cost reservations and actual-usage reconciliation
 - Concurrency-safe hard limits and one-crossing-prompt soft limits using PostgreSQL policy locks
 - Budget pause propagation across provider deliveries, prompts, LLM runs, run items, and analysis runs
@@ -199,14 +199,14 @@ The scoring worker consumes ID-only `provider_result.created` events. It reloads
 Before the mock provider creates evidence, it estimates input/output tokens and integer micro-cost from the rendered prompt, prompt type/version, provider, and model. It then locks all applicable enabled budget policies:
 
 ```text
-anonymous -> platform_default provider policies
-user      -> platform_default + workspace provider policies
-claimed   -> platform_default + workspace provider policies
+anonymous -> platform_default + anonymous_session + analysis_run
+user      -> platform_default + workspace + user + analysis_run
+claimed   -> platform_default + workspace + user + analysis_run
 ```
 
-The sealed schema currently supports only `platform_default` and `workspace` policy scopes. User, anonymous-session, and analysis-run policies remain deferred rather than being simulated with fake ownership.
+Migrations `020` and `021` extend the existing generic `budget_policies` table rather than creating separate scope tables. Workspace, user, anonymous-session, and analysis-run policies use real foreign keys. Claimed runs preserve their anonymous origin but deliberately do not apply anonymous-session policies.
 
-An absent enabled policy means no limit for that scope. A hard policy rejects an execution whose projection crosses either configured limit. A soft policy permits the one prompt that crosses the limit, then pauses subsequent executions while accounted usage remains over the limit.
+Policies may target an entire provider or one exact provider-owned model. An absent enabled policy means no limit for that scope. A hard policy rejects an execution whose projection crosses either configured limit. A soft policy permits the one prompt that crosses the limit, then pauses subsequent executions while accounted usage remains over the limit.
 
 Estimated and actual records are both immutable. Budget accounting chooses the actual record when it exists and otherwise uses the estimate, so reconciliation never double-counts a provider job. Budget pause is acknowledged as a business result: it creates no provider evidence, no actual usage, no score/report, no failure record, and no DLQ delivery. Each worker transitions only its already-locked provider/prompt row; later deliveries observe the paused parent run and pause themselves without competing lock order.
 
@@ -271,7 +271,6 @@ Integration launchers wait for their dependencies. Destructive test schema setup
 
 - Dynamic prompt/model policy or prompt experimentation
 - Real OpenAI, Gemini, or Claude execution and provider fallback
-- User, anonymous-session, and analysis-run budget-policy scopes
 - Advanced billing, payments, and external pricing/tokenizer APIs
 - Advanced scoring science, premium reports, and report diffs
 - Scheduler or notification execution

@@ -373,6 +373,30 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       requested_provider: null,
       requested_model: null
     });
+
+    for (const filename of migrationFilenames.slice(modelPreferenceIndex + 1)) {
+      await cp(
+        path.join(sourceDirectory, filename),
+        path.join(temporaryMigrationsDirectory, filename)
+      );
+    }
+    const budgetScopeRun = await runMigrations({
+      pool,
+      migrationsDirectory: temporaryMigrationsDirectory
+    });
+    assert.equal(
+      budgetScopeRun.applied.length,
+      migrationFilenames.length - modelPreferenceIndex - 1
+    );
+    assert.equal(budgetScopeRun.skipped.length, modelPreferenceIndex + 1);
+    const retainedAfterBudgetScope = await pool.query<{ count: string }>(
+      `
+        SELECT count(*)
+        FROM analysis_runs
+        WHERE idempotency_key = 'migration-017-run'
+      `
+    );
+    assert.equal(retainedAfterBudgetScope.rows[0]?.count, "1");
   });
 
   it("is a no-op on the second complete run", async () => {
@@ -734,6 +758,117 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
           WHERE analysis_run_id = $1
         `,
         [loggedInRun, ownership.anonymousSessionId]
+      ),
+      hasPostgresCode("23514")
+    );
+  });
+
+  it("enforces all generic budget-policy scopes and model identity", async () => {
+    const ownership = await getOwnershipFixture(pool);
+    const runs = await pool.query<{
+      analysis_run_id: string;
+      idempotency_key: string;
+    }>(
+      `
+        SELECT analysis_run_id, idempotency_key
+        FROM analysis_runs
+        WHERE idempotency_key IN ('run-anonymous', 'run-origin-cannot-be-added')
+      `
+    );
+    const anonymousRunId = runs.rows.find(
+      (row) => row.idempotency_key === "run-anonymous"
+    )!.analysis_run_id;
+    const userRunId = runs.rows.find(
+      (row) => row.idempotency_key === "run-origin-cannot-be-added"
+    )!.analysis_run_id;
+
+    const policies = [
+      ["platform_default", null, null, null, null, null],
+      ["workspace", ownership.workspaceId, null, null, null, null],
+      ["user", null, ownership.memberUserId, null, null, "mock-standard"],
+      [
+        "anonymous_session",
+        null,
+        null,
+        ownership.anonymousSessionId,
+        null,
+        "mock-fast"
+      ],
+      ["analysis_run", null, null, null, userRunId, null]
+    ] as const;
+    for (const [scope, workspace, user, anonymous, run, model] of policies) {
+      await pool.query(
+        `
+          INSERT INTO budget_policies (
+            budget_scope, workspace_id, user_id, anonymous_session_id,
+            analysis_run_id, provider, model, limit_mode,
+            window_seconds, token_limit
+          )
+          VALUES ($1, $2, $3, $4, $5, 'mock', $6, 'hard', 7200, 1000)
+        `,
+        [scope, workspace, user, anonymous, run, model]
+      );
+    }
+    await pool.query(
+      `
+        INSERT INTO budget_policies (
+          budget_scope, provider, model, limit_mode,
+          window_seconds, token_limit
+        )
+        VALUES (
+          'platform_default', 'mock', 'mock-fast', 'hard', 7200, 1000
+        )
+      `
+    );
+    assert.equal(
+      (
+        await pool.query<{ count: string }>(
+          "SELECT count(*) FROM budget_policies WHERE window_seconds = 7200"
+        )
+      ).rows[0]?.count,
+      "6"
+    );
+
+    await assert.rejects(
+      pool.query(
+        `
+          INSERT INTO budget_policies (
+            budget_scope, workspace_id, user_id, provider,
+            limit_mode, window_seconds, token_limit
+          )
+          VALUES ('user', $1, $2, 'mock', 'hard', 7300, 1000)
+        `,
+        [ownership.workspaceId, ownership.memberUserId]
+      ),
+      hasPostgresCode("23514")
+    );
+    await assert.rejects(
+      pool.query(
+        `
+          INSERT INTO budget_policies (
+            budget_scope, analysis_run_id, provider, model,
+            limit_mode, window_seconds, token_limit
+          )
+          VALUES (
+            'analysis_run', $1, 'mock', NULL, 'hard', 7200, 1000
+          )
+        `,
+        [userRunId]
+      ),
+      hasPostgresCode("23505")
+    );
+    await assert.rejects(
+      pool.query(
+        `
+          INSERT INTO budget_policies (
+            budget_scope, analysis_run_id, provider, model,
+            limit_mode, window_seconds, token_limit
+          )
+          VALUES (
+            'analysis_run', $1, 'mock', '   ', 'hard', 7400, 1000
+          )
+        `,
+        [anonymousRunId]
       ),
       hasPostgresCode("23514")
     );

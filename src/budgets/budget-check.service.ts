@@ -23,6 +23,9 @@ export class BudgetCheckService {
     provider: ProviderName;
     model: string;
     workspaceId: string | null;
+    userId: string | null;
+    anonymousSessionId: string | null;
+    analysisRunId: string;
     promptText: string;
     promptType: PromptType;
     promptVersion: string;
@@ -30,7 +33,11 @@ export class BudgetCheckService {
     const estimate = this.estimator.estimate(input);
     const policies = await this.budgets.lockApplicablePolicies({
       provider: input.provider,
-      workspaceId: input.workspaceId
+      model: input.model,
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      anonymousSessionId: input.anonymousSessionId,
+      analysisRunId: input.analysisRunId
     });
     for (const policy of policies) {
       if (
