@@ -28,6 +28,6 @@ export class MockProviderService {
   }
 
   execute(payload: ProviderJobCreatedPayload) {
-    return this.provider.execute(payload);
+    return this.provider.execute(payload, "mock");
   }
 }

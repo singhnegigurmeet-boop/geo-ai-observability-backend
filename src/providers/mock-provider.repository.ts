@@ -46,11 +46,27 @@ export class MockProviderRepository {
         JOIN analysis_runs AS run
           ON run.analysis_run_id = item.analysis_run_id
         WHERE provider_job.provider_job_id = $1
-        FOR UPDATE OF provider_job, prompt
+        FOR UPDATE OF run, item, llm, prompt, provider_job
       `,
       [providerJobId]
     );
     return result.rows[0] ?? null;
+  }
+
+  async markProcessing(providerJobId: string) {
+    const result = await this.database.query<{ provider_job_id: string }>(
+      `
+        UPDATE provider_jobs
+        SET status = 'processing',
+            started_at = COALESCE(started_at, now()),
+            updated_at = now()
+        WHERE provider_job_id = $1
+          AND status = 'queued'
+        RETURNING provider_job_id
+      `,
+      [providerJobId]
+    );
+    return Boolean(result.rows[0]);
   }
 
   async createOrReuseResult(input: {
@@ -184,7 +200,7 @@ export class MockProviderRepository {
     return existing.rows[0];
   }
 
-  async markSucceeded(providerJobId: string, promptJobId: string) {
+  async markSucceeded(providerJobId: string) {
     const provider = await this.database.query<{ provider_job_id: string }>(
       `
         UPDATE provider_jobs
@@ -194,28 +210,35 @@ export class MockProviderRepository {
             error_code = NULL,
             error_message = NULL,
             updated_at = now()
-        WHERE provider_job_id = $1 AND status = 'queued'
+        WHERE provider_job_id = $1 AND status = 'processing'
         RETURNING provider_job_id
       `,
       [providerJobId]
     );
-    const prompt = await this.database.query<{ prompt_job_id: string }>(
+    return Boolean(provider.rows[0]);
+  }
+
+  async markFailed(
+    providerJobId: string,
+    errorCode: string,
+    errorMessage: string
+  ) {
+    const result = await this.database.query<{ provider_job_id: string }>(
       `
-        UPDATE prompt_jobs
-        SET status = 'succeeded',
-            completed_at = now(),
-            error_code = NULL,
-            error_message = NULL,
+        UPDATE provider_jobs
+        SET status = 'failed',
+            started_at = COALESCE(started_at, now()),
+            completed_at = COALESCE(completed_at, now()),
+            error_code = $2,
+            error_message = $3,
             updated_at = now()
-        WHERE prompt_job_id = $1
-          AND status = 'processing'
-          AND prompt_text IS NOT NULL
-          AND length(btrim(prompt_text)) > 0
-        RETURNING prompt_job_id
+        WHERE provider_job_id = $1
+          AND status IN ('pending', 'queued', 'processing')
+        RETURNING provider_job_id
       `,
-      [promptJobId]
+      [providerJobId, errorCode, errorMessage]
     );
-    return Boolean(provider.rows[0] && prompt.rows[0]);
+    return Boolean(result.rows[0]);
   }
 
   async markBudgetPaused(input: {
@@ -238,57 +261,23 @@ export class MockProviderRepository {
       `,
       [input.providerJobId, input.reasonCode, input.reasonMessage]
     );
-    const prompt = await this.database.query<{ prompt_job_id: string }>(
-      `
-        UPDATE prompt_jobs
-        SET status = 'paused_budget',
-            error_code = $2,
-            error_message = $3,
-            updated_at = now()
-        WHERE prompt_job_id = $1
-          AND status IN ('pending', 'queued', 'processing')
-        RETURNING prompt_job_id
-      `,
-      [input.promptJobId, input.reasonCode, input.reasonMessage]
-    );
     await this.database.query(
       `
-        UPDATE llm_runs AS llm
+        UPDATE provider_jobs AS job
         SET status = 'paused_budget',
             error_code = $2,
             error_message = $3,
             updated_at = now()
-        FROM analysis_run_items AS item
-        WHERE llm.analysis_run_item_id = item.analysis_run_item_id
+        FROM prompt_jobs AS prompt
+        JOIN llm_runs AS llm ON llm.llm_run_id = prompt.llm_run_id
+        JOIN analysis_run_items AS item
+          ON item.analysis_run_item_id = llm.analysis_run_item_id
+        WHERE job.prompt_job_id = prompt.prompt_job_id
           AND item.analysis_run_id = $1
-          AND llm.status IN ('queued', 'processing')
+          AND job.status IN ('pending', 'queued')
       `,
       [input.analysisRunId, input.reasonCode, input.reasonMessage]
     );
-    await this.database.query(
-      `
-        UPDATE analysis_run_items
-        SET status = 'paused_budget',
-            error_code = $2,
-            error_message = $3,
-            updated_at = now()
-        WHERE analysis_run_id = $1
-          AND status IN ('queued', 'processing')
-      `,
-      [input.analysisRunId, input.reasonCode, input.reasonMessage]
-    );
-    await this.database.query(
-      `
-        UPDATE analysis_runs
-        SET status = 'paused_budget',
-            error_code = $2,
-            error_message = $3,
-            updated_at = now()
-        WHERE analysis_run_id = $1
-          AND status IN ('queued', 'processing')
-      `,
-      [input.analysisRunId, input.reasonCode, input.reasonMessage]
-    );
-    return Boolean(provider.rows[0] && prompt.rows[0]);
+    return Boolean(provider.rows[0]);
   }
 }

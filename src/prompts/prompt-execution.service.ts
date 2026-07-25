@@ -12,6 +12,7 @@ import {
 } from "./prompt-execution.repository.js";
 import { PromptRendererService } from "./prompt-renderer.service.js";
 import type { PromptJobCreatedPayload } from "./prompt-worker.messages.js";
+import type { PromptType } from "../types/database.types.js";
 
 type PromptExecutionDatabase = DatabaseExecutor & TransactionPool;
 
@@ -37,7 +38,8 @@ export class PromptExecutionService {
   ) {}
 
   async execute(
-    payload: PromptJobCreatedPayload
+    payload: PromptJobCreatedPayload,
+    expectedPromptType?: PromptType
   ): Promise<PromptExecutionResult> {
     return inTransaction(this.database, async (client) => {
       const prompts = new PromptExecutionRepository(client);
@@ -50,6 +52,12 @@ export class PromptExecutionService {
       }
       if (state.prompt_status !== "pending") {
         return { outcome: "noop", providerJobId: null };
+      }
+      if (expectedPromptType && state.prompt_type !== expectedPromptType) {
+        throw new PromptExecutionError(
+          "PROMPT_QUEUE_MISMATCH",
+          `Prompt job does not belong on the ${expectedPromptType} queue`
+        );
       }
       if (state.prompt_text !== null) {
         throw new PromptExecutionError(
@@ -89,39 +97,48 @@ export class PromptExecutionService {
           "Pending prompt job could not transition to processing"
         );
       }
-      const selection = selectProviderModel({
-        actorType,
-        requestedProvider: state.requested_provider,
-        requestedModel: state.requested_model,
-        realProvidersEnabled: this.realProvidersEnabled
-      });
-      const providerJob = await new ProviderJobRepository(
-        client
-      ).createOrReuse({
-        promptJobId: state.prompt_job_id,
-        provider: selection.provider,
-        model: selection.model,
-        requestPayload: {
-          promptJobId: state.prompt_job_id
-        }
-      });
-      await new OutboxEventWriterRepository(client).createOrReuse({
-        eventKey: `provider_job.created:${providerJob.provider_job_id}`,
-        eventType: "provider_job.created",
-        eventVersion: 1,
-        aggregateType: "provider_job",
-        aggregateId: providerJob.provider_job_id,
-        headers: { queueName: selection.queueName },
-        payload: {
-          providerJobId: providerJob.provider_job_id,
+      const providerModels = await prompts.listRunProviderModels(
+        state.analysis_run_id
+      );
+      if (providerModels.length === 0) {
+        throw new PromptExecutionError(
+          "PROVIDER_SET_MISSING",
+          "Analysis run has no frozen provider/model set"
+        );
+      }
+      const jobs = new ProviderJobRepository(client);
+      const outbox = new OutboxEventWriterRepository(client);
+      let firstProviderJobId: string | null = null;
+      for (const pair of providerModels) {
+        const selection = selectProviderModel({
+          // The set was authorized, normalized, and frozen when the run was
+          // created. Re-validate the pair itself without reapplying the
+          // anonymous-request rule to this internal execution step.
+          actorType: "user",
+          requestedProvider: pair.provider,
+          requestedModel: pair.model,
+          realProvidersEnabled: this.realProvidersEnabled
+        });
+        const providerJob = await jobs.createOrReuse({
           promptJobId: state.prompt_job_id,
           provider: selection.provider,
-          model: selection.model
-        }
-      });
+          model: selection.model,
+          requestPayload: { promptJobId: state.prompt_job_id }
+        });
+        firstProviderJobId ??= providerJob.provider_job_id;
+        await outbox.createOrReuse({
+          eventKey: `provider_job.created:${providerJob.provider_job_id}`,
+          eventType: "provider_job.created",
+          eventVersion: 1,
+          aggregateType: "provider_job",
+          aggregateId: providerJob.provider_job_id,
+          headers: { queueName: selection.queueName },
+          payload: { providerJobId: providerJob.provider_job_id }
+        });
+      }
       return {
         outcome: "enqueued",
-        providerJobId: providerJob.provider_job_id
+        providerJobId: firstProviderJobId as string
       };
     });
   }
@@ -134,17 +151,26 @@ function assertPayloadMatchesState(
   const actorType =
     state.user_id && state.workspace_id ? "user" : "anonymous";
   if (
-    payload.llmRunId !== state.llm_run_id ||
-    payload.analysisRunItemId !== state.analysis_run_item_id ||
-    payload.analysisRunId !== state.analysis_run_id ||
-    payload.entityPathId !== state.entity_path_id ||
-    payload.startingEntityPathId !== state.starting_entity_path_id ||
-    payload.promptType !== state.prompt_type ||
-    payload.promptVersion !== state.prompt_version ||
-    payload.actorType !== actorType ||
-    payload.userId !== state.user_id ||
-    payload.workspaceId !== state.workspace_id ||
-    payload.anonymousSessionId !== state.anonymous_session_id
+    (payload.llmRunId !== undefined &&
+      payload.llmRunId !== state.llm_run_id) ||
+    (payload.analysisRunItemId !== undefined &&
+      payload.analysisRunItemId !== state.analysis_run_item_id) ||
+    (payload.analysisRunId !== undefined &&
+      payload.analysisRunId !== state.analysis_run_id) ||
+    (payload.entityPathId !== undefined &&
+      payload.entityPathId !== state.entity_path_id) ||
+    (payload.startingEntityPathId !== undefined &&
+      payload.startingEntityPathId !== state.starting_entity_path_id) ||
+    (payload.promptType !== undefined &&
+      payload.promptType !== state.prompt_type) ||
+    (payload.promptVersion !== undefined &&
+      payload.promptVersion !== state.prompt_version) ||
+    (payload.actorType !== undefined && payload.actorType !== actorType) ||
+    (payload.userId !== undefined && payload.userId !== state.user_id) ||
+    (payload.workspaceId !== undefined &&
+      payload.workspaceId !== state.workspace_id) ||
+    (payload.anonymousSessionId !== undefined &&
+      payload.anonymousSessionId !== state.anonymous_session_id)
   ) {
     throw new PromptExecutionError(
       "PROMPT_JOB_MESSAGE_MISMATCH",
