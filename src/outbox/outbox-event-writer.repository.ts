@@ -44,4 +44,61 @@ export class OutboxEventWriterRepository {
     );
     return result.rows[0] as OutboxEventRow;
   }
+
+  async createOrReuse(input: CreateOutboxEventRecord) {
+    const result = await this.database.query<OutboxEventRow>(
+      `
+        INSERT INTO outbox_events (
+          event_key,
+          aggregate_type,
+          aggregate_id,
+          event_type,
+          event_version,
+          payload,
+          headers
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (event_key) DO NOTHING
+        RETURNING *
+      `,
+      [
+        input.eventKey,
+        input.aggregateType,
+        input.aggregateId,
+        input.eventType,
+        input.eventVersion,
+        input.payload,
+        input.headers
+      ]
+    );
+    if (result.rows[0]) {
+      return result.rows[0];
+    }
+    const existing = await this.database.query<OutboxEventRow>(
+      `
+        SELECT *
+        FROM outbox_events
+        WHERE event_key = $1
+          AND aggregate_type = $2
+          AND aggregate_id = $3
+          AND event_type = $4
+          AND event_version = $5
+          AND payload = $6::jsonb
+          AND headers = $7::jsonb
+      `,
+      [
+        input.eventKey,
+        input.aggregateType,
+        input.aggregateId,
+        input.eventType,
+        input.eventVersion,
+        input.payload,
+        input.headers
+      ]
+    );
+    if (!existing.rows[0]) {
+      throw new Error("Idempotent outbox event could not be loaded");
+    }
+    return existing.rows[0];
+  }
 }

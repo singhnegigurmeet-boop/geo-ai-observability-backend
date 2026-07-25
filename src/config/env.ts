@@ -12,6 +12,7 @@ const envSchema = z
     RABBITMQ_EXCHANGE: z.string().min(1).default("geo.v6.main"),
     RABBITMQ_DEAD_LETTER_EXCHANGE: z.string().min(1).default("geo.v6.dlx"),
     RABBITMQ_CONFIRM_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+    ANALYSIS_RUN_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(5),
     SESSION_TOKEN_PEPPER: z.string().min(32),
     USER_SESSION_TTL_SECONDS: z.coerce.number().int().positive().default(2_592_000),
     ANONYMOUS_SESSION_TTL_SECONDS: z.coerce.number().int().positive().default(604_800),

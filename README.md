@@ -1,6 +1,6 @@
 # GEO V6 Production Core Backend
 
-This branch contains the Phase 4 transactional analysis-submission slice for GEO V6. PostgreSQL remains authoritative. The API can accept an owned starting hierarchy path, create a queued `analysis_run`, and atomically create its `analysis_run.created` outbox event.
+This branch contains the Phase 5 analysis-run expansion slice for GEO V6. PostgreSQL remains authoritative. The API creates a queued run and its outbox event; a separate RabbitMQ consumer reloads that run and expands exactly one hierarchy level.
 
 ## Implemented
 
@@ -13,8 +13,11 @@ This branch contains the Phase 4 transactional analysis-submission slice for GEO
 - Owner-scoped, normalized-request idempotency
 - Transactional `analysis_runs` and `outbox_events` creation
 - Owner-scoped queued-run status reads
+- One-level `analysis_run_worker` expansion through explicit relationships
+- Transactional `analysis_run_items` and `analysis_run_item.created` outbox events
+- PostgreSQL idempotency, bounded worker retries, failure history, and DLQ routing
 
-The Phase 4 API does not create `analysis_run_items`. Hierarchy expansion belongs to a future `analysis_run_worker`.
+The Phase 4 API still does not create `analysis_run_items`; only the Phase 5 worker does.
 
 ## HTTP Surface
 
@@ -79,7 +82,7 @@ Categories, brands, products, and use contexts are controlled master records. Th
 
 Normal analysis submission may create/reuse normalized domains and exact selected `entity_paths`. It never creates category, brand, product, or use-context masters, and it never creates relationship rows. Those relationships are admin/system/discovery-controlled.
 
-Future hierarchy expansion reads active relationship rows in deterministic admin-controlled order: `sort_order ASC NULLS LAST`, then relationship creation time and relationship ID.
+Hierarchy expansion reads active relationship rows in deterministic admin-controlled order: `sort_order ASC NULLS LAST`, then relationship creation time and relationship ID. Anonymous runs select at most three children; logged-in and claimed runs select at most five. A full use-context path creates one direct item.
 
 Any future crawler or fetcher must additionally resolve and revalidate every destination IP at request time and after redirects. Input normalization alone is not a complete SSRF boundary.
 
@@ -107,7 +110,11 @@ analysis_runs
   -> COMMIT
 ```
 
-The event is routed through `analysis_run_queue` and contains only run, path, and ownership identifiers. RabbitMQ transports the event; future workers must reload authoritative state from PostgreSQL.
+The event is routed through `analysis_run_queue` and contains only run, path, and ownership identifiers. RabbitMQ transports the event; the worker reloads authoritative state from PostgreSQL.
+
+The worker locks a queued run and atomically materializes child paths, creates queued items, emits one ID-only `analysis_run_item.created` event per item, and moves the run to `processing`. A path with no eligible children becomes `failed` with `NO_EXPANSION_CHILDREN`; this is acknowledged as a business outcome rather than dead-lettered.
+
+Technical failures roll back the expansion and are recorded in `failure_records`. Consumer attempts are tracked separately from outbox publication attempts. Attempts one and two are confirmed-republished; attempt three is rejected to `analysis_run_queue.dlq`.
 
 ## Local Setup
 
@@ -126,6 +133,12 @@ Run the outbox dispatcher separately when delivery is needed:
 npm run outbox:dev
 ```
 
+Run the Phase 5 consumer separately:
+
+```bash
+npm run analysis-worker:dev
+```
+
 ## Verification
 
 ```bash
@@ -142,6 +155,8 @@ npm run test:migrations
 npm run test:phase2
 npm run test:phase3
 npm run test:phase4
+npm run test:phase45
+npm run test:phase5
 npm run infra:test:down
 ```
 
@@ -149,10 +164,10 @@ Integration launchers wait for their dependencies. Destructive test schema setup
 
 ## Not Implemented
 
-- RabbitMQ business consumers
-- `analysis_run_worker` or `analysis_run_items` expansion
 - LLM runs or prompt jobs
 - Provider jobs, execution, or results
 - Budget enforcement
 - Scoring or reports
 - Scheduler or notification execution
+- Redis cache, rate limiting, locks, or deduplication
+- Country, market, or global-scope expansion

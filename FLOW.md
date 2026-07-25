@@ -1,4 +1,4 @@
-# Phase 4 Analysis Submission Flow
+# Phase 5 Analysis Run Expansion Flow
 
 ## Process Boundaries
 
@@ -11,7 +11,10 @@ Outbox dispatcher process
   -> PostgreSQL outbox repository
   -> RabbitMQ confirm publisher
 
-No business consumer or worker exists
+Analysis run worker process
+  -> consume analysis_run_queue
+  -> PostgreSQL locked expansion transaction
+  -> analysis_run_item.created outbox events
 ```
 
 ## Submission
@@ -106,7 +109,60 @@ created_at ASC
 relationship_id ASC
 ```
 
-The selected exact path is created or reused. No expanded paths or `analysis_run_items` are produced.
+The submission API creates or reuses only the selected exact path. It does not produce expanded paths or `analysis_run_items`.
+
+## Phase 5 Expansion
+
+```text
+consume analysis_run.created
+  -> validate envelope and ID-only ownership payload
+  -> begin PostgreSQL transaction
+  -> SELECT analysis_run FOR UPDATE
+  -> non-queued run: idempotent no-op
+  -> verify payload against authoritative run
+  -> load active starting path and explicit relationship chain
+  -> select exactly one active child level
+  -> create/reuse materialized child entity_paths
+  -> create/reuse queued analysis_run_items
+  -> create/reuse analysis_run_item.created outbox events
+  -> mark run processing, or failed with NO_EXPANSION_CHILDREN
+  -> commit
+  -> acknowledge delivery
+```
+
+Expansion source and breadth:
+
+```text
+domain -> domain_categories -> category paths
+category -> category_brands -> brand paths
+brand -> brand_products -> product paths
+product -> product_use_contexts -> use-context paths
+use_context -> one direct item for the same full path
+
+anonymous -> top 3
+user or claimed user/workspace -> top 5
+```
+
+`entity_paths` only materializes selected paths. It is never queried to infer child relationships. Items use deterministic zero-based ordinals. Stable database keys prevent duplicate items and outbox events on redelivery.
+
+Successful expansion sets `processing` and `started_at`. Empty expansion sets `failed`, `NO_EXPANSION_CHILDREN`, and `completed_at`; it is a committed business result and is not sent to a DLQ. Technical failures roll back, leaving a queued run unchanged.
+
+## Worker Retry and DLQ
+
+```text
+worker attempt 1 or 2
+  -> record failure_records row
+  -> confirmed republish to analysis_run_queue
+  -> increment x-worker-attempt header
+  -> acknowledge original
+
+worker attempt 3
+  -> record final failure
+  -> reject without requeue
+  -> existing DLX routes to analysis_run_queue.dlq
+```
+
+The `x-worker-attempt` consumer header is independent of the queue envelope's outbox publication `attempt`. If failure recording or retry publication fails, the original delivery is requeued.
 
 ## Ownership Storage
 
@@ -159,11 +215,12 @@ No submitted domain text, prompt content, provider configuration, expanded item,
 
 ## Explicitly Deferred
 
-- RabbitMQ business consumers
-- Analysis expansion worker
-- Analysis run items
 - LLM and prompt pipeline
 - Provider execution
 - Budget enforcement
 - Scoring and reports
 - Scheduler and notifications
+- Redis cache, rate limiting, locks, and deduplication
+- Country, market, and global scope
+
+PostgreSQL remains the correctness and source-of-truth layer. RabbitMQ is transport, and the outbox remains the reliable database-to-broker handoff. Redis features remain deferred optimization/hardening work.
