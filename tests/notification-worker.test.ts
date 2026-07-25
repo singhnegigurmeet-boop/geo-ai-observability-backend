@@ -13,12 +13,7 @@ const validMessage = {
   aggregateId: "9",
   occurredAt: "2026-07-25T00:00:00.000Z",
   attempt: 1,
-  payload: {
-    notificationId: "9",
-    analysisRunId: "7",
-    failureRecordId: null,
-    isAdmin: false
-  }
+  payload: { notificationId: "9" }
 };
 
 describe("notification worker messages", () => {

@@ -12,7 +12,7 @@ const promptTypes: PromptType[] = [
   "pros_cons"
 ];
 
-describe("Phase 8 prompt renderer", () => {
+describe("Prompt renderer", () => {
   it("renders every v1 prompt deterministically from canonical DB context", () => {
     const renderer = new PromptRendererService();
     for (const promptType of promptTypes) {

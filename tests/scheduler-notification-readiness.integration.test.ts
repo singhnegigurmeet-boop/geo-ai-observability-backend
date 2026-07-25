@@ -13,9 +13,9 @@ import {
   truncatePublicTables
 } from "./support/integration-environment.js";
 
-const enabled = process.env.RUN_PHASE12_INTEGRATION_TESTS === "true";
+const enabled = process.env.RUN_SCHEDULER_NOTIFICATION_INTEGRATION_TESTS === "true";
 
-describe("Phase 12 scheduler, notifications, and readiness", {
+describe("Scheduler, notifications, and readiness integration", {
   skip: !enabled,
   concurrency: 1
 }, () => {
@@ -48,12 +48,12 @@ describe("Phase 12 scheduler, notifications, and readiness", {
           request_payload, next_run_at
         )
         VALUES ($1, $2, $3, $4, 'daily visibility', 'interval:3600',
-                '{"requestedProvider":"mock","requestedModel":"mock-standard"}',
+                '{"providerModels":[{"provider":"mock","model":"mock-standard"}]}',
                 $5)
         RETURNING scheduler_job_id
       `,
       [
-        "phase12-schedule",
+        "operations-schedule",
         fixture.workspaceId,
         fixture.userId,
         fixture.pathId,
@@ -169,10 +169,10 @@ describe("Phase 12 scheduler, notifications, and readiness", {
            request_payload, next_run_at
          )
          VALUES ($1, $2, $3, $4, 'revalidation', 'interval:3600',
-                 '{"requestedProvider":"mock","requestedModel":"mock-standard"}',
+                 '{"providerModels":[{"provider":"mock","model":"mock-standard"}]}',
                  $5)`,
         [
-          `phase12-revalidate-${invalidation}`,
+          `operations-revalidate-${invalidation}`,
           fixture.workspaceId,
           fixture.userId,
           fixture.pathId,
@@ -282,10 +282,7 @@ describe("Phase 12 scheduler, notifications, and readiness", {
     const notification = records.rows[0]!;
     const service = new NotificationService(pool);
     const payload = {
-      notificationId: notification.notification_id,
-      analysisRunId: run,
-      failureRecordId: null,
-      isAdmin: false
+      notificationId: notification.notification_id
     };
     assert.equal((await service.deliverInternal(payload)).outcome, "sent");
     assert.equal((await service.deliverInternal(payload)).outcome, "noop");
@@ -344,12 +341,12 @@ describe("Phase 12 scheduler, notifications, and readiness", {
 
 async function seedOwnedHierarchy(pool: pg.Pool) {
   const user = await pool.query<{ user_id: string }>(
-    "INSERT INTO users (email) VALUES ('phase12@example.com') RETURNING user_id"
+    "INSERT INTO users (email) VALUES ('operations@example.com') RETURNING user_id"
   );
   const workspace = await pool.query<{ workspace_id: string }>(
     `
       INSERT INTO workspaces (workspace_name, created_by_user_id)
-      VALUES ('Phase 12', $1)
+      VALUES ('Operations', $1)
       RETURNING workspace_id
     `,
     [user.rows[0]!.user_id]
@@ -362,12 +359,12 @@ async function seedOwnedHierarchy(pool: pg.Pool) {
     [workspace.rows[0]!.workspace_id, user.rows[0]!.user_id]
   );
   const domain = await pool.query<{ domain_id: string }>(
-    "INSERT INTO domains (normalized_domain) VALUES ('phase12.example') RETURNING domain_id"
+    "INSERT INTO domains (normalized_domain) VALUES ('operations.example') RETURNING domain_id"
   );
   const category = await pool.query<{ category_id: string }>(
     `
       INSERT INTO categories (category_name, normalized_name)
-      VALUES ('Phase 12 category', 'phase 12 category')
+      VALUES ('Operations category', 'operations category')
       RETURNING category_id
     `
   );
@@ -399,14 +396,19 @@ async function seedRun(
     `
       INSERT INTO analysis_runs (
         idempotency_key, user_id, workspace_id,
-        starting_entity_path_id, source, status, request_payload,
-        requested_provider, requested_model
+        starting_entity_path_id, source, status, request_payload
       )
-      VALUES ('phase12-run', $1, $2, $3, 'manual', $4, '{}',
-              'mock', 'mock-standard')
+      VALUES ('operations-run', $1, $2, $3, 'manual', $4, '{}')
       RETURNING analysis_run_id
     `,
     [fixture.userId, fixture.workspaceId, fixture.pathId, status]
   );
-  return result.rows[0]!.analysis_run_id;
+  const analysisRunId = result.rows[0]!.analysis_run_id;
+  await pool.query(
+    `INSERT INTO analysis_run_provider_models
+       (analysis_run_id, provider, model, ordinal)
+     VALUES ($1, 'mock', 'mock-standard', 0)`,
+    [analysisRunId]
+  );
+  return analysisRunId;
 }

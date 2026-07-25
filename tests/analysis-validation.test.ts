@@ -45,32 +45,29 @@ describe("analysis submission validation", () => {
     }
   });
 
-  it("accepts only bounded provider/model preference pairs", () => {
+  it("accepts only the bounded final providerModels contract", () => {
     assert.equal(
       createAnalysisRequestSchema.safeParse({
         domain: "example.com",
-        preferredProvider: "mock",
-        preferredModel: "mock-quality"
+        providerModels: [{ provider: "mock", model: "mock-quality" }]
       }).success,
       true
     );
     assert.equal(
       createAnalysisRequestSchema.safeParse({
         domain: "example.com",
-        preferredProvider: "openai",
-        preferredModel: "gpt-4o-mini"
+        providerModels: [{ provider: "openai", model: "gpt-4o-mini" }]
       }).success,
       true
     );
-    for (const preferred of [
-      { preferredProvider: "openai" },
-      { preferredModel: "gpt-4o-mini" },
-      { preferredModel: "arbitrary" }
+    for (const invalid of [
+      { providerModels: [] },
+      { providerModels: [{ provider: "openai", model: "mock-fast" }] }
     ]) {
       assert.equal(
         createAnalysisRequestSchema.safeParse({
           domain: "example.com",
-          ...preferred
+          ...invalid
         }).success,
         false
       );

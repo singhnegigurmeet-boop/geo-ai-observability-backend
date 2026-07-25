@@ -238,15 +238,6 @@ function validEnvelope() {
     aggregateId: "4",
     occurredAt: "2026-07-25T00:00:00.000Z",
     attempt: 1,
-    payload: {
-      analysisRunItemId: "4",
-      analysisRunId: "1",
-      entityPathId: "2",
-      startingEntityPathId: "3",
-      actorType: "anonymous" as const,
-      userId: null,
-      workspaceId: null,
-      anonymousSessionId: "5"
-    }
+    payload: { analysisRunItemId: "4" }
   };
 }

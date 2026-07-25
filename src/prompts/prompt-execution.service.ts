@@ -8,8 +8,7 @@ import { AnalysisRunProviderModelRepository } from "../providers/analysis-run-pr
 import { ProviderJobRepository } from "../providers/provider-job.repository.js";
 import { validateFrozenProviderModel } from "../providers/provider-model.policy.js";
 import {
-  PromptExecutionRepository,
-  type PromptExecutionState
+  PromptExecutionRepository
 } from "./prompt-execution.repository.js";
 import { PromptRendererService } from "./prompt-renderer.service.js";
 import type { PromptJobCreatedPayload } from "./prompt-worker.messages.js";
@@ -66,8 +65,6 @@ export class PromptExecutionService {
           "Pending prompt job already contains rendered text"
         );
       }
-      assertPayloadMatchesState(payload, state);
-
       const actorType =
         state.user_id && state.workspace_id ? "user" : "anonymous";
       const promptText = this.renderer.render({
@@ -138,40 +135,5 @@ export class PromptExecutionService {
         providerJobId: firstProviderJobId as string
       };
     });
-  }
-}
-
-function assertPayloadMatchesState(
-  payload: PromptJobCreatedPayload,
-  state: PromptExecutionState
-) {
-  const actorType =
-    state.user_id && state.workspace_id ? "user" : "anonymous";
-  if (
-    (payload.llmRunId !== undefined &&
-      payload.llmRunId !== state.llm_run_id) ||
-    (payload.analysisRunItemId !== undefined &&
-      payload.analysisRunItemId !== state.analysis_run_item_id) ||
-    (payload.analysisRunId !== undefined &&
-      payload.analysisRunId !== state.analysis_run_id) ||
-    (payload.entityPathId !== undefined &&
-      payload.entityPathId !== state.entity_path_id) ||
-    (payload.startingEntityPathId !== undefined &&
-      payload.startingEntityPathId !== state.starting_entity_path_id) ||
-    (payload.promptType !== undefined &&
-      payload.promptType !== state.prompt_type) ||
-    (payload.promptVersion !== undefined &&
-      payload.promptVersion !== state.prompt_version) ||
-    (payload.actorType !== undefined && payload.actorType !== actorType) ||
-    (payload.userId !== undefined && payload.userId !== state.user_id) ||
-    (payload.workspaceId !== undefined &&
-      payload.workspaceId !== state.workspace_id) ||
-    (payload.anonymousSessionId !== undefined &&
-      payload.anonymousSessionId !== state.anonymous_session_id)
-  ) {
-    throw new PromptExecutionError(
-      "PROMPT_JOB_MESSAGE_MISMATCH",
-      "Message identifiers or ownership do not match authoritative state"
-    );
   }
 }

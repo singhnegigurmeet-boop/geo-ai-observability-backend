@@ -53,8 +53,6 @@ export class SchedulerRepository {
       brandId: input.job.brand_id,
       productId: input.job.product_id,
       useContextId: input.job.use_context_id,
-      requestedProvider: input.policy.providerModels[0]!.provider,
-      requestedModel: input.policy.providerModels[0]!.model,
       providerModels: input.policy.providerModels,
       schedulerJobId: input.job.scheduler_job_id,
       scheduledDueAt: input.job.next_run_at.toISOString()
@@ -68,11 +66,9 @@ export class SchedulerRepository {
           starting_entity_path_id,
           source,
           status,
-          request_payload,
-          requested_provider,
-          requested_model
+          request_payload
         )
-        VALUES ($1, $2, $3, $4, 'scheduled', 'queued', $5, $6, $7)
+        VALUES ($1, $2, $3, $4, 'scheduled', 'queued', $5)
         ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING *
       `,
@@ -81,9 +77,7 @@ export class SchedulerRepository {
         input.job.created_by_user_id,
         input.job.workspace_id,
         input.job.starting_entity_path_id,
-        requestPayload,
-        input.policy.providerModels[0]!.provider,
-        input.policy.providerModels[0]!.model
+        requestPayload
       ]
     );
     if (inserted.rows[0]) {
@@ -105,17 +99,13 @@ export class SchedulerRepository {
           AND starting_entity_path_id = $4
           AND source = 'scheduled'
           AND request_payload = $5::jsonb
-          AND requested_provider = $6
-          AND requested_model = $7
       `,
       [
         input.idempotencyKey,
         input.job.created_by_user_id,
         input.job.workspace_id,
         input.job.starting_entity_path_id,
-        requestPayload,
-        input.policy.providerModels[0]!.provider,
-        input.policy.providerModels[0]!.model
+        requestPayload
       ]
     );
     if (!existing.rows[0]) {

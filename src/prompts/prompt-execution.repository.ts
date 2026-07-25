@@ -19,8 +19,6 @@ export type PromptExecutionState = {
   user_id: string | null;
   workspace_id: string | null;
   anonymous_session_id: string | null;
-  requested_provider: "mock" | "openai" | "gemini" | "claude" | null;
-  requested_model: string | null;
   path_type: EntityPathType;
   normalized_domain: string;
   category_name: string | null;
@@ -49,8 +47,6 @@ export class PromptExecutionRepository {
           run.user_id,
           run.workspace_id,
           run.anonymous_session_id,
-          run.requested_provider,
-          run.requested_model,
           path.path_type,
           domain.normalized_domain,
           category.category_name,

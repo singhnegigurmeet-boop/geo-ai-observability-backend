@@ -6,11 +6,6 @@ import { inTransaction } from "../db/database-executor.js";
 import type { LlmRunCreatedPayload } from "../llm/llm-run-worker.messages.js";
 import { LlmRunRepository } from "../llm/llm-run.repository.js";
 import { OutboxEventWriterRepository } from "../outbox/outbox-event-writer.repository.js";
-import type {
-  AnalysisRunItemRow,
-  AnalysisRunRow,
-  LlmRunRow
-} from "../types/database.types.js";
 import { PromptJobRepository } from "./prompt-job.repository.js";
 import { promptPlanFor } from "./prompt-plan.policy.js";
 import type { PromptPlanningResult } from "./prompt.types.js";
@@ -67,8 +62,6 @@ export class PromptPlanningService {
           "Analysis run item entity path does not exist or is inactive"
         );
       }
-      assertPayloadMatchesState(payload, llmRun, item, parent);
-
       const actorType =
         parent.user_id && parent.workspace_id ? "user" : "anonymous";
       const plan = promptPlanFor({
@@ -76,9 +69,7 @@ export class PromptPlanningService {
         userId: parent.user_id,
         workspaceId: parent.workspace_id,
         anonymousSessionId: parent.anonymous_session_id,
-        pathLevel: path.path_type,
-        requestedProvider: parent.requested_provider,
-        requestedModel: parent.requested_model
+        pathLevel: path.path_type
       });
       const prompts = new PromptJobRepository(client);
       const outbox = new OutboxEventWriterRepository(client);
@@ -110,57 +101,5 @@ export class PromptPlanningService {
       }
       return { outcome: "planned", promptJobCount: plan.length };
     });
-  }
-}
-
-function assertPayloadMatchesState(
-  payload: LlmRunCreatedPayload,
-  llmRun: LlmRunRow,
-  item: AnalysisRunItemRow,
-  parent: AnalysisRunRow
-) {
-  const actorType =
-    parent.user_id && parent.workspace_id ? "user" : "anonymous";
-  if (
-    payload.analysisRunItemId !== undefined &&
-    payload.analysisRunItemId !== llmRun.analysis_run_item_id
-  ) {
-    throw new PromptPlanningError(
-      "ANALYSIS_RUN_ITEM_ID_MISMATCH",
-      "Message analysisRunItemId does not match the LLM run"
-    );
-  }
-  if (
-    payload.analysisRunId !== undefined &&
-    payload.analysisRunId !== item.analysis_run_id
-  ) {
-    throw new PromptPlanningError(
-      "ANALYSIS_RUN_ID_MISMATCH",
-      "Message analysisRunId does not match the parent item"
-    );
-  }
-  if (
-    payload.entityPathId !== undefined &&
-    payload.entityPathId !== item.entity_path_id
-  ) {
-    throw new PromptPlanningError(
-      "ENTITY_PATH_ID_MISMATCH",
-      "Message entityPathId does not match the parent item"
-    );
-  }
-  if (
-    (payload.startingEntityPathId !== undefined &&
-      payload.startingEntityPathId !== parent.starting_entity_path_id) ||
-    (payload.actorType !== undefined && payload.actorType !== actorType) ||
-    (payload.userId !== undefined && payload.userId !== parent.user_id) ||
-    (payload.workspaceId !== undefined &&
-      payload.workspaceId !== parent.workspace_id) ||
-    (payload.anonymousSessionId !== undefined &&
-      payload.anonymousSessionId !== parent.anonymous_session_id)
-  ) {
-    throw new PromptPlanningError(
-      "LLM_RUN_MESSAGE_MISMATCH",
-      "Message ownership or starting path does not match authoritative state"
-    );
   }
 }

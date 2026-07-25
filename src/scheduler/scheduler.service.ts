@@ -7,9 +7,7 @@ import { ApplicationError } from "../errors/application-error.js";
 import { EntityPathRepository } from "../hierarchy/entity-path.repository.js";
 import { OutboxEventWriterRepository } from "../outbox/outbox-event-writer.repository.js";
 import {
-  parseProviderModel,
   parseProviderModels,
-  parseProviderName,
   providerModelPairs,
   resolveProviderModelSet,
 } from "../providers/provider-model.policy.js";
@@ -63,19 +61,11 @@ export class SchedulerService {
           );
         }
         if (job.timezone !== "UTC") {
-          throw new Error("Phase 12 interval schedules require UTC");
+          throw new Error("Interval schedules require UTC");
         }
-        const requestedProvider = parseProviderName(
-          job.request_payload.requestedProvider
-        );
-        const requestedModel = parseProviderModel(
-          job.request_payload.requestedModel
-        );
         const selection = resolveProviderModelSet({
           actorType: "user",
-          requestedProvider,
-          requestedModel,
-          requestedProviderModels: parseProviderModels(
+          providerModels: parseProviderModels(
             job.request_payload.providerModels
           ),
           realProvidersEnabled: this.realProvidersEnabled

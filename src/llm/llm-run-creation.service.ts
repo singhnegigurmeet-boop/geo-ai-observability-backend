@@ -6,10 +6,6 @@ import { inTransaction } from "../db/database-executor.js";
 import { AnalysisRunItemRepository } from "../analysis/analysis-run-item.repository.js";
 import type { AnalysisRunItemCreatedPayload } from "../analysis/analysis-run-item-worker.messages.js";
 import { OutboxEventWriterRepository } from "../outbox/outbox-event-writer.repository.js";
-import type {
-  AnalysisRunItemRow,
-  AnalysisRunRow
-} from "../types/database.types.js";
 import { LlmRunRepository } from "./llm-run.repository.js";
 import type { LlmRunCreationResult } from "./llm-run.types.js";
 
@@ -59,8 +55,6 @@ export class LlmRunCreationService {
           "Analysis run item entity path does not exist or is inactive"
         );
       }
-      assertPayloadMatchesState(payload, item, parent);
-
       const llmRun = await llmRuns.createOrReuseForItem(
         item.analysis_run_item_id
       );
@@ -87,47 +81,5 @@ export class LlmRunCreationService {
       }
       return { outcome: "created", llmRunId: llmRun.llm_run_id };
     });
-  }
-}
-
-function assertPayloadMatchesState(
-  payload: AnalysisRunItemCreatedPayload,
-  item: AnalysisRunItemRow,
-  parent: AnalysisRunRow
-) {
-  const actorType =
-    parent.user_id && parent.workspace_id ? "user" : "anonymous";
-  if (
-    payload.analysisRunId !== undefined &&
-    payload.analysisRunId !== item.analysis_run_id
-  ) {
-    throw new LlmRunCreationError(
-      "ANALYSIS_RUN_ID_MISMATCH",
-      "Message analysisRunId does not match the item"
-    );
-  }
-  if (
-    payload.entityPathId !== undefined &&
-    payload.entityPathId !== item.entity_path_id
-  ) {
-    throw new LlmRunCreationError(
-      "ENTITY_PATH_ID_MISMATCH",
-      "Message entityPathId does not match the item"
-    );
-  }
-  if (
-    (payload.startingEntityPathId !== undefined &&
-      payload.startingEntityPathId !== parent.starting_entity_path_id) ||
-    (payload.actorType !== undefined && payload.actorType !== actorType) ||
-    (payload.userId !== undefined && payload.userId !== parent.user_id) ||
-    (payload.workspaceId !== undefined &&
-      payload.workspaceId !== parent.workspace_id) ||
-    (payload.anonymousSessionId !== undefined &&
-      payload.anonymousSessionId !== parent.anonymous_session_id)
-  ) {
-    throw new LlmRunCreationError(
-      "ANALYSIS_RUN_ITEM_MESSAGE_MISMATCH",
-      "Message ownership or starting path does not match authoritative state"
-    );
   }
 }

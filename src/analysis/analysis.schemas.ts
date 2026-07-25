@@ -23,8 +23,6 @@ export const createAnalysisRequestSchema = z
     brandId: databaseId.optional(),
     productId: databaseId.optional(),
     useContextId: databaseId.optional(),
-    preferredProvider: providerName.optional(),
-    preferredModel: providerModel.optional(),
     providerModels: z
       .array(
         z
@@ -40,18 +38,6 @@ export const createAnalysisRequestSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    if (
-      value.providerModels &&
-      (value.preferredProvider !== undefined ||
-        value.preferredModel !== undefined)
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["providerModels"],
-        message:
-          "providerModels cannot be combined with legacy preferredProvider/preferredModel"
-      });
-    }
     for (const [index, pair] of (value.providerModels ?? []).entries()) {
       const expectedProvider = pair.model.startsWith("mock-")
         ? "mock"
@@ -67,44 +53,6 @@ export const createAnalysisRequestSchema = z
           message: "Provider and model must be an allowed exact pair"
         });
       }
-    }
-    const modelProvider = value.preferredModel?.startsWith("mock-")
-      ? "mock"
-      : value.preferredModel === "gpt-4o-mini"
-        ? "openai"
-        : value.preferredModel === "gemini-1.5-flash"
-          ? "gemini"
-          : value.preferredModel === "claude-3-5-sonnet"
-            ? "claude"
-            : null;
-    if (
-      value.preferredProvider &&
-      value.preferredProvider !== "mock" &&
-      modelProvider !== value.preferredProvider
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["preferredModel"],
-        message: "Real provider selection requires its exact allowed model"
-      });
-    }
-    if (
-      modelProvider &&
-      value.preferredProvider &&
-      modelProvider !== value.preferredProvider
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["preferredModel"],
-        message: "preferredProvider and preferredModel must match"
-      });
-    }
-    if (modelProvider && modelProvider !== "mock" && !value.preferredProvider) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["preferredProvider"],
-        message: "preferredModel requires preferredProvider"
-      });
     }
     if (value.brandId && !value.categoryId) {
       addDependencyIssue(context, "brandId", "categoryId");

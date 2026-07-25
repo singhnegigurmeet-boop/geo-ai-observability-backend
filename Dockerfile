@@ -7,6 +7,7 @@ FROM node:22-alpine AS build
 WORKDIR /app
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY package.json package-lock.json tsconfig.json ./
+COPY scripts/clean-build-output.mjs ./scripts/
 COPY src ./src
 RUN npm run build
 

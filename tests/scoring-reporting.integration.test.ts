@@ -21,7 +21,7 @@ import { ProviderScoreWorker } from "../src/scoring/provider-score-worker.js";
 import type { ProviderResultCreatedPayload } from "../src/scoring/provider-score-worker.messages.js";
 import type { PromptType } from "../src/types/database.types.js";
 
-const enabled = process.env.RUN_PHASE9_INTEGRATION_TESTS === "true";
+const enabled = process.env.RUN_SCORING_REPORTING_INTEGRATION_TESTS === "true";
 const lightPrompts: PromptType[] = ["visibility", "competitor", "ranking"];
 const richPrompts: PromptType[] = [
   ...lightPrompts,
@@ -30,7 +30,7 @@ const richPrompts: PromptType[] = [
 ];
 
 describe(
-  "Phase 9 backend scoring and basic reports",
+    "Backend scoring and reporting integration",
   { skip: !enabled, concurrency: 1 },
   () => {
     let pool: pg.Pool;
@@ -274,7 +274,7 @@ describe(
       await runtime.start();
       try {
         await sendEnvelope(channel, "scoring_queue", {
-          messageId: "phase9-valid",
+          messageId: "reporting-valid",
           eventType: "provider_result.created",
           aggregateType: "provider_result",
           aggregateId: fixture.results[0]!.providerResultId,
@@ -285,21 +285,18 @@ describe(
         await pollUntil(async () => (await count(pool, "reports")) === 1);
 
         await sendEnvelope(channel, "scoring_queue", {
-          messageId: "phase9-malformed",
+          messageId: "reporting-malformed",
           bad: true
         });
         await sendEnvelope(channel, "scoring_queue", {
-          messageId: "phase9-exhausted",
+          messageId: "reporting-exhausted",
           eventType: "provider_result.created",
           aggregateType: "provider_result",
           aggregateId: "999999",
           occurredAt: new Date().toISOString(),
           attempt: 1,
           payload: {
-            providerResultId: "999999",
-            providerJobId: "999999",
-            promptJobId: "999999",
-            analysisRunId: fixture.analysisRunId
+            providerResultId: "999999"
           }
         });
         await pollUntil(async () => {
@@ -311,7 +308,7 @@ describe(
             `
           );
           const ids = new Set(records.rows.map((row) => row.message_id));
-          return ids.has("phase9-malformed") && ids.has("phase9-exhausted");
+          return ids.has("reporting-malformed") && ids.has("reporting-exhausted");
         });
         const dlq = deadLetterQueueName("scoring_queue");
         const first = await pollMessage(channel, dlq);
@@ -323,7 +320,7 @@ describe(
             SELECT attempt_number
             FROM failure_records
             WHERE queue_name = 'scoring_queue'
-              AND message_id = 'phase9-exhausted'
+              AND message_id = 'reporting-exhausted'
             ORDER BY attempt_number
           `
         );
@@ -387,7 +384,7 @@ async function seedRun(
     userId = (
       await pool.query<{ user_id: string }>(
         "INSERT INTO users (email) VALUES ($1) RETURNING user_id",
-        [`phase9-${unique}@example.com`]
+        [`reporting-${unique}@example.com`]
       )
     ).rows[0]!.user_id;
     workspaceId = (
@@ -397,7 +394,7 @@ async function seedRun(
           VALUES ($1, $2)
           RETURNING workspace_id
         `,
-        [`Phase 9 ${unique}`, userId]
+        [`Reporting ${unique}`, userId]
       )
     ).rows[0]!.workspace_id;
     await pool.query(
@@ -422,7 +419,7 @@ async function seedRun(
           )
           RETURNING anonymous_session_id
         `,
-        [`phase9-token-${unique}`, userId, workspaceId]
+        [`reporting-token-${unique}`, userId, workspaceId]
       )
     ).rows[0]!.anonymous_session_id;
   }
@@ -433,7 +430,7 @@ async function seedRun(
         VALUES ($1)
         RETURNING domain_id
       `,
-      [`phase9-${unique}.example`]
+      [`reporting-${unique}.example`]
     )
   ).rows[0]!.domain_id;
   const pathId = (
@@ -451,25 +448,28 @@ async function seedRun(
       `
         INSERT INTO analysis_runs (
           idempotency_key, anonymous_session_id, user_id, workspace_id,
-          starting_entity_path_id, requested_provider, requested_model,
-          status, request_payload, started_at
+          starting_entity_path_id, status, request_payload, started_at
         )
         VALUES (
-          $1, $2, $3, $4, $5, $6, $7, 'processing', '{}'::jsonb, now()
+          $1, $2, $3, $4, $5, 'processing', '{}'::jsonb, now()
         )
         RETURNING analysis_run_id
       `,
       [
-        `phase9-run:${unique}`,
+        `reporting-run:${unique}`,
         anonymousSessionId,
         userId,
         workspaceId,
-        pathId,
-        actor === "anonymous" ? null : "mock",
-        actor === "anonymous" ? null : "mock-standard"
+        pathId
       ]
     )
   ).rows[0]!.analysis_run_id;
+  await pool.query(
+    `INSERT INTO analysis_run_provider_models
+       (analysis_run_id, provider, model, ordinal)
+     VALUES ($1, 'mock', $2, 0)`,
+    [analysisRunId, actor === "anonymous" ? "mock-fast" : "mock-standard"]
+  );
   const itemId = (
     await pool.query<{ analysis_run_item_id: string }>(
       `
@@ -480,7 +480,7 @@ async function seedRun(
         VALUES ($1, $2, $3, 0, 'completed', now(), now())
         RETURNING analysis_run_item_id
       `,
-      [`phase9-item:${unique}`, analysisRunId, pathId]
+      [`reporting-item:${unique}`, analysisRunId, pathId]
     )
   ).rows[0]!.analysis_run_item_id;
   const llmRunId = (
@@ -493,7 +493,7 @@ async function seedRun(
         VALUES ($1, $2, 'completed', now(), now())
         RETURNING llm_run_id
       `,
-      [`phase9-llm:${unique}`, itemId]
+      [`reporting-llm:${unique}`, itemId]
     )
   ).rows[0]!.llm_run_id;
 
@@ -510,7 +510,7 @@ async function seedRun(
           RETURNING prompt_job_id
         `,
         [
-          `phase9-prompt:${unique}:${promptType}`,
+          `reporting-prompt:${unique}:${promptType}`,
           llmRunId,
           promptType,
           actor === "anonymous" ? "v1_light" : "v1",
@@ -529,7 +529,7 @@ async function seedRun(
           VALUES ($1, $2, 'mock', $3, 'succeeded', now(), now())
           RETURNING provider_job_id
         `,
-        [`phase9-provider:${unique}:${promptType}`, promptJobId, model]
+        [`reporting-provider:${unique}:${promptType}`, promptJobId, model]
       )
     ).rows[0]!.provider_job_id;
     const parsedResponse = {
@@ -559,9 +559,9 @@ async function seedRun(
           RETURNING provider_result_id
         `,
         [
-          `phase9-result:${unique}:${promptType}`,
+          `reporting-result:${unique}:${promptType}`,
           providerJobId,
-          `phase9-request:${unique}:${promptType}`,
+          `reporting-request:${unique}:${promptType}`,
           model,
           JSON.stringify(parsedResponse),
           parsedResponse
@@ -576,13 +576,10 @@ async function seedRun(
         )
         VALUES ($1, $2, 'actual', 10, 5, 0)
       `,
-      [`phase9-usage:${unique}:${promptType}`, providerJobId]
+      [`reporting-usage:${unique}:${promptType}`, providerJobId]
     );
     results.push({
-      providerResultId,
-      providerJobId,
-      promptJobId,
-      analysisRunId
+      providerResultId
     });
   }
   return {
@@ -680,7 +677,7 @@ async function pollUntil(predicate: () => Promise<boolean>) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error("Timed out waiting for Phase 9 worker outcome");
+  throw new Error("Timed out waiting for scoring worker outcome");
 }
 
 async function pollMessage(

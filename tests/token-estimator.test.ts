@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { estimateCostMicros } from "../src/budgets/provider-pricing.policy.js";
 import { TokenEstimatorService } from "../src/budgets/token-estimator.service.js";
 
-describe("Phase 10 token and pricing estimation", () => {
+describe("Token and pricing estimation", () => {
   it("is deterministic and model specific", () => {
     const estimator = new TokenEstimatorService();
     const common = {

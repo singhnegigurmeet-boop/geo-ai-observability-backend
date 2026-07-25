@@ -51,9 +51,7 @@ function policyContext(actorType: "anonymous" | "user") {
     userId: actorType === "user" ? "1" : null,
     workspaceId: actorType === "user" ? "2" : null,
     anonymousSessionId: actorType === "anonymous" ? "3" : null,
-    pathLevel: "domain" as const,
-    requestedProvider: actorType === "user" ? ("mock" as const) : null,
-    requestedModel: actorType === "user" ? "mock-standard" : null
+    pathLevel: "domain" as const
   };
 }
 
@@ -75,7 +73,7 @@ describe("llm_run.created message validation", () => {
     });
   }
 
-  it("rejects inconsistent ownership and malformed event linkage", () => {
+  it("rejects duplicated business state and malformed event linkage", () => {
     const message = validLlmRunEnvelope();
     assert.throws(
       () =>
@@ -83,12 +81,10 @@ describe("llm_run.created message validation", () => {
           ...message,
           payload: {
             ...message.payload,
-            actorType: "user",
-            userId: null,
-            workspaceId: null
+            actorType: "user"
           }
         }),
-      /ownership fields/
+      InvalidLlmRunMessageError
     );
     assert.throws(
       () =>
@@ -113,16 +109,6 @@ export function validLlmRunEnvelope() {
     aggregateId: "4",
     occurredAt: "2026-07-25T00:00:00.000Z",
     attempt: 1,
-    payload: {
-      llmRunId: "4",
-      analysisRunItemId: "3",
-      analysisRunId: "1",
-      entityPathId: "2",
-      startingEntityPathId: "2",
-      actorType: "anonymous" as const,
-      userId: null,
-      workspaceId: null,
-      anonymousSessionId: "5"
-    }
+    payload: { llmRunId: "4" }
   };
 }

@@ -31,8 +31,7 @@ export type ProviderModelPair = {
 
 export type ProviderModelPolicyContext = {
   actorType: "anonymous" | "user";
-  requestedProvider: ProviderName | null;
-  requestedModel: string | null;
+  providerModels?: readonly ProviderModelPair[] | null;
   realProvidersEnabled?: boolean;
 };
 
@@ -44,31 +43,6 @@ export class InvalidProviderModelSelectionError extends Error {
     super(message);
     this.name = "InvalidProviderModelSelectionError";
   }
-}
-
-export function selectProviderModel(
-  context: ProviderModelPolicyContext
-): ProviderModelSelection {
-  if (context.actorType === "anonymous") {
-    if (context.requestedProvider !== null || context.requestedModel !== null) {
-      throw new InvalidProviderModelSelectionError(
-        "Anonymous analysis cannot select a provider or model"
-      );
-    }
-    return {
-      provider: "mock",
-      model: "mock-fast",
-      queueName: "mock_queue"
-    };
-  }
-
-  return validateProviderModelPair(
-    {
-      provider: context.requestedProvider ?? "mock",
-      model: context.requestedModel ?? "mock-standard"
-    },
-    context.realProvidersEnabled
-  );
 }
 
 export function validateFrozenProviderModel(
@@ -109,16 +83,10 @@ function validateProviderModelPair(
 }
 
 export function resolveProviderModelSet(
-  context: ProviderModelPolicyContext & {
-    requestedProviderModels?: readonly ProviderModelPair[] | null;
-  }
+  context: ProviderModelPolicyContext
 ): ProviderModelSelection[] {
   if (context.actorType === "anonymous") {
-    if (
-      (context.requestedProviderModels?.length ?? 0) > 0 ||
-      context.requestedProvider !== null ||
-      context.requestedModel !== null
-    ) {
+    if (context.providerModels !== undefined && context.providerModels !== null) {
       throw new InvalidProviderModelSelectionError(
         "Anonymous analysis cannot select providers or models"
       );
@@ -132,24 +100,20 @@ export function resolveProviderModelSet(
     ];
   }
 
-  const requested = context.requestedProviderModels?.length
-    ? context.requestedProviderModels
-    : context.requestedProvider !== null || context.requestedModel !== null
-      ? [
-          {
-            provider: context.requestedProvider ?? "mock",
-            model: context.requestedModel ?? "mock-standard"
-          }
-        ]
-      : [{ provider: "mock" as const, model: "mock-standard" }];
+  const requested =
+    context.providerModels ??
+    [{ provider: "mock" as const, model: "mock-standard" }];
+  if (requested.length === 0 || requested.length > 4) {
+    throw new InvalidProviderModelSelectionError(
+      "providerModels must contain between 1 and 4 pairs"
+    );
+  }
   const normalized = new Map<string, ProviderModelSelection>();
   for (const pair of requested) {
-    const selected = selectProviderModel({
-      actorType: context.actorType,
-      requestedProvider: pair.provider,
-      requestedModel: pair.model,
-      realProvidersEnabled: context.realProvidersEnabled
-    });
+    const selected = validateProviderModelPair(
+      pair,
+      context.realProvidersEnabled
+    );
     normalized.set(`${selected.provider}\u0000${selected.model}`, selected);
   }
   return [...normalized.values()].sort(

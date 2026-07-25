@@ -1,48 +1,25 @@
-import { z } from "zod";
-import type { JsonObject } from "../types/database.types.js";
+import {
+  parseAggregateIdMessage,
+  type AggregateIdPayload
+} from "../messaging/aggregate-id-message.js";
 
-const databaseId = z.string().regex(/^[1-9]\d*$/);
-const payloadSchema = z
-  .object({
-    notificationId: databaseId,
-    analysisRunId: databaseId.nullable(),
-    failureRecordId: databaseId.nullable(),
-    isAdmin: z.boolean()
-  })
-  .strict();
-const envelopeSchema = z
-  .object({
-    messageId: z.string().min(1),
-    eventType: z.literal("notification.created"),
-    aggregateType: z.literal("notification"),
-    aggregateId: databaseId,
-    occurredAt: z.string().datetime({ offset: true }),
-    attempt: z.number().int().positive(),
-    payload: payloadSchema
-  })
-  .strict()
-  .superRefine((message, context) => {
-    if (message.aggregateId !== message.payload.notificationId) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "aggregateId must match notificationId"
-      });
-    }
-  });
+export type NotificationCreatedPayload = AggregateIdPayload<"notificationId">;
 
-export type NotificationCreatedPayload = z.infer<typeof payloadSchema> &
-  JsonObject;
 export class InvalidNotificationMessageError extends Error {
   readonly code = "INVALID_NOTIFICATION_MESSAGE";
   readonly permanent = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidNotificationMessageError";
+  }
 }
 
 export function parseNotificationCreatedMessage(input: unknown) {
-  const parsed = envelopeSchema.safeParse(input);
-  if (!parsed.success) {
-    throw new InvalidNotificationMessageError(
-      parsed.error.issues.map((issue) => issue.message).join("; ")
-    );
-  }
-  return parsed.data;
+  return parseAggregateIdMessage(input, {
+    eventType: "notification.created",
+    aggregateType: "notification",
+    idKey: "notificationId",
+    invalid: (message) => new InvalidNotificationMessageError(message)
+  });
 }

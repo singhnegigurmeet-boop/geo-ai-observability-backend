@@ -49,7 +49,7 @@ function deterministicEvidence(
         confidence: 0.75
       }
     ],
-    summary: "Deterministic mock response for Phase 8 integration.",
+    summary: "Deterministic mock provider response.",
     evidenceId: `mock-evidence:${providerJobId}`
   };
 }

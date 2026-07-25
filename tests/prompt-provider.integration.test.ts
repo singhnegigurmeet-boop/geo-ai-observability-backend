@@ -23,7 +23,7 @@ import { MockProviderWorkerRuntime } from "../src/runtime/mock-provider-worker.r
 import { PromptWorkerRuntime } from "../src/runtime/prompt-worker.runtime.js";
 import type { PromptType } from "../src/types/database.types.js";
 
-const enabled = process.env.RUN_PHASE8_INTEGRATION_TESTS === "true";
+const enabled = process.env.RUN_PROMPT_PROVIDER_INTEGRATION_TESTS === "true";
 const userPromptTypes: PromptType[] = [
   "visibility",
   "competitor",
@@ -38,7 +38,7 @@ const anonymousPromptTypes: PromptType[] = [
 ];
 
 describe(
-  "Phase 8 prompt rendering and mock provider execution",
+    "Prompt rendering and provider integration",
   { skip: !enabled, concurrency: 1 },
   () => {
     let pool: pg.Pool;
@@ -121,7 +121,7 @@ describe(
         const prompt = await promptState(pool, fixture.promptJobId);
         assert.equal(prompt.status, "processing");
         assert.ok(prompt.prompt_text?.trim());
-        assert.match(prompt.prompt_text!, /domain=phase8-[\w-]+\.example/);
+        assert.match(prompt.prompt_text!, /domain=provider-[\w-]+\.example/);
         assert.doesNotMatch(prompt.prompt_text!, /RAW-USER-INPUT/);
 
         const jobs = await providerJobs(pool, fixture.promptJobId);
@@ -247,7 +247,7 @@ describe(
       assert.equal(
         (
           await new MockProviderService(pool).execute(
-            providerPayload(fixture, planned.providerJobId!)
+            providerPayload(planned.providerJobId!)
           )
         ).outcome,
         "noop"
@@ -280,18 +280,8 @@ describe(
       );
     });
 
-    it("rejects message-state mismatches and blank rendering with complete rollback", async () => {
+    it("rejects blank rendering with complete rollback", async () => {
       const fixture = await seedPrompt(pool, "ranking", "anonymous");
-      await assert.rejects(
-        new PromptExecutionService(pool).execute({
-          ...promptPayload(fixture),
-          analysisRunId: "999"
-        }),
-        PromptExecutionError
-      );
-      assert.equal((await promptState(pool, fixture.promptJobId)).prompt_text, null);
-      assert.equal((await providerJobs(pool, fixture.promptJobId)).length, 0);
-
       await assert.rejects(
         new PromptExecutionService(pool, {
           render() {
@@ -319,7 +309,7 @@ describe(
       );
       assert.equal(planned.outcome, "enqueued");
       if (planned.outcome !== "enqueued") return;
-      const payload = providerPayload(fixture, planned.providerJobId);
+      const payload = providerPayload(planned.providerJobId);
 
       const completed = await new MockProviderService(pool).execute(payload);
       assert.equal(completed.outcome, "completed");
@@ -418,16 +408,16 @@ describe(
       );
       if (planned.outcome !== "enqueued") assert.fail("provider job not created");
       await pool.query(`
-        CREATE FUNCTION phase8_test_usage_failure() RETURNS trigger
+        CREATE FUNCTION provider_test_usage_failure() RETURNS trigger
         LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test usage failure'; END $$;
-        CREATE TRIGGER phase8_test_usage_failure_trigger
+        CREATE TRIGGER provider_test_usage_failure_trigger
         BEFORE INSERT ON token_usage FOR EACH ROW
-        EXECUTE FUNCTION phase8_test_usage_failure()
+        EXECUTE FUNCTION provider_test_usage_failure()
       `);
       try {
         await assert.rejects(
           new MockProviderService(pool).execute(
-            providerPayload(fixture, planned.providerJobId)
+            providerPayload(planned.providerJobId)
           ),
           /test usage failure/
         );
@@ -437,8 +427,8 @@ describe(
         assert.equal((await promptState(pool, fixture.promptJobId)).status, "processing");
       } finally {
         await pool.query(`
-          DROP TRIGGER IF EXISTS phase8_test_usage_failure_trigger ON token_usage;
-          DROP FUNCTION IF EXISTS phase8_test_usage_failure()
+          DROP TRIGGER IF EXISTS provider_test_usage_failure_trigger ON token_usage;
+          DROP FUNCTION IF EXISTS provider_test_usage_failure()
         `);
       }
     });
@@ -510,7 +500,7 @@ describe(
       );
       await malformedRuntime.start();
       await sendEnvelope(channel, "visibility_prompt_queue", {
-        messageId: "phase8-malformed",
+        messageId: "provider-malformed",
         wrong: true
       });
       const malformed = await pollMessage(
@@ -518,7 +508,7 @@ describe(
         deadLetterQueueName("visibility_prompt_queue")
       );
       await malformedRuntime.stop();
-      assert.equal(malformed.properties.messageId, "phase8-malformed");
+      assert.equal(malformed.properties.messageId, "provider-malformed");
       channel.ack(malformed);
 
       const technicalFixture = await seedPrompt(
@@ -536,7 +526,7 @@ describe(
         channel,
         {
           async process() {
-            throw new Error("simulated Phase 8 provider failure");
+            throw new Error("simulated Provider provider failure");
           }
         },
         new FailureRecordRepository(pool),
@@ -545,7 +535,7 @@ describe(
       );
       await failing.start();
       await sendEnvelope(channel, "mock_queue", {
-        messageId: "phase8-exhausted",
+        messageId: "provider-exhausted",
         eventType: "provider_job.created",
         aggregateType: "provider_job",
         aggregateId: technicalPlan.providerJobId,
@@ -560,11 +550,11 @@ describe(
         deadLetterQueueName("mock_queue")
       );
       await failing.stop();
-      assert.equal(exhausted.properties.messageId, "phase8-exhausted");
+      assert.equal(exhausted.properties.messageId, "provider-exhausted");
       channel.ack(exhausted);
       const attempts = await pool.query<{ attempt_number: number }>(
         `SELECT attempt_number FROM failure_records
-         WHERE queue_name = 'mock_queue' AND message_id = 'phase8-exhausted'
+         WHERE queue_name = 'mock_queue' AND message_id = 'provider-exhausted'
          ORDER BY attempt_number`
       );
       assert.deepEqual(
@@ -597,7 +587,7 @@ describe(
       );
       if (planned.outcome !== "enqueued") assert.fail("provider job not created");
       await new MockProviderService(pool).execute(
-        providerPayload(fixture, planned.providerJobId)
+        providerPayload(planned.providerJobId)
       );
       for (const table of ["provider_scores", "reports"]) {
         const count = await pool.query<{ count: string }>(
@@ -636,17 +626,17 @@ async function seedPrompt(
   promptType: PromptType,
   ownership: "anonymous" | "user" | "claimed",
   suffix = crypto.randomUUID(),
-  requestedModel: "mock-fast" | "mock-standard" | "mock-quality" | null = null
+  selectedModel: "mock-fast" | "mock-standard" | "mock-quality" | null = null
 ): Promise<Fixture> {
   const domain = await pool.query<{ id: string }>(
     `INSERT INTO domains (normalized_domain)
      VALUES ($1) RETURNING domain_id AS id`,
-    [`phase8-${suffix}.example`]
+    [`provider-${suffix}.example`]
   );
   const category = await pool.query<{ id: string }>(
     `INSERT INTO categories (category_name, normalized_name)
-     VALUES ('Phase 8 Category', $1) RETURNING category_id AS id`,
-    [`phase-8-${suffix}`]
+     VALUES ('Provider Category', $1) RETURNING category_id AS id`,
+    [`provider-${suffix}`]
   );
   const path = await pool.query<{ id: string }>(
     `INSERT INTO entity_paths (domain_id, category_id, path_type)
@@ -659,13 +649,13 @@ async function seedPrompt(
     userId = (
       await pool.query<{ id: string }>(
         "INSERT INTO users (email) VALUES ($1) RETURNING user_id AS id",
-        [`${suffix}@phase8.example`]
+        [`${suffix}@provider.example`]
       )
     ).rows[0]!.id;
     workspaceId = (
       await pool.query<{ id: string }>(
         `INSERT INTO workspaces (workspace_name, created_by_user_id)
-         VALUES ('Phase 8', $1) RETURNING workspace_id AS id`,
+         VALUES ('Provider', $1) RETURNING workspace_id AS id`,
         [userId]
       )
     ).rows[0]!.id;
@@ -685,7 +675,7 @@ async function seedPrompt(
        VALUES ($1, now() + interval '1 day', $2, $3, $4)
        RETURNING anonymous_session_id AS id`,
       [
-        `phase8-${suffix}`,
+        `provider-${suffix}`,
         userId,
         workspaceId,
         ownership === "claimed" ? new Date() : null
@@ -696,24 +686,21 @@ async function seedPrompt(
   const resolvedModel =
     ownership === "anonymous"
       ? null
-      : (requestedModel ?? "mock-standard");
+      : (selectedModel ?? "mock-standard");
   const runId = (
     await pool.query<{ id: string }>(
       `INSERT INTO analysis_runs (
          idempotency_key, anonymous_session_id, user_id, workspace_id,
-         starting_entity_path_id, requested_provider, requested_model,
-         status, request_payload, started_at
+         starting_entity_path_id, status, request_payload, started_at
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'processing', '{}'::jsonb, now())
+       VALUES ($1, $2, $3, $4, $5, 'processing', '{}'::jsonb, now())
        RETURNING analysis_run_id AS id`,
       [
-        `phase8-run-${suffix}`,
+        `provider-run-${suffix}`,
         anonymousSessionId,
         userId,
         workspaceId,
-        path.rows[0]!.id,
-        ownership === "anonymous" ? null : "mock",
-        resolvedModel
+        path.rows[0]!.id
       ]
     )
   ).rows[0]!.id;
@@ -731,7 +718,7 @@ async function seedPrompt(
        )
        VALUES ($1, $2, $3, 0, 'processing', now())
        RETURNING analysis_run_item_id AS id`,
-      [`phase8-item-${suffix}`, runId, path.rows[0]!.id]
+      [`provider-item-${suffix}`, runId, path.rows[0]!.id]
     )
   ).rows[0]!.id;
   const llmRunId = (
@@ -741,7 +728,7 @@ async function seedPrompt(
        )
        VALUES ($1, $2, 'primary', 'processing', now())
        RETURNING llm_run_id AS id`,
-      [`phase8-llm-${suffix}`, itemId]
+      [`provider-llm-${suffix}`, itemId]
     )
   ).rows[0]!.id;
   const promptJobId = (
@@ -753,7 +740,7 @@ async function seedPrompt(
        VALUES ($1, $2, $3, $4, 'pending', NULL)
        RETURNING prompt_job_id AS id`,
       [
-        `phase8-prompt-${suffix}`,
+        `provider-prompt-${suffix}`,
         llmRunId,
         promptType,
         ownership === "anonymous" ? "v1_light" : "v1"
@@ -779,18 +766,7 @@ async function seedPrompt(
 
 function promptPayload(fixture: Fixture): PromptJobCreatedPayload {
   return {
-    promptJobId: fixture.promptJobId,
-    llmRunId: fixture.llmRunId,
-    analysisRunItemId: fixture.itemId,
-    analysisRunId: fixture.runId,
-    entityPathId: fixture.entityPathId,
-    startingEntityPathId: fixture.startingEntityPathId,
-    promptType: fixture.promptType,
-    promptVersion: fixture.promptVersion,
-    actorType: fixture.actorType,
-    userId: fixture.userId,
-    workspaceId: fixture.workspaceId,
-    anonymousSessionId: fixture.anonymousSessionId
+    promptJobId: fixture.promptJobId
   };
 }
 
@@ -806,15 +782,9 @@ function promptEnvelope(fixture: Fixture) {
   };
 }
 
-function providerPayload(
-  fixture: Fixture,
-  providerJobId: string
-): ProviderJobCreatedPayload {
+function providerPayload(providerJobId: string): ProviderJobCreatedPayload {
   return {
-    providerJobId,
-    promptJobId: fixture.promptJobId,
-    provider: "mock",
-    model: fixture.expectedModel
+    providerJobId
   };
 }
 
@@ -939,7 +909,7 @@ async function pollUntil(predicate: () => Promise<boolean>) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error("Timed out waiting for Phase 8 worker outcome");
+  throw new Error("Timed out waiting for Provider worker outcome");
 }
 
 async function pollMessage(

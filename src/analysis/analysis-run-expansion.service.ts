@@ -5,10 +5,7 @@ import type {
 import { inTransaction } from "../db/database-executor.js";
 import { EntityPathRepository } from "../hierarchy/entity-path.repository.js";
 import { OutboxEventWriterRepository } from "../outbox/outbox-event-writer.repository.js";
-import type {
-  AnalysisRunRow,
-  EntityPathRow
-} from "../types/database.types.js";
+import type { EntityPathRow } from "../types/database.types.js";
 import { AnalysisRunExpansionRepository } from "./analysis-run-expansion.repository.js";
 import { AnalysisRunItemRepository } from "./analysis-run-item.repository.js";
 import { ReportRepository } from "../reports/report.repository.js";
@@ -52,8 +49,6 @@ export class AnalysisRunExpansionService {
       if (run.status !== "queued") {
         return { outcome: "noop", itemCount: 0 };
       }
-      assertPayloadMatchesRun(payload, run);
-
       const startingPath = await new EntityPathRepository(
         client
       ).findActiveValidated(
@@ -142,28 +137,6 @@ async function selectChildren(
           pathType: path.path_type
         }
       ];
-  }
-}
-
-function assertPayloadMatchesRun(
-  payload: AnalysisRunCreatedPayload,
-  run: AnalysisRunRow
-) {
-  const actorType = run.user_id && run.workspace_id ? "user" : "anonymous";
-  if (
-    (payload.startingEntityPathId !== undefined &&
-      payload.startingEntityPathId !== run.starting_entity_path_id) ||
-    (payload.actorType !== undefined && payload.actorType !== actorType) ||
-    (payload.userId !== undefined && payload.userId !== run.user_id) ||
-    (payload.workspaceId !== undefined &&
-      payload.workspaceId !== run.workspace_id) ||
-    (payload.anonymousSessionId !== undefined &&
-      payload.anonymousSessionId !== run.anonymous_session_id)
-  ) {
-    throw new PermanentAnalysisRunError(
-      "ANALYSIS_RUN_MESSAGE_MISMATCH",
-      "Message payload does not match authoritative analysis run state"
-    );
   }
 }
 

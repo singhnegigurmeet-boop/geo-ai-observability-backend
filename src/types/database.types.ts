@@ -224,8 +224,6 @@ export type AnalysisRunRow = {
   user_id: DbId | null;
   workspace_id: DbId | null;
   starting_entity_path_id: DbId;
-  requested_provider: ProviderName | null;
-  requested_model: string | null;
   source: AnalysisRunSource;
   status: AnalysisExecutionStatus;
   request_payload: JsonObject;

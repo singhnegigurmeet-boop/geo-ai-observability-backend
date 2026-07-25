@@ -12,10 +12,10 @@ import { FailureRecordRepository } from "../src/reliability/failure-record.repos
 import { AnalysisRunWorkerRuntime } from "../src/runtime/analysis-run-worker.runtime.js";
 import type { EntityPathType } from "../src/types/database.types.js";
 
-const enabled = process.env.RUN_PHASE5_INTEGRATION_TESTS === "true";
+const enabled = process.env.RUN_EXPANSION_RELIABILITY_INTEGRATION_TESTS === "true";
 
 describe(
-  "Phase 5 analysis run expansion",
+    "Analysis expansion reliability integration",
   { skip: !enabled, concurrency: 1 },
   () => {
   let pool: pg.Pool;
@@ -75,7 +75,7 @@ describe(
     const beforeMasters = await masterCounts(pool);
     const service = new AnalysisRunExpansionService(pool);
 
-    assert.deepEqual(await service.expand(payload(run, owner)), {
+    assert.deepEqual(await service.expand(payload(run)), {
       outcome: "expanded",
       itemCount: 3
     });
@@ -90,7 +90,7 @@ describe(
     assert.ok((await runState(pool, run.runId)).started_at);
     assert.deepEqual(await masterCounts(pool), beforeMasters);
 
-    assert.deepEqual(await service.expand(payload(run, owner)), {
+    assert.deepEqual(await service.expand(payload(run)), {
       outcome: "noop",
       itemCount: 0
     });
@@ -104,14 +104,14 @@ describe(
     const user = await userOwner(pool);
     const userRun = await createRun(pool, fixture.paths.domain, user);
     assert.equal(
-      (await new AnalysisRunExpansionService(pool).expand(payload(userRun, user))).itemCount,
+      (await new AnalysisRunExpansionService(pool).expand(payload(userRun))).itemCount,
       5
     );
 
     const claimed = await claimedOwner(pool);
     const claimedRun = await createRun(pool, fixture.paths.domain, claimed);
     assert.equal(
-      (await new AnalysisRunExpansionService(pool).expand(payload(claimedRun, claimed))).itemCount,
+      (await new AnalysisRunExpansionService(pool).expand(payload(claimedRun))).itemCount,
       5
     );
     const events = await pool.query<{ payload: Record<string, unknown> }>(
@@ -161,7 +161,7 @@ describe(
     for (const [pathId, expected, expectedType] of cases) {
       const run = await createRun(pool, pathId, owner);
       const result = await new AnalysisRunExpansionService(pool).expand(
-        payload(run, owner)
+        payload(run)
       );
       assert.equal(result.itemCount, expected);
       const items = await runItems(pool, run.runId);
@@ -183,7 +183,7 @@ describe(
     const run = await createRun(pool, fixture.paths.domain, owner);
 
     assert.deepEqual(
-      await new AnalysisRunExpansionService(pool).expand(payload(run, owner)),
+      await new AnalysisRunExpansionService(pool).expand(payload(run)),
       { outcome: "empty", itemCount: 0 }
     );
     const state = await runState(pool, run.runId);
@@ -213,7 +213,7 @@ describe(
     ]);
     assert.equal(await countFailureRecords(pool), 0);
     assert.deepEqual(
-      await new AnalysisRunExpansionService(pool).expand(payload(run, owner)),
+      await new AnalysisRunExpansionService(pool).expand(payload(run)),
       { outcome: "noop", itemCount: 0 }
     );
   });
@@ -231,7 +231,7 @@ describe(
     );
     const owner = await anonymousOwner(pool);
     const run = await createRun(pool, fixture.paths.domain, owner);
-    await new AnalysisRunExpansionService(pool).expand(payload(run, owner));
+    await new AnalysisRunExpansionService(pool).expand(payload(run));
     const items = await runItems(pool, run.runId);
     assert.equal(items[0]?.entity_path_id, existing);
     const after = await pool.query(
@@ -246,31 +246,31 @@ describe(
     const owner = await anonymousOwner(pool);
     const run = await createRun(pool, fixture.paths.domain, owner);
     await pool.query(`
-      CREATE FUNCTION phase5_test_outbox_failure() RETURNS trigger
+      CREATE FUNCTION expansion_test_outbox_failure() RETURNS trigger
       LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test outbox failure'; END $$;
-      CREATE TRIGGER phase5_test_outbox_failure_trigger
+      CREATE TRIGGER expansion_test_outbox_failure_trigger
       BEFORE INSERT ON outbox_events FOR EACH ROW
       WHEN (NEW.event_type = 'analysis_run_item.created')
-      EXECUTE FUNCTION phase5_test_outbox_failure()
+      EXECUTE FUNCTION expansion_test_outbox_failure()
     `);
     await assert.rejects(
-      new AnalysisRunExpansionService(pool).expand(payload(run, owner)),
+      new AnalysisRunExpansionService(pool).expand(payload(run)),
       /test outbox failure/
     );
     assert.equal((await runState(pool, run.runId)).status, "queued");
     assert.equal((await runItems(pool, run.runId)).length, 0);
     assert.equal(await itemOutboxCount(pool, run.runId), 0);
     await pool.query(`
-      DROP TRIGGER phase5_test_outbox_failure_trigger ON outbox_events;
-      DROP FUNCTION phase5_test_outbox_failure()
+      DROP TRIGGER expansion_test_outbox_failure_trigger ON outbox_events;
+      DROP FUNCTION expansion_test_outbox_failure()
     `);
   });
 
-  it("does not create downstream Phase 6 or later records", async () => {
+  it("does not create downstream execution records", async () => {
     const fixture = await seedHierarchy(pool, 1);
     const owner = await anonymousOwner(pool);
     const run = await createRun(pool, fixture.paths.domain, owner);
-    await new AnalysisRunExpansionService(pool).expand(payload(run, owner));
+    await new AnalysisRunExpansionService(pool).expand(payload(run));
     for (const table of [
       "llm_runs",
       "prompt_jobs",
@@ -302,13 +302,13 @@ describe(
       { info() {}, warn() {}, error() {} }
     );
     await successfulRuntime.start();
-    await sendEnvelope(channel, envelope(run, owner));
+    await sendEnvelope(channel, envelope(run));
     await pollUntil(async () => (await runState(pool, run.runId)).status === "processing");
     await successfulRuntime.stop();
 
     const failedMessage = {
-      ...envelope(run, owner),
-      messageId: "phase5-exhausted-retry"
+      ...envelope(run),
+      messageId: "expansion-exhausted-retry"
     };
     const failingRuntime = new AnalysisRunWorkerRuntime(
       channel,
@@ -350,7 +350,7 @@ type Owner = {
 
 async function seedHierarchy(pool: pg.Pool, width: number) {
   const domain = await pool.query<{ domain_id: string }>(
-    "INSERT INTO domains (normalized_domain) VALUES ('phase5.example') RETURNING domain_id"
+    "INSERT INTO domains (normalized_domain) VALUES ('expansion.example') RETURNING domain_id"
   );
   const domainId = domain.rows[0]!.domain_id;
   const categories: string[] = [];
@@ -448,7 +448,7 @@ async function master(
   const result = await pool.query<Record<string, string>>(
     `INSERT INTO ${table} (${name}, normalized_name)
      VALUES ($1, $2) RETURNING ${id}`,
-    [`Phase5 ${value}`, `phase5-${prefix}-${value}`]
+    [`Expansion ${value}`, `expansion-${prefix}-${value}`]
   );
   return result.rows[0]![id]!;
 }
@@ -501,12 +501,12 @@ async function anonymousOwner(pool: pg.Pool): Promise<Owner> {
 async function userOwner(pool: pg.Pool): Promise<Owner> {
   const user = await pool.query<{ id: string }>(
     `INSERT INTO users (email) VALUES ($1) RETURNING user_id AS id`,
-    [`${crypto.randomUUID()}@phase5.example`]
+    [`${crypto.randomUUID()}@expansion.example`]
   );
   const userId = user.rows[0]!.id;
   const workspace = await pool.query<{ id: string }>(
     `INSERT INTO workspaces (workspace_name, created_by_user_id)
-     VALUES ('Phase 5', $1) RETURNING workspace_id AS id`,
+     VALUES ('Expansion', $1) RETURNING workspace_id AS id`,
     [userId]
   );
   const workspaceId = workspace.rows[0]!.id;
@@ -554,17 +554,14 @@ async function createRun(pool: pg.Pool, pathId: string, owner: Owner) {
 }
 
 function payload(
-  run: { runId: string; pathId: string },
-  owner: Owner
+  run: { runId: string; pathId: string }
 ): AnalysisRunCreatedPayload {
   return {
-    analysisRunId: run.runId,
-    startingEntityPathId: run.pathId,
-    ...owner
+    analysisRunId: run.runId
   };
 }
 
-function envelope(run: { runId: string; pathId: string }, owner: Owner) {
+function envelope(run: { runId: string; pathId: string }) {
   return {
     messageId: `analysis_run.created:${run.runId}`,
     eventType: "analysis_run.created",
@@ -572,7 +569,7 @@ function envelope(run: { runId: string; pathId: string }, owner: Owner) {
     aggregateId: run.runId,
     occurredAt: new Date().toISOString(),
     attempt: 1,
-    payload: payload(run, owner)
+    payload: payload(run)
   };
 }
 
@@ -691,7 +688,7 @@ async function pollUntil(predicate: () => Promise<boolean>) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error("Timed out waiting for Phase 5 worker outcome");
+  throw new Error("Timed out waiting for analysis expansion worker outcome");
 }
 
 async function pollMessage(

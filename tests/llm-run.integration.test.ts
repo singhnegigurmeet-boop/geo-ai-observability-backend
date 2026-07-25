@@ -17,10 +17,10 @@ import { declareRabbitMqTopology } from "../src/messaging/rabbitmq.topology.js";
 import { FailureRecordRepository } from "../src/reliability/failure-record.repository.js";
 import { AnalysisRunItemWorkerRuntime } from "../src/runtime/analysis-run-item-worker.runtime.js";
 
-const enabled = process.env.RUN_PHASE6_INTEGRATION_TESTS === "true";
+const enabled = process.env.RUN_LLM_RUN_INTEGRATION_TESTS === "true";
 
 describe(
-  "Phase 6 LLM run creation",
+    "LLM run creation integration",
   { skip: !enabled, concurrency: 1 },
   () => {
     let pool: pg.Pool;
@@ -137,30 +137,6 @@ describe(
       );
     });
 
-    it("rejects run and path payload mismatches as retryable technical errors", async () => {
-      for (const mismatch of [
-        { analysisRunId: "999" },
-        { entityPathId: "999" }
-      ]) {
-        const fixture = await seedItem(
-          pool,
-          "anonymous",
-          crypto.randomUUID()
-        );
-        await assert.rejects(
-          new LlmRunCreationService(pool).create({
-            ...payload(fixture),
-            ...mismatch
-          }),
-          (error: unknown) =>
-            error instanceof LlmRunCreationError &&
-            !("permanent" in error)
-        );
-        assert.equal((await itemState(pool, fixture.itemId)).status, "queued");
-        assert.equal((await llmRuns(pool, fixture.itemId)).length, 0);
-      }
-    });
-
     it("is idempotent after processing and ignores terminal redelivery", async () => {
       const fixture = await seedItem(pool, "anonymous");
       const service = new LlmRunCreationService(pool);
@@ -193,12 +169,12 @@ describe(
     it("rolls back LLM run and outbox creation and leaves the item queued on technical failure", async () => {
       const fixture = await seedItem(pool, "anonymous");
       await pool.query(`
-        CREATE FUNCTION phase6_test_outbox_failure() RETURNS trigger
+        CREATE FUNCTION llm_run_test_outbox_failure() RETURNS trigger
         LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test LLM outbox failure'; END $$;
-        CREATE TRIGGER phase6_test_outbox_failure_trigger
+        CREATE TRIGGER llm_run_test_outbox_failure_trigger
         BEFORE INSERT ON outbox_events FOR EACH ROW
         WHEN (NEW.event_type = 'llm_run.created')
-        EXECUTE FUNCTION phase6_test_outbox_failure()
+        EXECUTE FUNCTION llm_run_test_outbox_failure()
       `);
       await assert.rejects(
         new LlmRunCreationService(pool).create(payload(fixture)),
@@ -208,8 +184,8 @@ describe(
       assert.equal((await llmRuns(pool, fixture.itemId)).length, 0);
       assert.equal((await llmOutbox(pool, fixture.itemId)).length, 0);
       await pool.query(`
-        DROP TRIGGER phase6_test_outbox_failure_trigger ON outbox_events;
-        DROP FUNCTION phase6_test_outbox_failure()
+        DROP TRIGGER llm_run_test_outbox_failure_trigger ON outbox_events;
+        DROP FUNCTION llm_run_test_outbox_failure()
       `);
     });
 
@@ -269,13 +245,13 @@ describe(
 
       const failedMessage = {
         ...envelope(fixture),
-        messageId: "phase6-exhausted-retry"
+        messageId: "llm_run-exhausted-retry"
       };
       const failing = new AnalysisRunItemWorkerRuntime(
         channel,
         {
           async process() {
-            throw new Error("simulated Phase 6 technical failure");
+            throw new Error("simulated LLM creation technical failure");
           }
         },
         new FailureRecordRepository(pool),
@@ -324,7 +300,7 @@ async function seedItem(
   const domain = await pool.query<{ id: string }>(
     `INSERT INTO domains (normalized_domain)
      VALUES ($1) RETURNING domain_id AS id`,
-    [`${suffix}.phase6.example`]
+    [`${suffix}.llm-run.example`]
   );
   const entityPath = await pool.query<{ id: string }>(
     `INSERT INTO entity_paths (domain_id, path_type)
@@ -336,12 +312,12 @@ async function seedItem(
   if (ownership === "claimed") {
     const user = await pool.query<{ id: string }>(
       `INSERT INTO users (email) VALUES ($1) RETURNING user_id AS id`,
-      [`${suffix}@phase6.example`]
+      [`${suffix}@llm-run.example`]
     );
     userId = user.rows[0]!.id;
     const workspace = await pool.query<{ id: string }>(
       `INSERT INTO workspaces (workspace_name, created_by_user_id)
-       VALUES ('Phase 6', $1) RETURNING workspace_id AS id`,
+       VALUES ('LLM run', $1) RETURNING workspace_id AS id`,
       [userId]
     );
     workspaceId = workspace.rows[0]!.id;
@@ -358,7 +334,7 @@ async function seedItem(
      VALUES ($1, now() + interval '1 day', $2, $3, $4)
      RETURNING anonymous_session_id AS id`,
     [
-      `phase6-${suffix}`,
+      `llm_run-${suffix}`,
       userId,
       workspaceId,
       ownership === "claimed" ? new Date() : null
@@ -372,7 +348,7 @@ async function seedItem(
      VALUES ($1, $2, $3, $4, $5, 'processing', '{}'::jsonb, now())
      RETURNING analysis_run_id AS id`,
     [
-      `phase6-run-${suffix}`,
+      `llm_run-run-${suffix}`,
       anonymous.rows[0]!.id,
       userId,
       workspaceId,
@@ -387,7 +363,7 @@ async function seedItem(
      VALUES ($1, $2, $3, 0, 'queued', 'STALE', 'stale error')
      RETURNING analysis_run_item_id AS id`,
     [
-      `phase6-item-${suffix}`,
+      `llm_run-item-${suffix}`,
       run.rows[0]!.id,
       entityPath.rows[0]!.id
     ]
@@ -406,14 +382,7 @@ async function seedItem(
 
 function payload(fixture: Fixture): AnalysisRunItemCreatedPayload {
   return {
-    analysisRunItemId: fixture.itemId,
-    analysisRunId: fixture.runId,
-    entityPathId: fixture.entityPathId,
-    startingEntityPathId: fixture.startingEntityPathId,
-    actorType: fixture.actorType,
-    userId: fixture.userId,
-    workspaceId: fixture.workspaceId,
-    anonymousSessionId: fixture.anonymousSessionId
+    analysisRunItemId: fixture.itemId
   };
 }
 
@@ -508,7 +477,7 @@ async function pollUntil(predicate: () => Promise<boolean>) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error("Timed out waiting for Phase 6 worker outcome");
+  throw new Error("Timed out waiting for LLM creation worker outcome");
 }
 
 async function pollMessage(

@@ -12,8 +12,6 @@ export type CanonicalAnalysisRequest = JsonObject & {
   brandId: string | null;
   productId: string | null;
   useContextId: string | null;
-  requestedProvider: ProviderName | null;
-  requestedModel: string | null;
   providerModels: Array<{
     provider: ProviderName;
     model: string;

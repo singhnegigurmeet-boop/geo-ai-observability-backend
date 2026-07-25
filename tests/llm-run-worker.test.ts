@@ -234,16 +234,6 @@ function validEnvelope() {
     aggregateId: "4",
     occurredAt: "2026-07-25T00:00:00.000Z",
     attempt: 1,
-    payload: {
-      llmRunId: "4",
-      analysisRunItemId: "3",
-      analysisRunId: "1",
-      entityPathId: "2",
-      startingEntityPathId: "2",
-      actorType: "anonymous" as const,
-      userId: null,
-      workspaceId: null,
-      anonymousSessionId: "5"
-    }
+    payload: { llmRunId: "4" }
   };
 }

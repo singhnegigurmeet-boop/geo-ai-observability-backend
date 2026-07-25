@@ -11,13 +11,12 @@ import { deadLetterQueueName } from "../src/messaging/queue-names.js";
 import { RabbitMqConnection } from "../src/messaging/rabbitmq.connection.js";
 import { declareRabbitMqTopology } from "../src/messaging/rabbitmq.topology.js";
 import {
-  PromptPlanningError,
   PromptPlanningService
 } from "../src/prompts/prompt-planning.service.js";
 import { FailureRecordRepository } from "../src/reliability/failure-record.repository.js";
 import { LlmRunWorkerRuntime } from "../src/runtime/llm-run-worker.runtime.js";
 
-const enabled = process.env.RUN_PHASE7_INTEGRATION_TESTS === "true";
+const enabled = process.env.RUN_PROMPT_PLANNING_INTEGRATION_TESTS === "true";
 const userPromptTypes = [
   "visibility",
   "competitor",
@@ -39,7 +38,7 @@ const queueByPromptType = {
 } as const;
 
 describe(
-  "Phase 7 prompt planning",
+    "Prompt planning integration",
   { skip: !enabled, concurrency: 1 },
   () => {
     let pool: pg.Pool;
@@ -170,34 +169,6 @@ describe(
       }
     });
 
-    it("rejects authoritative linkage and ownership mismatches and rolls back", async () => {
-      const mismatches: Array<
-        (valid: LlmRunCreatedPayload) => LlmRunCreatedPayload
-      > = [
-        (valid) => ({ ...valid, analysisRunItemId: "999" }),
-        (valid) => ({ ...valid, analysisRunId: "999" }),
-        (valid) => ({ ...valid, entityPathId: "999" }),
-        (valid) => ({ ...valid, startingEntityPathId: "999" }),
-        (valid) => ({ ...valid, anonymousSessionId: "999" })
-      ];
-      for (const mismatch of mismatches) {
-        const fixture = await seedLlmRun(
-          pool,
-          "anonymous",
-          crypto.randomUUID()
-        );
-        await assert.rejects(
-          new PromptPlanningService(pool).plan(mismatch(payload(fixture))),
-          (error: unknown) =>
-            error instanceof PromptPlanningError &&
-            !("permanent" in error)
-        );
-        assert.equal((await llmState(pool, fixture.llmRunId)).status, "queued");
-        assert.equal((await promptJobs(pool, fixture.llmRunId)).length, 0);
-        assert.equal((await promptOutbox(pool, fixture.llmRunId)).length, 0);
-      }
-    });
-
     it("is idempotent after planning and ignores terminal redelivery", async () => {
       const fixture = await seedLlmRun(pool, "anonymous");
       const service = new PromptPlanningService(pool);
@@ -230,12 +201,12 @@ describe(
     it("rolls back all prompt jobs and outbox events on a technical failure", async () => {
       const fixture = await seedLlmRun(pool, "anonymous");
       await pool.query(`
-        CREATE FUNCTION phase7_test_outbox_failure() RETURNS trigger
+        CREATE FUNCTION prompt_planning_test_outbox_failure() RETURNS trigger
         LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test prompt outbox failure'; END $$;
-        CREATE TRIGGER phase7_test_outbox_failure_trigger
+        CREATE TRIGGER prompt_planning_test_outbox_failure_trigger
         BEFORE INSERT ON outbox_events FOR EACH ROW
         WHEN (NEW.event_type = 'prompt_job.created')
-        EXECUTE FUNCTION phase7_test_outbox_failure()
+        EXECUTE FUNCTION prompt_planning_test_outbox_failure()
       `);
       try {
         await assert.rejects(
@@ -247,8 +218,8 @@ describe(
         assert.equal((await promptOutbox(pool, fixture.llmRunId)).length, 0);
       } finally {
         await pool.query(`
-          DROP TRIGGER IF EXISTS phase7_test_outbox_failure_trigger ON outbox_events;
-          DROP FUNCTION IF EXISTS phase7_test_outbox_failure()
+          DROP TRIGGER IF EXISTS prompt_planning_test_outbox_failure_trigger ON outbox_events;
+          DROP FUNCTION IF EXISTS prompt_planning_test_outbox_failure()
         `);
       }
     });
@@ -292,13 +263,13 @@ describe(
 
       const failedMessage = {
         ...envelope(fixture),
-        messageId: "phase7-exhausted-retry"
+        messageId: "prompt_planning-exhausted-retry"
       };
       const failing = new LlmRunWorkerRuntime(
         channel,
         {
           async process() {
-            throw new Error("simulated Phase 7 technical failure");
+            throw new Error("simulated prompt planning technical failure");
           }
         },
         new FailureRecordRepository(pool),
@@ -348,7 +319,7 @@ async function seedLlmRun(
   const domain = await pool.query<{ id: string }>(
     `INSERT INTO domains (normalized_domain)
      VALUES ($1) RETURNING domain_id AS id`,
-    [`${suffix}.phase7.example`]
+    [`${suffix}.prompt-planning.example`]
   );
   const entityPath = await pool.query<{ id: string }>(
     `INSERT INTO entity_paths (domain_id, path_type)
@@ -360,12 +331,12 @@ async function seedLlmRun(
   if (ownership !== "anonymous") {
     const user = await pool.query<{ id: string }>(
       `INSERT INTO users (email) VALUES ($1) RETURNING user_id AS id`,
-      [`${suffix}@phase7.example`]
+      [`${suffix}@prompt-planning.example`]
     );
     userId = user.rows[0]!.id;
     const workspace = await pool.query<{ id: string }>(
       `INSERT INTO workspaces (workspace_name, created_by_user_id)
-       VALUES ('Phase 7', $1) RETURNING workspace_id AS id`,
+       VALUES ('Prompt planning', $1) RETURNING workspace_id AS id`,
       [userId]
     );
     workspaceId = workspace.rows[0]!.id;
@@ -384,7 +355,7 @@ async function seedLlmRun(
        VALUES ($1, now() + interval '1 day', $2, $3, $4)
        RETURNING anonymous_session_id AS id`,
       [
-        `phase7-${suffix}`,
+        `prompt_planning-${suffix}`,
         userId,
         workspaceId,
         ownership === "claimed" ? new Date() : null
@@ -395,20 +366,23 @@ async function seedLlmRun(
   const run = await pool.query<{ id: string }>(
     `INSERT INTO analysis_runs (
        idempotency_key, anonymous_session_id, user_id, workspace_id,
-       starting_entity_path_id, requested_provider, requested_model,
-       status, request_payload, started_at
+       starting_entity_path_id, status, request_payload, started_at
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, 'processing', '{}'::jsonb, now())
+     VALUES ($1, $2, $3, $4, $5, 'processing', '{}'::jsonb, now())
      RETURNING analysis_run_id AS id`,
     [
-      `phase7-run-${suffix}`,
+      `prompt_planning-run-${suffix}`,
       anonymousSessionId,
       userId,
       workspaceId,
-      entityPath.rows[0]!.id,
-      ownership === "anonymous" ? null : "mock",
-      ownership === "anonymous" ? null : "mock-standard"
+      entityPath.rows[0]!.id
     ]
+  );
+  await pool.query(
+    `INSERT INTO analysis_run_provider_models
+       (analysis_run_id, provider, model, ordinal)
+     VALUES ($1, 'mock', 'mock-standard', 0)`,
+    [run.rows[0]!.id]
   );
   const item = await pool.query<{ id: string }>(
     `INSERT INTO analysis_run_items (
@@ -417,7 +391,7 @@ async function seedLlmRun(
      )
      VALUES ($1, $2, $3, 0, 'processing', now())
      RETURNING analysis_run_item_id AS id`,
-    [`phase7-item-${suffix}`, run.rows[0]!.id, entityPath.rows[0]!.id]
+    [`prompt_planning-item-${suffix}`, run.rows[0]!.id, entityPath.rows[0]!.id]
   );
   const llm = await pool.query<{ id: string }>(
     `INSERT INTO llm_runs (
@@ -426,7 +400,7 @@ async function seedLlmRun(
      )
      VALUES ($1, $2, 'primary', 'queued', 'STALE', 'stale error')
      RETURNING llm_run_id AS id`,
-    [`phase7-llm-${suffix}`, item.rows[0]!.id]
+    [`prompt_planning-llm-${suffix}`, item.rows[0]!.id]
   );
   return {
     llmRunId: llm.rows[0]!.id,
@@ -443,15 +417,7 @@ async function seedLlmRun(
 
 function payload(fixture: Fixture): LlmRunCreatedPayload {
   return {
-    llmRunId: fixture.llmRunId,
-    analysisRunItemId: fixture.itemId,
-    analysisRunId: fixture.runId,
-    entityPathId: fixture.entityPathId,
-    startingEntityPathId: fixture.startingEntityPathId,
-    actorType: fixture.actorType,
-    userId: fixture.userId,
-    workspaceId: fixture.workspaceId,
-    anonymousSessionId: fixture.anonymousSessionId
+    llmRunId: fixture.llmRunId
   };
 }
 
@@ -556,7 +522,7 @@ async function pollUntil(predicate: () => Promise<boolean>) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error("Timed out waiting for Phase 7 worker outcome");
+  throw new Error("Timed out waiting for prompt planning worker outcome");
 }
 
 async function pollMessage(

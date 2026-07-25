@@ -14,7 +14,7 @@ import { HierarchyRelationshipsRepository } from "../src/hierarchy/hierarchy-rel
 import type { OwnershipContext } from "../src/ownership/ownership-context.types.js";
 
 const runIntegrationTests =
-  process.env.RUN_PHASE45_INTEGRATION_TESTS === "true";
+  process.env.RUN_HIERARCHY_INTEGRATION_TESTS === "true";
 const pepper = "phase-45-integration-pepper-with-at-least-32-characters";
 
 type Fixture = {
@@ -58,7 +58,7 @@ type Fixture = {
 };
 
 describe(
-  "Phase 4.5 hierarchy relationships",
+  "Hierarchy relationship integration",
   { skip: !runIntegrationTests },
   () => {
     let pool: pg.Pool;
@@ -77,7 +77,7 @@ describe(
       const databaseName = database.rows[0]?.database_name;
       if (!databaseName?.endsWith("_test")) {
         throw new Error(
-          `Refusing to reset Phase 4.5 database without _test suffix: ${
+          `Refusing to reset Hierarchy database without _test suffix: ${
             databaseName ?? "unknown"
           }`
         );
@@ -443,7 +443,7 @@ describe(
       for (const [index, request] of requests.entries()) {
         const result = await analyses.create(
           request,
-          `phase45-valid-${index}`,
+          `hierarchy-valid-${index}`,
           owner
         );
         assert.equal(result.status, "queued");
@@ -502,7 +502,7 @@ describe(
         await assert.rejects(
           analyses.create(
             request,
-            `phase45-invalid-${index}`,
+            `hierarchy-invalid-${index}`,
             owner
           ),
           hasCategory("VALIDATION_ERROR")
@@ -518,7 +518,7 @@ describe(
           categoryId: fixture.categoryA,
           brandId: fixture.brandA
         },
-        "phase45-materialize",
+        "hierarchy-materialize",
         owner
       );
       const replay = await analyses.create(
@@ -527,7 +527,7 @@ describe(
           categoryId: fixture.categoryA,
           brandId: fixture.brandA
         },
-        "phase45-materialize",
+        "hierarchy-materialize",
         owner
       );
       const after = await controlledTableCounts(pool);
@@ -637,10 +637,10 @@ async function seedFixture(pool: pg.Pool): Promise<Fixture> {
         source
       )
       VALUES
-        ($1, $2, true, 2, 'phase45'),
-        ($1, $3, true, 1, 'phase45'),
-        ($1, $4, true, NULL, 'phase45'),
-        ($1, $5, false, 0, 'phase45')
+        ($1, $2, true, 2, 'hierarchy'),
+        ($1, $3, true, 1, 'hierarchy'),
+        ($1, $4, true, NULL, 'hierarchy'),
+        ($1, $5, false, 0, 'hierarchy')
       RETURNING domain_category_id
     `,
     [domainId, categories[0], categories[1], categories[2], categories[4]]
@@ -657,10 +657,10 @@ async function seedFixture(pool: pg.Pool): Promise<Fixture> {
         source
       )
       VALUES
-        ($1, $2, true, 2, 'phase45'),
-        ($1, $3, true, 1, 'phase45'),
-        ($1, $4, true, NULL, 'phase45'),
-        ($1, $5, false, 0, 'phase45')
+        ($1, $2, true, 2, 'hierarchy'),
+        ($1, $3, true, 1, 'hierarchy'),
+        ($1, $4, true, NULL, 'hierarchy'),
+        ($1, $5, false, 0, 'hierarchy')
       RETURNING category_brand_id
     `,
     [
@@ -683,10 +683,10 @@ async function seedFixture(pool: pg.Pool): Promise<Fixture> {
         source
       )
       VALUES
-        ($1, $2, true, 2, 'phase45'),
-        ($1, $3, true, 1, 'phase45'),
-        ($1, $4, true, NULL, 'phase45'),
-        ($1, $5, false, 0, 'phase45')
+        ($1, $2, true, 2, 'hierarchy'),
+        ($1, $3, true, 1, 'hierarchy'),
+        ($1, $4, true, NULL, 'hierarchy'),
+        ($1, $5, false, 0, 'hierarchy')
       RETURNING brand_product_id
     `,
     [
@@ -709,10 +709,10 @@ async function seedFixture(pool: pg.Pool): Promise<Fixture> {
         source
       )
       VALUES
-        ($1, $2, true, 2, 'phase45'),
-        ($1, $3, true, 1, 'phase45'),
-        ($1, $4, true, NULL, 'phase45'),
-        ($1, $5, false, 0, 'phase45')
+        ($1, $2, true, 2, 'hierarchy'),
+        ($1, $3, true, 1, 'hierarchy'),
+        ($1, $4, true, NULL, 'hierarchy'),
+        ($1, $5, false, 0, 'hierarchy')
       RETURNING product_use_context_id
     `,
     [
@@ -795,7 +795,7 @@ async function insertMasters(
       `,
       [
         `${prefix} ${index + 1}`,
-        `phase45-${prefix}-${index + 1}`
+        `hierarchy-${prefix}-${index + 1}`
       ]
     );
     ids.push(result.rows[0]![idColumn] as string);

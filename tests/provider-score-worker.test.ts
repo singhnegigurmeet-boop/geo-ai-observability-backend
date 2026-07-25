@@ -17,12 +17,7 @@ describe("provider_result.created validation and scoring worker", () => {
     });
     const result = await worker.process(validMessage());
     assert.equal(result.outcome, "scored");
-    assert.deepEqual(received, {
-      providerResultId: "7",
-      providerJobId: "6",
-      promptJobId: "5",
-      analysisRunId: "1"
-    });
+    assert.deepEqual(received, { providerResultId: "7" });
   });
 
   it("rejects malformed event linkage and additional evidence payload", async () => {
@@ -59,11 +54,6 @@ function validMessage() {
     aggregateId: "7",
     occurredAt: new Date().toISOString(),
     attempt: 1,
-    payload: {
-      providerResultId: "7",
-      providerJobId: "6",
-      promptJobId: "5",
-      analysisRunId: "1"
-    }
+    payload: { providerResultId: "7" }
   };
 }

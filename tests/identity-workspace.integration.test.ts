@@ -19,11 +19,11 @@ import { WorkspaceMemberRepository } from "../src/workspaces/workspace-member.re
 import { WorkspaceRoleChangeRequestRepository } from "../src/workspaces/workspace-role-change-request.repository.js";
 
 const runIntegrationTests =
-  process.env.RUN_PHASE3_INTEGRATION_TESTS === "true";
+  process.env.RUN_IDENTITY_WORKSPACE_INTEGRATION_TESTS === "true";
 const pepper = "phase-3-integration-pepper-with-at-least-32-characters";
 
 describe(
-  "Phase 3 identity and workspace integration",
+    "Identity and workspace integration",
   { skip: !runIntegrationTests },
   () => {
     let pool: pg.Pool;
@@ -42,7 +42,7 @@ describe(
       const databaseName = database.rows[0]?.database_name;
       if (!databaseName?.endsWith("_test")) {
         throw new Error(
-          `Refusing to reset Phase 3 database without _test suffix: ${
+          `Refusing to reset Identity database without _test suffix: ${
             databaseName ?? "unknown"
           }`
         );

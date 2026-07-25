@@ -50,19 +50,6 @@ export class ProviderScoreService {
         );
       }
       if (
-        (payload.providerJobId !== undefined &&
-          state.provider_job_id !== payload.providerJobId) ||
-        (payload.promptJobId !== undefined &&
-          state.prompt_job_id !== payload.promptJobId) ||
-        (payload.analysisRunId !== undefined &&
-          state.analysis_run_id !== payload.analysisRunId)
-      ) {
-        throw new ProviderScoringError(
-          "PROVIDER_RESULT_MESSAGE_MISMATCH",
-          "Message identifiers do not match authoritative provider-result state"
-        );
-      }
-      if (
         state.result_status !== "valid" ||
         state.parsed_response === null ||
         state.provider_job_status !== "succeeded"

@@ -46,11 +46,6 @@ function envelope() {
     aggregateId: "8",
     occurredAt: new Date().toISOString(),
     attempt: 1,
-    payload: {
-      providerJobId: "8",
-      promptJobId: "5",
-      provider: "mock",
-      model: "mock-fast"
-    }
+    payload: { providerJobId: "8" }
   } as const;
 }

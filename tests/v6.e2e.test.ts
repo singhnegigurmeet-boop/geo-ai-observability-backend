@@ -63,6 +63,7 @@ import {
 } from "./support/integration-environment.js";
 
 const enabled = process.env.RUN_V6_E2E_TESTS === "true";
+const fullEnabled = process.env.RUN_V6_FULL_E2E_TESTS === "true";
 const tokenPepper = "v6-e2e-session-token-pepper-at-least-32-characters";
 const promptRoutes = [
   ["competitor", "competitor_prompt_queue"],
@@ -601,6 +602,151 @@ describe("GEO V6 final end-to-end runtime", {
     );
   });
 
+  if (fullEnabled) {
+  it("repeats the high-contention idempotency and provider-completion regression", async () => {
+    for (let repetition = 1; repetition <= 3; repetition += 1) {
+      await truncatePublicTables(pool);
+      await purgeAllQueues(channel);
+      const owner = await createUserOwner(pool, `full-contention-${repetition}`);
+      const domain = `full-contention-${repetition}.example`;
+      await seedHierarchy(pool, domain);
+      const responses = await Promise.all(
+        Array.from({ length: 8 }, (_, index) =>
+          postAnalysis(
+            server.url,
+            owner,
+            `full-contention-${repetition}`,
+            domain,
+            index % 2 === 0
+              ? multiProviderSet()
+              : [...multiProviderSet()].reverse()
+          )
+        )
+      );
+      assert.ok(responses.every((response) => response.status === 202));
+      const runIds = new Set(
+        responses.map((response) => response.body.analysisRunId)
+      );
+      assert.equal(runIds.size, 1);
+      const runId = [...runIds][0]!;
+      await driveUntil(
+        dispatcher,
+        async () => (await runStatus(pool, runId)) === "completed",
+        `full contention repetition ${repetition}`
+      );
+      assert.deepEqual(await executionShape(pool, runId), {
+        prompts: 5,
+        providerJobs: 10,
+        providerResults: 10,
+        providerScores: 10,
+        actualUsage: 10
+      });
+      const duplicates = await pool.query(
+        `SELECT idempotency_key
+         FROM reports
+         WHERE analysis_run_id = $1
+         GROUP BY idempotency_key
+         HAVING count(*) > 1`,
+        [runId]
+      );
+      assert.deepEqual(duplicates.rows, []);
+    }
+  });
+
+  it("recovers pending work after dispatcher and worker process restart", async () => {
+    const owner = await createUserOwner(pool, "full-restart");
+    await seedHierarchy(pool, "full-restart.example");
+    const created = await postAnalysis(
+      server.url,
+      owner,
+      "full-restart",
+      "full-restart.example",
+      multiProviderSet()
+    );
+    assert.equal(created.status, 202);
+
+    await Promise.all(runtimes.map((runtime) => runtime.stop()));
+    runtimes = [];
+    await server.close();
+    server = await listen(
+      createApp({
+        analysisRouter: createAnalysisModule(pool, {
+          sessionTokenPepper: tokenPepper,
+          userSessionTtlSeconds: 3_600,
+          anonymousSessionTtlSeconds: 3_600,
+          realProvidersEnabled: true
+        })
+      })
+    );
+    await dispatcher.dispatchBatch();
+
+    runtimes = createRuntimes(pool, channel, adapter);
+    for (const runtime of runtimes) await runtime.start();
+    dispatcher = createDispatcher(pool, rabbitMq, "v6-e2e-restarted");
+    await driveUntil(
+      dispatcher,
+      async () =>
+        (await runStatus(pool, created.body.analysisRunId)) === "completed",
+      "process restart recovery"
+    );
+    assert.deepEqual(await executionShape(pool, created.body.analysisRunId), {
+      prompts: 5,
+      providerJobs: 10,
+      providerResults: 10,
+      providerScores: 10,
+      actualUsage: 10
+    });
+  });
+
+  it("keeps outbox work retryable through RabbitMQ outage and recovery", async () => {
+    await Promise.all(runtimes.map((runtime) => runtime.stop()));
+    runtimes = [];
+    await rabbitMq.close();
+
+    const owner = await createUserOwner(pool, "full-broker-recovery");
+    await seedHierarchy(pool, "full-broker-recovery.example");
+    const created = await postAnalysis(
+      server.url,
+      owner,
+      "full-broker-recovery",
+      "full-broker-recovery.example",
+      multiProviderSet()
+    );
+    assert.equal(created.status, 202);
+    await dispatcher.dispatchBatch();
+    const pending = await pool.query<{
+      attempt_count: number;
+      published_at: Date | null;
+    }>(
+      `SELECT attempt_count, published_at
+       FROM outbox_events
+       WHERE aggregate_type = 'analysis_run' AND aggregate_id = $1`,
+      [created.body.analysisRunId]
+    );
+    assert.ok((pending.rows[0]?.attempt_count ?? 0) >= 1);
+    assert.equal(pending.rows[0]?.published_at, null);
+
+    rabbitMq = createIntegrationRabbitMq();
+    channel = await rabbitMq.getConfirmChannel();
+    runtimes = createRuntimes(pool, channel, adapter);
+    for (const runtime of runtimes) await runtime.start();
+    dispatcher = createDispatcher(pool, rabbitMq, "v6-e2e-broker-recovered");
+    await driveUntil(
+      dispatcher,
+      async () =>
+        (await runStatus(pool, created.body.analysisRunId)) === "completed",
+      "RabbitMQ outage recovery"
+    );
+    assert.deepEqual(await executionShape(pool, created.body.analysisRunId), {
+      prompts: 5,
+      providerJobs: 10,
+      providerResults: 10,
+      providerScores: 10,
+      actualUsage: 10
+    });
+  });
+  }
+
   function createRuntimes(
     database: pg.Pool,
     consumerChannel: ConfirmChannel,
@@ -692,6 +838,29 @@ describe("GEO V6 final end-to-end runtime", {
     return result;
   }
 });
+
+function createDispatcher(
+  pool: pg.Pool,
+  rabbitMq: RabbitMqConnection,
+  dispatcherId: string
+) {
+  return new OutboxDispatcher(
+    new OutboxRepository(pool),
+    new RabbitMqPublisher(rabbitMq, {
+      exchange: TEST_MAIN_EXCHANGE,
+      confirmTimeoutMs: 5_000
+    }),
+    {
+      dispatcherId,
+      batchSize: 100,
+      pollIntervalMs: 10,
+      lockTimeoutMs: 10_000,
+      retryBaseMs: 10,
+      retryMaxMs: 100
+    },
+    quietLogger
+  );
+}
 
 type Owner = {
   userId: string;

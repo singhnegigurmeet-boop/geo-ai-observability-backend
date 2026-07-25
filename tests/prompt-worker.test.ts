@@ -23,7 +23,7 @@ describe("prompt_job.created validation and worker", () => {
     assert.equal(expectedType, "visibility");
   });
 
-  it("rejects malformed linkage, ownership, and cross-queue prompt types", async () => {
+  it("rejects malformed linkage or extra state and supplies queue authority", async () => {
     assert.throws(
       () =>
         parsePromptJobCreatedMessage({
@@ -38,8 +38,7 @@ describe("prompt_job.created validation and worker", () => {
           ...envelope(),
           payload: {
             ...envelope().payload,
-            actorType: "anonymous",
-            userId: "1"
+            actorType: "anonymous"
           }
         }),
       InvalidPromptJobMessageError
@@ -63,19 +62,6 @@ function envelope() {
     aggregateId: "5",
     occurredAt: new Date().toISOString(),
     attempt: 1,
-    payload: {
-      promptJobId: "5",
-      llmRunId: "4",
-      analysisRunItemId: "3",
-      analysisRunId: "2",
-      entityPathId: "1",
-      startingEntityPathId: "1",
-      promptType: "visibility",
-      promptVersion: "v1_light",
-      actorType: "anonymous",
-      userId: null,
-      workspaceId: null,
-      anonymousSessionId: "7"
-    }
+    payload: { promptJobId: "5" }
   } as const;
 }

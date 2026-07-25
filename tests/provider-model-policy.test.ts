@@ -2,127 +2,93 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   InvalidProviderModelSelectionError,
-  resolveProviderModelSet,
-  selectProviderModel
+  resolveProviderModelSet
 } from "../src/providers/provider-model.policy.js";
 
-describe("Phase 8 provider/model policy", () => {
-  it("uses the cheap fixed anonymous model", () => {
-    assert.deepEqual(selectProviderModel({
-      actorType: "anonymous",
-      requestedProvider: null,
-      requestedModel: null
-    }), {
-      provider: "mock",
-      model: "mock-fast",
-      queueName: "mock_queue"
-    });
+describe("provider-set policy", () => {
+  it("uses fixed actor defaults", () => {
+    assert.deepEqual(resolveProviderModelSet({ actorType: "anonymous" }), [
+      { provider: "mock", model: "mock-fast", queueName: "mock_queue" }
+    ]);
+    assert.deepEqual(resolveProviderModelSet({ actorType: "user" }), [
+      { provider: "mock", model: "mock-standard", queueName: "mock_queue" }
+    ]);
   });
 
-  it("uses the user default or an allowed selected model", () => {
-    assert.equal(
-      selectProviderModel({
-        actorType: "user",
-        requestedProvider: "mock",
-        requestedModel: null
-      }).model,
-      "mock-standard"
-    );
-    for (const model of ["mock-fast", "mock-standard", "mock-quality"]) {
-      assert.equal(
-        selectProviderModel({
-          actorType: "user",
-          requestedProvider: "mock",
-          requestedModel: model
-        }).model,
-        model
-      );
-    }
-  });
-
-  it("rejects anonymous selection and unsupported user selections", () => {
-    for (const context of [
-      {
-        actorType: "anonymous" as const,
-        requestedProvider: "mock" as const,
-        requestedModel: "mock-fast"
-      },
-      {
-        actorType: "user" as const,
-        requestedProvider: "openai" as const,
-        requestedModel: "gpt-4o-mini"
-      },
-      {
-        actorType: "user" as const,
-        requestedProvider: "mock" as const,
-        requestedModel: "arbitrary"
-      }
+  it("rejects every explicit anonymous set, including an empty set", () => {
+    for (const providerModels of [
+      [],
+      [{ provider: "mock" as const, model: "mock-fast" }]
     ]) {
       assert.throws(
-        () => selectProviderModel(context),
+        () => resolveProviderModelSet({ actorType: "anonymous", providerModels }),
         InvalidProviderModelSelectionError
       );
     }
   });
 
-  it("allows one exact real model per provider only when enabled", () => {
-    for (const [provider, model, queueName] of [
-      ["openai", "gpt-4o-mini", "openai_queue"],
-      ["gemini", "gemini-1.5-flash", "gemini_queue"],
-      ["claude", "claude-3-5-sonnet", "claude_queue"]
-    ] as const) {
-      assert.deepEqual(
-        selectProviderModel({
-          actorType: "user",
-          requestedProvider: provider,
-          requestedModel: model,
-          realProvidersEnabled: true
-        }),
-        { provider, model, queueName }
-      );
+  it("validates exact provider/model pairs and real-provider gating", () => {
+    for (const pair of [
+      { provider: "mock" as const, model: "unknown" },
+      { provider: "openai" as const, model: "gemini-1.5-flash" },
+      { provider: "openai" as const, model: "gpt-4o-mini" }
+    ]) {
       assert.throws(
         () =>
-          selectProviderModel({
+          resolveProviderModelSet({
             actorType: "user",
-            requestedProvider: provider,
-            requestedModel: model
+            providerModels: [pair]
           }),
         InvalidProviderModelSelectionError
       );
     }
-  });
-
-  it("normalizes, deduplicates, and stably sorts an explicit provider set", () => {
     assert.deepEqual(
       resolveProviderModelSet({
         actorType: "user",
-        requestedProvider: null,
-        requestedModel: null,
-        requestedProviderModels: [
+        providerModels: [
           { provider: "openai", model: "gpt-4o-mini" },
-          { provider: "claude", model: "claude-3-5-sonnet" },
-          { provider: "openai", model: "gpt-4o-mini" },
-          { provider: "gemini", model: "gemini-1.5-flash" }
+          { provider: "gemini", model: "gemini-1.5-flash" },
+          { provider: "claude", model: "claude-3-5-sonnet" }
         ],
         realProvidersEnabled: true
-      }),
+      }).map(({ provider, model }) => ({ provider, model })),
       [
-        {
-          provider: "claude",
-          model: "claude-3-5-sonnet",
-          queueName: "claude_queue"
-        },
-        {
-          provider: "gemini",
-          model: "gemini-1.5-flash",
-          queueName: "gemini_queue"
-        },
-        {
-          provider: "openai",
-          model: "gpt-4o-mini",
-          queueName: "openai_queue"
-        }
+        { provider: "claude", model: "claude-3-5-sonnet" },
+        { provider: "gemini", model: "gemini-1.5-flash" },
+        { provider: "openai", model: "gpt-4o-mini" }
       ]
+    );
+  });
+
+  it("normalizes, deduplicates, and stably sorts an explicit set", () => {
+    assert.deepEqual(
+      resolveProviderModelSet({
+        actorType: "user",
+        providerModels: [
+          { provider: "openai", model: "gpt-4o-mini" },
+          { provider: "mock", model: "mock-quality" },
+          { provider: "openai", model: "gpt-4o-mini" }
+        ],
+        realProvidersEnabled: true
+      }).map(({ provider, model }) => ({ provider, model })),
+      [
+        { provider: "mock", model: "mock-quality" },
+        { provider: "openai", model: "gpt-4o-mini" }
+      ]
+    );
+  });
+
+  it("enforces the maximum final set size", () => {
+    assert.throws(
+      () =>
+        resolveProviderModelSet({
+          actorType: "user",
+          providerModels: Array.from({ length: 5 }, () => ({
+            provider: "mock" as const,
+            model: "mock-fast"
+          }))
+        }),
+      InvalidProviderModelSelectionError
     );
   });
 });

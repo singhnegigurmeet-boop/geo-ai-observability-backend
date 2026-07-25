@@ -38,21 +38,10 @@ export class NotificationService {
       if (notification.status === "sent") {
         return { outcome: "noop" as const, notificationId: notification.notification_id };
       }
-      if (
-        notification.analysis_run_id !== payload.analysisRunId ||
-        notification.failure_record_id !== payload.failureRecordId ||
-        notification.is_admin_notification !== payload.isAdmin
-      ) {
-        throw new NotificationDeliveryError(
-          "NOTIFICATION_MESSAGE_MISMATCH",
-          "Notification message does not match authoritative state",
-          true
-        );
-      }
       if (notification.channel !== "internal") {
         throw new NotificationDeliveryError(
           "EXTERNAL_NOTIFICATION_UNSUPPORTED",
-          "Phase 12 delivers internal notifications only",
+          "GEO V6 delivers internal notifications only",
           true
         );
       }

@@ -23,7 +23,7 @@ describe("analysis_run_item.created message validation", () => {
     });
   }
 
-  it("rejects inconsistent actor ownership", () => {
+  it("rejects duplicated business state", () => {
     const message = validEnvelope();
     assert.throws(
       () =>
@@ -31,12 +31,10 @@ describe("analysis_run_item.created message validation", () => {
           ...message,
           payload: {
             ...message.payload,
-            actorType: "user",
-            userId: null,
-            workspaceId: null
+            actorType: "user"
           }
         }),
-      /ownership fields/
+      InvalidAnalysisRunItemMessageError
     );
   });
 
@@ -69,15 +67,6 @@ export function validEnvelope() {
     aggregateId: "4",
     occurredAt: "2026-07-25T00:00:00.000Z",
     attempt: 1,
-    payload: {
-      analysisRunItemId: "4",
-      analysisRunId: "1",
-      entityPathId: "2",
-      startingEntityPathId: "3",
-      actorType: "anonymous" as const,
-      userId: null,
-      workspaceId: null,
-      anonymousSessionId: "5"
-    }
+    payload: { analysisRunItemId: "4" }
   };
 }

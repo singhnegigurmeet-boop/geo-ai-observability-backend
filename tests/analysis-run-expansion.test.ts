@@ -6,7 +6,7 @@ import {
 } from "../src/analysis/analysis-run-worker.messages.js";
 
 describe("analysis_run.created message validation", () => {
-  it("accepts a valid anonymous message", () => {
+  it("accepts the aggregate-ID-only contract", () => {
     const message = validMessage();
     assert.deepEqual(parseAnalysisRunCreatedMessage(message), message);
   });
@@ -20,18 +20,7 @@ describe("analysis_run.created message validation", () => {
     );
   });
 
-  it("accepts the minimized aggregate-ID-only payload", () => {
-    const message = validMessage();
-    assert.deepEqual(
-      parseAnalysisRunCreatedMessage({
-        ...message,
-        payload: { analysisRunId: "1" }
-      }).payload,
-      { analysisRunId: "1" }
-    );
-  });
-
-  it("rejects inconsistent actor ownership", () => {
+  it("rejects duplicated business state", () => {
     const message = validMessage();
     assert.throws(
       () =>
@@ -39,12 +28,10 @@ describe("analysis_run.created message validation", () => {
           ...message,
           payload: {
             ...message.payload,
-            actorType: "user",
-            userId: null,
-            workspaceId: null
+            actorType: "user"
           }
         }),
-      /ownership fields/
+      InvalidAnalysisRunMessageError
     );
   });
 
@@ -73,13 +60,6 @@ function validMessage() {
     aggregateId: "1",
     occurredAt: "2026-07-25T00:00:00.000Z",
     attempt: 1,
-    payload: {
-      analysisRunId: "1",
-      startingEntityPathId: "2",
-      actorType: "anonymous" as const,
-      userId: null,
-      workspaceId: null,
-      anonymousSessionId: "3"
-    }
+    payload: { analysisRunId: "1" }
   };
 }

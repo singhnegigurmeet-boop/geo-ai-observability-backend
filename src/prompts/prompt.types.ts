@@ -1,8 +1,7 @@
 import type { QueueName } from "../messaging/queue-names.js";
 import type {
   EntityPathType,
-  PromptType,
-  ProviderName
+  PromptType
 } from "../types/database.types.js";
 
 export type PromptPlanEntry = {
@@ -17,8 +16,6 @@ export type PromptPlanPolicyContext = {
   workspaceId: string | null;
   anonymousSessionId: string | null;
   pathLevel: EntityPathType;
-  requestedProvider: ProviderName | null;
-  requestedModel: string | null;
 };
 
 export type PromptPlanningResult =

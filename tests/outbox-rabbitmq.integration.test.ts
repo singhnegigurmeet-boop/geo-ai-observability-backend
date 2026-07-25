@@ -20,12 +20,12 @@ import { OutboxRepository } from "../src/outbox/outbox.repository.js";
 import type { OutboxEventRow } from "../src/types/database.types.js";
 
 const runIntegrationTests =
-  process.env.RUN_PHASE2_INTEGRATION_TESTS === "true";
+  process.env.RUN_OUTBOX_RABBITMQ_INTEGRATION_TESTS === "true";
 const mainExchange = "geo.v6.test.main";
 const deadLetterExchange = "geo.v6.test.dlx";
 
 describe(
-  "Phase 2 PostgreSQL to RabbitMQ integration",
+    "PostgreSQL outbox and RabbitMQ integration",
   { skip: !runIntegrationTests },
   () => {
     let pool: pg.Pool;
@@ -46,7 +46,7 @@ describe(
       const databaseName = database.rows[0]?.database_name;
       if (!databaseName?.endsWith("_test")) {
         throw new Error(
-          `Refusing to reset Phase 2 database without _test suffix: ${
+          `Refusing to reset Outbox database without _test suffix: ${
             databaseName ?? "unknown"
           }`
         );

@@ -17,7 +17,7 @@ import { UserSessionRepository } from "../src/identity/user-session.repository.j
 import { UserSessionService } from "../src/identity/user-session.service.js";
 
 const runIntegrationTests =
-  process.env.RUN_PHASE4_INTEGRATION_TESTS === "true";
+  process.env.RUN_ANALYSIS_API_INTEGRATION_TESTS === "true";
 const pepper = "phase-4-integration-pepper-with-at-least-32-characters";
 
 type Credentials = {
@@ -40,7 +40,7 @@ type HierarchyFixture = {
 };
 
 describe(
-  "Phase 4 transactional analysis submission",
+    "Transactional analysis API integration",
   { skip: !runIntegrationTests },
   () => {
     let pool: pg.Pool;
@@ -63,7 +63,7 @@ describe(
       const databaseName = database.rows[0]?.database_name;
       if (!databaseName?.endsWith("_test")) {
         throw new Error(
-          `Refusing to reset Phase 4 database without _test suffix: ${
+          `Refusing to reset Analysis database without _test suffix: ${
             databaseName ?? "unknown"
           }`
         );
@@ -107,7 +107,7 @@ describe(
       });
       const address = server.address();
       if (!address || typeof address === "string") {
-        throw new Error("Expected Phase 4 server to listen on a TCP port");
+        throw new Error("Expected Analysis server to listen on a TCP port");
       }
       baseUrl = `http://127.0.0.1:${address.port}`;
     });
@@ -324,8 +324,8 @@ describe(
 
     it("creates logged-in and claimed runs with exact ownership columns", async () => {
       const user = await createUserOwner(
-        "phase4-owner@example.com",
-        "Phase 4 Workspace"
+        "analysis-owner@example.com",
+        "Analysis Workspace"
       );
       const loggedIn = await postAnalysis(
         { domain: "logged-in.example" },
@@ -362,13 +362,8 @@ describe(
       assert.equal(claimedRow.user_id, user.userId);
       assert.equal(claimedRow.workspace_id, user.workspaceId);
       assert.deepEqual(
-        await runPreference(claimed.body.analysisRunId),
-        {
-          requested_provider: "mock",
-          requested_model: "mock-standard",
-          payload_provider: "mock",
-          payload_model: "mock-standard"
-        }
+        await runProviderModels(claimed.body.analysisRunId),
+        [{ provider: "mock", model: "mock-standard" }]
       );
     });
 
@@ -382,11 +377,11 @@ describe(
         }
       );
       const claimant = await createUserOwner(
-        "phase4-claimant@example.com",
+        "analysis-claimant@example.com",
         "Claimant Workspace"
       );
       const other = await createUserOwner(
-        "phase4-other-claimant@example.com",
+        "analysis-other-claimant@example.com",
         "Other Workspace"
       );
       await anonymousSessions.claim({
@@ -423,12 +418,12 @@ describe(
       );
     });
 
-    it("allows bounded user model selection, rejects anonymous selection, and includes it in request identity", async () => {
+    it("uses only bounded provider sets and includes them in request identity", async () => {
       const anonymous = await createAnonymousOwner();
       const denied = await postAnalysis(
         {
           domain: "anonymous-model.example",
-          preferredModel: "mock-quality"
+          providerModels: [{ provider: "mock", model: "mock-quality" }]
         },
         "anonymous-model",
         anonymous
@@ -437,8 +432,8 @@ describe(
       assert.equal(denied.body.details.category, "VALIDATION_ERROR");
 
       const user = await createUserOwner(
-        "phase4-model@example.com",
-        "Phase 4 Model Workspace"
+        "analysis-model@example.com",
+        "Analysis Model Workspace"
       );
       const defaulted = await postAnalysis(
         { domain: "user-default-model.example" },
@@ -446,39 +441,27 @@ describe(
         user.credentials
       );
       assert.deepEqual(
-        await runPreference(defaulted.body.analysisRunId),
-        {
-          requested_provider: "mock",
-          requested_model: "mock-standard",
-          payload_provider: "mock",
-          payload_model: "mock-standard"
-        }
+        await runProviderModels(defaulted.body.analysisRunId),
+        [{ provider: "mock", model: "mock-standard" }]
       );
 
       const quality = await postAnalysis(
         {
           domain: "user-model.example",
-          preferredProvider: "mock",
-          preferredModel: "mock-quality"
+          providerModels: [{ provider: "mock", model: "mock-quality" }]
         },
         "user-selected-model",
         user.credentials
       );
       assert.equal(quality.response.status, 202);
       assert.deepEqual(
-        await runPreference(quality.body.analysisRunId),
-        {
-          requested_provider: "mock",
-          requested_model: "mock-quality",
-          payload_provider: "mock",
-          payload_model: "mock-quality"
-        }
+        await runProviderModels(quality.body.analysisRunId),
+        [{ provider: "mock", model: "mock-quality" }]
       );
       const replay = await postAnalysis(
         {
           domain: "USER-MODEL.EXAMPLE.",
-          preferredProvider: "mock",
-          preferredModel: "mock-quality"
+          providerModels: [{ provider: "mock", model: "mock-quality" }]
         },
         "user-selected-model",
         user.credentials
@@ -489,8 +472,7 @@ describe(
       const changedModel = await postAnalysis(
         {
           domain: "user-model.example",
-          preferredProvider: "mock",
-          preferredModel: "mock-fast"
+          providerModels: [{ provider: "mock", model: "mock-fast" }]
         },
         "user-selected-model",
         user.credentials
@@ -501,8 +483,7 @@ describe(
       const independentModel = await postAnalysis(
         {
           domain: "user-model.example",
-          preferredProvider: "mock",
-          preferredModel: "mock-fast"
+          providerModels: [{ provider: "mock", model: "mock-fast" }]
         },
         "user-fast-model",
         user.credentials
@@ -516,11 +497,11 @@ describe(
 
     it("rejects a user token for a workspace without membership", async () => {
       const first = await createUserOwner(
-        "phase4-first@example.com",
+        "analysis-first@example.com",
         "First Workspace"
       );
       const second = await createUserOwner(
-        "phase4-second@example.com",
+        "analysis-second@example.com",
         "Second Workspace"
       );
       const result = await postAnalysis(
@@ -782,20 +763,20 @@ describe(
     it("rolls back the analysis run when outbox insertion fails", async () => {
       const anonymous = await createAnonymousOwner();
       await pool.query(`
-        CREATE FUNCTION phase4_reject_outbox()
+        CREATE FUNCTION analysis_reject_outbox()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
         BEGIN
-          RAISE EXCEPTION 'phase4 forced outbox failure';
+          RAISE EXCEPTION 'analysis forced outbox failure';
         END;
         $$
       `);
       await pool.query(`
-        CREATE TRIGGER phase4_reject_outbox_trigger
+        CREATE TRIGGER analysis_reject_outbox_trigger
         BEFORE INSERT ON outbox_events
         FOR EACH ROW
-        EXECUTE FUNCTION phase4_reject_outbox()
+        EXECUTE FUNCTION analysis_reject_outbox()
       `);
 
       try {
@@ -807,9 +788,9 @@ describe(
         assert.equal(failed.response.status, 500);
       } finally {
         await pool.query(
-          "DROP TRIGGER phase4_reject_outbox_trigger ON outbox_events"
+          "DROP TRIGGER analysis_reject_outbox_trigger ON outbox_events"
         );
-        await pool.query("DROP FUNCTION phase4_reject_outbox()");
+        await pool.query("DROP FUNCTION analysis_reject_outbox()");
       }
 
       const run = await pool.query<{ count: string }>(
@@ -985,25 +966,20 @@ describe(
       };
     }
 
-    async function runPreference(analysisRunId: string) {
+    async function runProviderModels(analysisRunId: string) {
       const result = await pool.query<{
-        requested_provider: string | null;
-        requested_model: string | null;
-        payload_provider: string | null;
-        payload_model: string | null;
+        provider: string;
+        model: string;
       }>(
         `
-          SELECT
-            requested_provider,
-            requested_model,
-            request_payload ->> 'requestedProvider' AS payload_provider,
-            request_payload ->> 'requestedModel' AS payload_model
-          FROM analysis_runs
+          SELECT provider, model
+          FROM analysis_run_provider_models
           WHERE analysis_run_id = $1
+          ORDER BY ordinal
         `,
         [analysisRunId]
       );
-      return result.rows[0]!;
+      return result.rows;
     }
   }
 );
@@ -1019,32 +995,32 @@ async function seedHierarchy(pool: pg.Pool): Promise<HierarchyFixture> {
   const categories = await pool.query<{ category_id: string }>(
     `
       INSERT INTO categories (category_name, normalized_name)
-      VALUES ('Category A', 'phase4-category-a'),
-             ('Category B', 'phase4-category-b')
+      VALUES ('Category A', 'analysis-category-a'),
+             ('Category B', 'analysis-category-b')
       RETURNING category_id
     `
   );
   const brands = await pool.query<{ brand_id: string }>(
     `
       INSERT INTO brands (brand_name, normalized_name)
-      VALUES ('Brand A', 'phase4-brand-a'),
-             ('Brand B', 'phase4-brand-b')
+      VALUES ('Brand A', 'analysis-brand-a'),
+             ('Brand B', 'analysis-brand-b')
       RETURNING brand_id
     `
   );
   const products = await pool.query<{ product_id: string }>(
     `
       INSERT INTO products (product_name, normalized_name)
-      VALUES ('Product A', 'phase4-product-a'),
-             ('Product B', 'phase4-product-b')
+      VALUES ('Product A', 'analysis-product-a'),
+             ('Product B', 'analysis-product-b')
       RETURNING product_id
     `
   );
   const contexts = await pool.query<{ use_context_id: string }>(
     `
       INSERT INTO use_contexts (use_context_name, normalized_name)
-      VALUES ('Use Context A', 'phase4-use-context-a'),
-             ('Use Context B', 'phase4-use-context-b')
+      VALUES ('Use Context A', 'analysis-use-context-a'),
+             ('Use Context B', 'analysis-use-context-b')
       RETURNING use_context_id
     `
   );
@@ -1069,8 +1045,8 @@ async function seedHierarchy(pool: pg.Pool): Promise<HierarchyFixture> {
         sort_order,
         source
       )
-      VALUES ($1, $2, 1, 'phase4-test'),
-             ($1, $3, 2, 'phase4-test')
+      VALUES ($1, $2, 1, 'analysis-test'),
+             ($1, $3, 2, 'analysis-test')
       RETURNING domain_category_id
     `,
     [domainId, categoryA, categoryB]
@@ -1085,8 +1061,8 @@ async function seedHierarchy(pool: pg.Pool): Promise<HierarchyFixture> {
         sort_order,
         source
       )
-      VALUES ($1, $2, 1, 'phase4-test'),
-             ($3, $4, 2, 'phase4-test')
+      VALUES ($1, $2, 1, 'analysis-test'),
+             ($3, $4, 2, 'analysis-test')
       RETURNING category_brand_id
     `,
     [
@@ -1106,8 +1082,8 @@ async function seedHierarchy(pool: pg.Pool): Promise<HierarchyFixture> {
         sort_order,
         source
       )
-      VALUES ($1, $2, 1, 'phase4-test'),
-             ($3, $4, 2, 'phase4-test')
+      VALUES ($1, $2, 1, 'analysis-test'),
+             ($3, $4, 2, 'analysis-test')
       RETURNING brand_product_id
     `,
     [
@@ -1125,8 +1101,8 @@ async function seedHierarchy(pool: pg.Pool): Promise<HierarchyFixture> {
         sort_order,
         source
       )
-      VALUES ($1, $2, 1, 'phase4-test'),
-             ($3, $4, 2, 'phase4-test')
+      VALUES ($1, $2, 1, 'analysis-test'),
+             ($3, $4, 2, 'analysis-test')
     `,
     [
       brandProducts.rows[0]!.brand_product_id,

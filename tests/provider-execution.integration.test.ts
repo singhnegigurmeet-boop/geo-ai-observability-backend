@@ -19,9 +19,9 @@ import {
   truncatePublicTables
 } from "./support/integration-environment.js";
 
-const enabled = process.env.RUN_PHASE11_INTEGRATION_TESTS === "true";
+const enabled = process.env.RUN_PROVIDER_EXECUTION_INTEGRATION_TESTS === "true";
 
-describe("Phase 11 real provider execution", { skip: !enabled, concurrency: 1 }, () => {
+describe("Real provider execution integration", { skip: !enabled, concurrency: 1 }, () => {
   let pool: pg.Pool;
 
   before(async () => {
@@ -274,13 +274,13 @@ async function seedRun(
   const userId = (
     await pool.query<{ user_id: string }>(
       "INSERT INTO users (email) VALUES ($1) RETURNING user_id",
-      [`phase11-${unique}@example.com`]
+      [`provider_execution-${unique}@example.com`]
     )
   ).rows[0]!.user_id;
   const workspaceId = (
     await pool.query<{ workspace_id: string }>(
       "INSERT INTO workspaces (workspace_name, created_by_user_id) VALUES ($1, $2) RETURNING workspace_id",
-      [`Phase 11 ${unique}`, userId]
+      [`Provider execution ${unique}`, userId]
     )
   ).rows[0]!.workspace_id;
   await pool.query(
@@ -290,7 +290,7 @@ async function seedRun(
   const domainId = (
     await pool.query<{ domain_id: string }>(
       "INSERT INTO domains (normalized_domain) VALUES ($1) RETURNING domain_id",
-      [`phase11-${unique}.example`]
+      [`provider-execution-${unique}.example`]
     )
   ).rows[0]!.domain_id;
   const pathId = (
@@ -304,14 +304,20 @@ async function seedRun(
       `
         INSERT INTO analysis_runs (
           idempotency_key, user_id, workspace_id, starting_entity_path_id,
-          requested_provider, requested_model, status, request_payload, started_at
+          status, request_payload, started_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, 'processing', '{}'::jsonb, now())
+        VALUES ($1, $2, $3, $4, 'processing', '{}'::jsonb, now())
         RETURNING analysis_run_id
       `,
-      [`phase11-run:${unique}`, userId, workspaceId, pathId, provider, model]
+      [`provider_execution-run:${unique}`, userId, workspaceId, pathId]
     )
   ).rows[0]!.analysis_run_id;
+  await pool.query(
+    `INSERT INTO analysis_run_provider_models
+       (analysis_run_id, provider, model, ordinal)
+     VALUES ($1, $2, $3, 0)`,
+    [analysisRunId, provider, model]
+  );
   const itemId = (
     await pool.query<{ analysis_run_item_id: string }>(
       `
@@ -322,7 +328,7 @@ async function seedRun(
         VALUES ($1, $2, $3, 0, 'processing', now())
         RETURNING analysis_run_item_id
       `,
-      [`phase11-item:${unique}`, analysisRunId, pathId]
+      [`provider_execution-item:${unique}`, analysisRunId, pathId]
     )
   ).rows[0]!.analysis_run_item_id;
   const llmRunId = (
@@ -334,7 +340,7 @@ async function seedRun(
         VALUES ($1, $2, 'processing', now())
         RETURNING llm_run_id
       `,
-      [`phase11-llm:${unique}`, itemId]
+      [`provider_execution-llm:${unique}`, itemId]
     )
   ).rows[0]!.llm_run_id;
   const jobs = [];
@@ -349,7 +355,7 @@ async function seedRun(
           VALUES ($1, $2, $3, 'v1', 'processing', $4, now())
           RETURNING prompt_job_id
         `,
-        [`phase11-prompt:${unique}:${index}`, llmRunId, promptType, `Rendered ${promptType} prompt`]
+        [`provider_execution-prompt:${unique}:${index}`, llmRunId, promptType, `Rendered ${promptType} prompt`]
       )
     ).rows[0]!.prompt_job_id;
     const providerJobId = (
@@ -361,13 +367,13 @@ async function seedRun(
           VALUES ($1, $2, $3, $4, 'queued')
           RETURNING provider_job_id
         `,
-        [`phase11-provider:${unique}:${index}`, promptJobId, provider, model]
+        [`provider_execution-provider:${unique}:${index}`, promptJobId, provider, model]
       )
     ).rows[0]!.provider_job_id;
     jobs.push({
       providerJobId,
       promptJobId,
-      payload: { providerJobId, promptJobId, provider, model } as ProviderJobCreatedPayload
+      payload: { providerJobId } as ProviderJobCreatedPayload
     });
   }
   return { analysisRunId, jobs };

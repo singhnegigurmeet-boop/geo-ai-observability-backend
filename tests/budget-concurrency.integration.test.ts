@@ -27,11 +27,11 @@ import type {
 } from "../src/scoring/provider-score-worker.messages.js";
 import type { PromptType } from "../src/types/database.types.js";
 
-const enabled = process.env.RUN_PHASE10_INTEGRATION_TESTS === "true";
+const enabled = process.env.RUN_BUDGET_CONCURRENCY_INTEGRATION_TESTS === "true";
 const lightPrompts: PromptType[] = ["visibility", "competitor", "ranking"];
 
 describe(
-  "Phase 10 provider budget enforcement",
+    "Provider budget and concurrency integration",
   { skip: !enabled, concurrency: 1 },
   () => {
     let pool: pg.Pool;
@@ -539,7 +539,7 @@ describe(
       await runtime.start();
       try {
         await sendEnvelope(channel, "mock_queue", {
-          messageId: "phase10-budget-pause",
+          messageId: "budget-budget-pause",
           eventType: "provider_job.created",
           aggregateType: "provider_job",
           aggregateId: job.providerJobId,
@@ -610,7 +610,7 @@ describe(
       }
     });
 
-    it("preserves Phase 9 scoring and reporting when budgets allow", async () => {
+    it("preserves scoring and reporting when budgets allow", async () => {
       const fixture = await seedRun(pool, "anonymous", lightPrompts);
       await createPolicy(pool, {
         scope: "platform_default",
@@ -624,10 +624,7 @@ describe(
         assert.equal(outcome.outcome, "completed");
         if (outcome.outcome !== "completed") continue;
         resultPayloads.push({
-          providerResultId: outcome.providerResultId,
-          providerJobId: job.providerJobId,
-          promptJobId: job.promptJobId,
-          analysisRunId: fixture.analysisRunId
+          providerResultId: outcome.providerResultId
         });
       }
       for (const result of resultPayloads) {
@@ -662,7 +659,7 @@ async function seedRun(
     userId = (
       await pool.query<{ user_id: string }>(
         "INSERT INTO users (email) VALUES ($1) RETURNING user_id",
-        [`phase10-${unique}@example.com`]
+        [`budget-${unique}@example.com`]
       )
     ).rows[0]!.user_id;
     workspaceId = (
@@ -672,7 +669,7 @@ async function seedRun(
           VALUES ($1, $2)
           RETURNING workspace_id
         `,
-        [`Phase 10 ${unique}`, userId]
+        [`Budget ${unique}`, userId]
       )
     ).rows[0]!.workspace_id;
     await pool.query(
@@ -697,14 +694,14 @@ async function seedRun(
           )
           RETURNING anonymous_session_id
         `,
-        [`phase10-token-${unique}`, userId, workspaceId]
+        [`budget-token-${unique}`, userId, workspaceId]
       )
     ).rows[0]!.anonymous_session_id;
   }
   const domainId = (
     await pool.query<{ domain_id: string }>(
       "INSERT INTO domains (normalized_domain) VALUES ($1) RETURNING domain_id",
-      [`phase10-${unique}.example`]
+      [`budget-${unique}.example`]
     )
   ).rows[0]!.domain_id;
   const pathId = (
@@ -722,25 +719,28 @@ async function seedRun(
       `
         INSERT INTO analysis_runs (
           idempotency_key, anonymous_session_id, user_id, workspace_id,
-          starting_entity_path_id, requested_provider, requested_model,
-          status, request_payload, started_at
+          starting_entity_path_id, status, request_payload, started_at
         )
         VALUES (
-          $1, $2, $3, $4, $5, $6, $7, 'processing', '{}'::jsonb, now()
+          $1, $2, $3, $4, $5, 'processing', '{}'::jsonb, now()
         )
         RETURNING analysis_run_id
       `,
       [
-        `phase10-run:${unique}`,
+        `budget-run:${unique}`,
         anonymousSessionId,
         userId,
         workspaceId,
-        pathId,
-        actor === "anonymous" ? null : "mock",
-        actor === "anonymous" ? null : "mock-standard"
+        pathId
       ]
     )
   ).rows[0]!.analysis_run_id;
+  await pool.query(
+    `INSERT INTO analysis_run_provider_models
+       (analysis_run_id, provider, model, ordinal)
+     VALUES ($1, 'mock', $2, 0)`,
+    [analysisRunId, actor === "anonymous" ? "mock-fast" : "mock-standard"]
+  );
   const itemId = (
     await pool.query<{ analysis_run_item_id: string }>(
       `
@@ -751,7 +751,7 @@ async function seedRun(
         VALUES ($1, $2, $3, 0, 'processing', now())
         RETURNING analysis_run_item_id
       `,
-      [`phase10-item:${unique}`, analysisRunId, pathId]
+      [`budget-item:${unique}`, analysisRunId, pathId]
     )
   ).rows[0]!.analysis_run_item_id;
   const llmRunId = (
@@ -763,7 +763,7 @@ async function seedRun(
         VALUES ($1, $2, 'processing', now())
         RETURNING llm_run_id
       `,
-      [`phase10-llm:${unique}`, itemId]
+      [`budget-llm:${unique}`, itemId]
     )
   ).rows[0]!.llm_run_id;
 
@@ -791,7 +791,7 @@ async function seedRun(
           RETURNING prompt_job_id
         `,
         [
-          `phase10-prompt:${unique}:${promptType}:${index}`,
+          `budget-prompt:${unique}:${promptType}:${index}`,
           llmRunId,
           promptType,
           promptVersion,
@@ -810,7 +810,7 @@ async function seedRun(
           RETURNING provider_job_id
         `,
         [
-          `phase10-provider:${unique}:${promptType}:${index}`,
+          `budget-provider:${unique}:${promptType}:${index}`,
           promptJobId,
           model
         ]
@@ -824,10 +824,7 @@ async function seedRun(
       promptVersion,
       model,
       payload: {
-        providerJobId,
-        promptJobId,
-        provider: "mock",
-        model: model as "mock-fast" | "mock-standard"
+        providerJobId
       }
     });
   }
@@ -1021,5 +1018,5 @@ async function pollUntil(predicate: () => Promise<boolean>) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error("Timed out waiting for Phase 10 worker outcome");
+  throw new Error("Timed out waiting for Budget worker outcome");
 }

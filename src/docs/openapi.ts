@@ -256,33 +256,12 @@ export const openApiDocument = {
           brandId: { $ref: "#/components/schemas/DatabaseId" },
           productId: { $ref: "#/components/schemas/DatabaseId" },
           useContextId: { $ref: "#/components/schemas/DatabaseId" },
-          preferredProvider: {
-            type: "string",
-            enum: ["mock", "openai", "gemini", "claude"],
-            deprecated: true,
-            description:
-              "Deprecated single-pair compatibility field for logged-in requests. Use providerModels. Must be paired consistently with preferredModel and cannot be mixed with providerModels. Real providers require ENABLE_REAL_PROVIDERS=true."
-          },
-          preferredModel: {
-            type: "string",
-            enum: [
-              "mock-fast",
-              "mock-standard",
-              "mock-quality",
-              "gpt-4o-mini",
-              "gemini-1.5-flash",
-              "claude-3-5-sonnet"
-            ],
-            deprecated: true,
-            description:
-              "Deprecated single-pair compatibility field for logged-in requests. Use providerModels. Defaults to mock-standard when no provider selection is supplied."
-          },
           providerModels: {
             type: "array",
             minItems: 1,
             maxItems: 4,
             description:
-              "Logged-in requests only. Normalized, deduplicated, and sorted; cannot be combined with legacy preferred fields.",
+              "Optional for logged-in requests. The set is validated, deduplicated, stably sorted, included in idempotency identity, and frozen on the run. Logged-in requests default to mock/mock-standard; anonymous requests always use mock/mock-fast and cannot supply this field.",
             items: {
               type: "object",
               additionalProperties: false,

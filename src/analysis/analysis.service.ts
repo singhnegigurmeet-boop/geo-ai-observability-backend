@@ -63,10 +63,6 @@ export class AnalysisService {
         brandId: request.brandId ?? null,
         productId: request.productId ?? null,
         useContextId: request.useContextId ?? null,
-        requestedProvider:
-          owner.actorType === "anonymous" ? null : providerModels[0]!.provider,
-        requestedModel:
-          owner.actorType === "anonymous" ? null : providerModels[0]!.model,
         providerModels: providerModels.map(({ provider, model }) => ({
           provider,
           model
@@ -94,8 +90,6 @@ export class AnalysisService {
         idempotencyKey,
         ...ownership,
         startingEntityPathId: resolved.path.entity_path_id,
-        requestedProvider: canonicalRequest.requestedProvider,
-        requestedModel: canonicalRequest.requestedModel,
         requestPayload: canonicalRequest
       });
       if (!created) {
@@ -360,8 +354,6 @@ function sameCanonicalRequest(
     stored.brandId === expected.brandId &&
     stored.productId === expected.productId &&
     stored.useContextId === expected.useContextId &&
-    (stored.requestedProvider ?? null) === expected.requestedProvider &&
-    (stored.requestedModel ?? null) === expected.requestedModel &&
     sameProviderModelSet(storedProviderModels, expected.providerModels)
   );
 }
@@ -374,9 +366,7 @@ function resolveModelPreferences(
   try {
     return providerModelPairs(resolveProviderModelSet({
       actorType: owner.actorType,
-      requestedProvider: request.preferredProvider ?? null,
-      requestedModel: request.preferredModel ?? null,
-      requestedProviderModels: request.providerModels ?? null,
+      providerModels: request.providerModels ?? null,
       realProvidersEnabled
     }));
   } catch (error) {
