@@ -13,6 +13,7 @@ import type { PromptJobRow } from "../src/types/database.types.js";
 const runDatabaseTests = process.env.RUN_MIGRATION_TESTS === "true";
 const expectedTables = [
   "analysis_run_items",
+  "analysis_run_provider_models",
   "analysis_runs",
   "anonymous_sessions",
   "brands",
@@ -409,7 +410,7 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
     assert.equal(result.skipped.length, migrationFilenames.length);
   });
 
-  it("creates exactly the 30 current production tables and no V5 tables", async () => {
+  it("creates exactly the 31 current production tables and no V5 tables", async () => {
     const result = await pool.query<{ table_name: string }>(`
       SELECT table_name
       FROM information_schema.tables

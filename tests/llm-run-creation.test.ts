@@ -11,14 +11,10 @@ describe("analysis_run_item.created message validation", () => {
     assert.deepEqual(parseAnalysisRunItemCreatedMessage(message), message);
   });
 
-  for (const required of [
-    "analysisRunItemId",
-    "analysisRunId",
-    "entityPathId"
-  ] as const) {
+  for (const required of ["analysisRunItemId"] as const) {
     it(`rejects missing ${required}`, () => {
       const message = validEnvelope();
-      const payload = { ...message.payload };
+      const payload: Partial<typeof message.payload> = { ...message.payload };
       delete payload[required];
       assert.throws(
         () => parseAnalysisRunItemCreatedMessage({ ...message, payload }),

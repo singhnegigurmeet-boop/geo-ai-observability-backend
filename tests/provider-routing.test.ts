@@ -1,47 +1,41 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ProviderWorker } from "../src/providers/provider-worker.js";
-import { ProviderExecutionError } from "../src/providers/provider-execution.error.js";
 
 describe("real provider worker routing", () => {
-  it("dispatches each exact provider/model envelope", async () => {
-    for (const [provider, model] of [
-      ["openai", "gpt-4o-mini"],
-      ["gemini", "gemini-1.5-flash"],
-      ["claude", "claude-3-5-sonnet"]
-    ] as const) {
+  it("dispatches an ID-only envelope with queue provider authority", async () => {
+    for (const provider of ["openai", "gemini", "claude"] as const) {
       let received: unknown;
+      let expected: unknown;
       const worker = new ProviderWorker(provider, {
-        async execute(payload) {
+        async execute(payload, expectedProvider) {
           received = payload;
+          expected = expectedProvider;
           return { outcome: "completed", providerResultId: "7" };
         }
       });
-      const message = envelope(provider, model);
+      const message = envelope();
       assert.equal((await worker.process(message)).outcome, "completed");
       assert.deepEqual(received, message.payload);
+      assert.equal(expected, provider);
     }
   });
 
-  it("permanently rejects cross-queue deliveries", async () => {
+  it("rejects duplicated provider claims in new messages", async () => {
     await assert.rejects(
       new ProviderWorker("openai", {
         async execute() {
-          throw new Error("must not execute");
+          return { outcome: "noop", providerResultId: null };
         }
-      }).process(envelope("gemini", "gemini-1.5-flash")),
-      (error: unknown) =>
-        error instanceof ProviderExecutionError &&
-        error.code === "PROVIDER_QUEUE_MISMATCH" &&
-        error.permanent
+      }).process({
+        ...envelope(),
+        payload: { providerJobId: "1", provider: "gemini", unexpected: true }
+      })
     );
   });
 });
 
-function envelope(
-  provider: "openai" | "gemini" | "claude",
-  model: "gpt-4o-mini" | "gemini-1.5-flash" | "claude-3-5-sonnet"
-) {
+function envelope() {
   return {
     messageId: "provider_job.created:1",
     eventType: "provider_job.created",
@@ -50,10 +44,7 @@ function envelope(
     occurredAt: new Date().toISOString(),
     attempt: 1,
     payload: {
-      providerJobId: "1",
-      promptJobId: "2",
-      provider,
-      model
+      providerJobId: "1"
     }
   };
 }

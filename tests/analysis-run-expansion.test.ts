@@ -20,12 +20,14 @@ describe("analysis_run.created message validation", () => {
     );
   });
 
-  it("rejects missing startingEntityPathId", () => {
+  it("accepts the minimized aggregate-ID-only payload", () => {
     const message = validMessage();
-    const { startingEntityPathId: _, ...payload } = message.payload;
-    assert.throws(
-      () => parseAnalysisRunCreatedMessage({ ...message, payload }),
-      InvalidAnalysisRunMessageError
+    assert.deepEqual(
+      parseAnalysisRunCreatedMessage({
+        ...message,
+        payload: { analysisRunId: "1" }
+      }).payload,
+      { analysisRunId: "1" }
     );
   });
 

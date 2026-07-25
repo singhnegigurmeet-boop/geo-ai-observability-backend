@@ -188,6 +188,72 @@ describe("Phase 12 scheduler, notifications, and readiness", {
     });
   });
 
+  it("revalidates scheduler authorization and hierarchy before creating a run", async () => {
+    for (const invalidation of ["user", "hierarchy"] as const) {
+      await truncatePublicTables(pool);
+      const fixture = await seedOwnedHierarchy(pool);
+      const dueAt = new Date("2026-07-25T00:00:00.000Z");
+      await pool.query(
+        `INSERT INTO scheduler_jobs (
+           idempotency_key, workspace_id, created_by_user_id,
+           starting_entity_path_id, job_name, schedule_expression,
+           request_payload, next_run_at
+         )
+         VALUES ($1, $2, $3, $4, 'revalidation', 'interval:3600',
+                 '{"requestedProvider":"mock","requestedModel":"mock-standard"}',
+                 $5)`,
+        [
+          `phase12-revalidate-${invalidation}`,
+          fixture.workspaceId,
+          fixture.userId,
+          fixture.pathId,
+          dueAt
+        ]
+      );
+      if (invalidation === "user") {
+        await pool.query(
+          "UPDATE users SET status = 'disabled' WHERE user_id = $1",
+          [fixture.userId]
+        );
+      } else {
+        await pool.query(
+          `UPDATE domains SET is_active = false
+           WHERE domain_id = (
+             SELECT domain_id FROM entity_paths WHERE entity_path_id = $1
+           )`,
+          [fixture.pathId]
+        );
+      }
+
+      assert.equal((await new SchedulerService(pool).tick(dueAt)).outcome, "failed");
+      const state = await pool.query<{
+        status: string;
+        runs: string;
+        events: string;
+        error_code: string;
+      }>(
+        `SELECT schedule.status,
+                (SELECT count(*)::text FROM analysis_runs) AS runs,
+                (SELECT count(*)::text FROM outbox_events
+                 WHERE event_type = 'analysis_run.created') AS events,
+                failure.error_code
+         FROM scheduler_jobs AS schedule
+         JOIN failure_records AS failure
+           ON failure.aggregate_type = 'scheduler_job'
+          AND failure.aggregate_id = schedule.scheduler_job_id::text`
+      );
+      assert.equal(state.rows[0]?.status, "paused");
+      assert.equal(state.rows[0]?.runs, "0");
+      assert.equal(state.rows[0]?.events, "0");
+      assert.equal(
+        state.rows[0]?.error_code,
+        invalidation === "user"
+          ? "SCHEDULER_AUTHORIZATION_NO_LONGER_VALID"
+          : "HIERARCHY_NO_LONGER_VALID"
+      );
+    }
+  });
+
   it("creates owner-scoped report/budget notifications once and delivers internally once", async () => {
     const fixture = await seedOwnedHierarchy(pool);
     const run = await seedRun(pool, fixture, "processing");
@@ -374,4 +440,15 @@ async function seedRun(
     [fixture.userId, fixture.workspaceId, fixture.pathId, status]
   );
   return result.rows[0]!.analysis_run_id;
+}
+
+async function truncatePublicTables(pool: pg.Pool) {
+  const tables = await pool.query<{ tablename: string }>(
+    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+  );
+  await pool.query(
+    `TRUNCATE ${tables.rows
+      .map((row) => `"${row.tablename}"`)
+      .join(", ")} RESTART IDENTITY CASCADE`
+  );
 }

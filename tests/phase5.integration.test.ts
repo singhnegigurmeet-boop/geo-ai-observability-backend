@@ -128,11 +128,24 @@ describe(
     assert.ok(
       events.rows.every(
         ({ payload: event }) =>
-          event.actorType === "user" &&
-          event.userId === claimed.userId &&
-          event.workspaceId === claimed.workspaceId &&
-          event.anonymousSessionId === claimed.anonymousSessionId
+          Object.keys(event).length === 1 &&
+          typeof event.analysisRunItemId === "string"
       )
+    );
+    const ownership = await pool.query<{
+      user_id: string;
+      workspace_id: string;
+      anonymous_session_id: string;
+    }>(
+      `SELECT user_id, workspace_id, anonymous_session_id
+       FROM analysis_runs WHERE analysis_run_id = $1`,
+      [claimedRun.runId]
+    );
+    assert.equal(ownership.rows[0]?.user_id, claimed.userId);
+    assert.equal(ownership.rows[0]?.workspace_id, claimed.workspaceId);
+    assert.equal(
+      ownership.rows[0]?.anonymous_session_id,
+      claimed.anonymousSessionId
     );
   });
 
@@ -174,12 +187,31 @@ describe(
       { outcome: "empty", itemCount: 0 }
     );
     const state = await runState(pool, run.runId);
-    assert.equal(state.status, "failed");
-    assert.equal(state.error_code, "NO_EXPANSION_CHILDREN");
+    assert.equal(state.status, "completed");
+    assert.equal(state.error_code, null);
     assert.ok(state.started_at);
     assert.ok(state.completed_at);
     assert.equal((await runItems(pool, run.runId)).length, 0);
     assert.equal(await itemOutboxCount(pool, run.runId), 0);
+    const emptyReport = await pool.query<{
+      status: string;
+      lifecycle_state: string;
+      target_count: number;
+    }>(
+      `SELECT status,
+              report_data->>'lifecycleState' AS lifecycle_state,
+              (report_data->>'expandedTargetCount')::integer AS target_count
+       FROM reports WHERE analysis_run_id = $1`,
+      [run.runId]
+    );
+    assert.deepEqual(emptyReport.rows, [
+      {
+        status: "completed",
+        lifecycle_state: "completed_empty",
+        target_count: 0
+      }
+    ]);
+    assert.equal(await countFailureRecords(pool), 0);
     assert.deepEqual(
       await new AnalysisRunExpansionService(pool).expand(payload(run, owner)),
       { outcome: "noop", itemCount: 0 }
@@ -594,16 +626,7 @@ async function assertIdOnlyEvents(pool: pg.Pool, runId: string) {
      WHERE item.analysis_run_id = $1`,
     [runId]
   );
-  const expected = [
-    "actorType",
-    "analysisRunId",
-    "analysisRunItemId",
-    "anonymousSessionId",
-    "entityPathId",
-    "startingEntityPathId",
-    "userId",
-    "workspaceId"
-  ].sort();
+  const expected = ["analysisRunItemId"];
   for (const event of result.rows) {
     assert.deepEqual(Object.keys(event.payload).sort(), expected);
     assert.deepEqual(event.headers, { queueName: "analysis_run_item_queue" });
@@ -613,6 +636,16 @@ async function assertIdOnlyEvents(pool: pg.Pool, runId: string) {
       )
     );
   }
+}
+
+async function countFailureRecords(pool: pg.Pool) {
+  return Number(
+    (
+      await pool.query<{ count: string }>(
+        "SELECT count(*) FROM failure_records"
+      )
+    ).rows[0]!.count
+  );
 }
 
 async function masterCounts(pool: pg.Pool) {

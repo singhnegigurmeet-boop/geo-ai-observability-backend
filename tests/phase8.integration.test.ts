@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it } from "node:test";
 import pg from "pg";
+import { AnalysisService } from "../src/analysis/analysis.service.js";
 import {
   getDefaultMigrationsDirectory,
   runMigrations
@@ -136,10 +137,7 @@ describe(
         assert.equal(event.event_key, `provider_job.created:${jobs[0]!.provider_job_id}`);
         assert.deepEqual(event.headers, { queueName: "mock_queue" });
         assert.deepEqual(event.payload, {
-          providerJobId: jobs[0]!.provider_job_id,
-          promptJobId: fixture.promptJobId,
-          provider: "mock",
-          model: "mock-fast"
+          providerJobId: jobs[0]!.provider_job_id
         });
 
         assert.deepEqual(
@@ -181,6 +179,104 @@ describe(
       assert.equal(
         (await providerJobs(pool, fixture.promptJobId))[0]?.model,
         "mock-standard"
+      );
+    });
+
+    it("fans one rendered prompt out to every frozen provider/model pair", async () => {
+      const fixture = await seedPrompt(pool, "visibility", "user");
+      await pool.query(
+        `INSERT INTO analysis_run_provider_models (
+           analysis_run_id, provider, model, ordinal
+         ) VALUES ($1, 'mock', 'mock-quality', 1)`,
+        [fixture.runId]
+      );
+
+      await new PromptExecutionService(pool).execute(promptPayload(fixture));
+      const jobs = await providerJobs(pool, fixture.promptJobId);
+      assert.deepEqual(
+        jobs.map((job) => [job.provider, job.model]),
+        [
+          ["mock", "mock-standard"],
+          ["mock", "mock-quality"]
+        ]
+      );
+      for (const job of jobs) {
+        const event = await providerOutbox(pool, job.provider_job_id);
+        assert.deepEqual(event.payload, {
+          providerJobId: job.provider_job_id
+        });
+      }
+    });
+
+    it("cancels all unstarted descendants and creates a cancelled-empty report", async () => {
+      const fixture = await seedPrompt(pool, "visibility", "anonymous");
+      const planned = await new PromptExecutionService(pool).execute(
+        promptPayload(fixture)
+      );
+      const owner = {
+        actorType: "anonymous" as const,
+        anonymousSessionId: fixture.anonymousSessionId!,
+        userId: null,
+        workspaceId: null
+      };
+
+      const cancelled = await new AnalysisService(pool).cancel(
+        fixture.runId,
+        owner
+      );
+      assert.deepEqual(cancelled, {
+        analysisRunId: fixture.runId,
+        status: "cancelled",
+        idempotent: false
+      });
+      assert.equal(
+        (await providerJobs(pool, fixture.promptJobId))[0]?.status,
+        "cancelled"
+      );
+      const report = await pool.query<{
+        lifecycle_state: string;
+        revision: number;
+      }>(
+        `SELECT report_data->>'lifecycleState' AS lifecycle_state, revision
+         FROM reports WHERE analysis_run_id = $1`,
+        [fixture.runId]
+      );
+      assert.deepEqual(report.rows, [
+        { lifecycle_state: "cancelled_empty", revision: 1 }
+      ]);
+      assert.equal(
+        (
+          await new MockProviderService(pool).execute(
+            providerPayload(fixture, planned.providerJobId!)
+          )
+        ).outcome,
+        "noop"
+      );
+      assert.equal(
+        (await new AnalysisService(pool).cancel(fixture.runId, owner)).idempotent,
+        true
+      );
+    });
+
+    it("rejects cancellation after provider execution has started", async () => {
+      const fixture = await seedPrompt(pool, "visibility", "anonymous");
+      const planned = await new PromptExecutionService(pool).execute(
+        promptPayload(fixture)
+      );
+      await pool.query(
+        `UPDATE provider_jobs
+         SET status = 'processing', started_at = now()
+         WHERE provider_job_id = $1`,
+        [planned.providerJobId]
+      );
+      await assert.rejects(
+        new AnalysisService(pool).cancel(fixture.runId, {
+          actorType: "anonymous",
+          anonymousSessionId: fixture.anonymousSessionId!,
+          userId: null,
+          workspaceId: null
+        }),
+        /cannot be cancelled after provider execution begins/
       );
     });
 
@@ -269,10 +365,7 @@ describe(
         queueName: "scoring_queue"
       });
       assert.deepEqual(scoreEvent.rows[0]?.payload, {
-        providerResultId: completed.providerResultId,
-        providerJobId: planned.providerJobId,
-        promptJobId: fixture.promptJobId,
-        analysisRunId: fixture.runId
+        providerResultId: completed.providerResultId
       });
 
       assert.deepEqual(await new MockProviderService(pool).execute(payload), {
@@ -428,6 +521,17 @@ describe(
       assert.equal(malformed.properties.messageId, "phase8-malformed");
       channel.ack(malformed);
 
+      const technicalFixture = await seedPrompt(
+        pool,
+        "visibility",
+        "anonymous"
+      );
+      const technicalPlan = await new PromptExecutionService(pool).execute(
+        promptPayload(technicalFixture)
+      );
+      if (technicalPlan.outcome !== "enqueued") {
+        assert.fail("provider job not created");
+      }
       const failing = new MockProviderWorkerRuntime(
         channel,
         {
@@ -444,14 +548,11 @@ describe(
         messageId: "phase8-exhausted",
         eventType: "provider_job.created",
         aggregateType: "provider_job",
-        aggregateId: "1",
+        aggregateId: technicalPlan.providerJobId,
         occurredAt: new Date().toISOString(),
         attempt: 1,
         payload: {
-          providerJobId: "1",
-          promptJobId: "1",
-          provider: "mock",
-          model: "mock-fast"
+          providerJobId: technicalPlan.providerJobId
         }
       });
       const exhausted = await pollMessage(
@@ -469,6 +570,23 @@ describe(
       assert.deepEqual(
         attempts.rows.map((row) => row.attempt_number),
         [1, 2, 3]
+      );
+      assert.equal(
+        (await providerJobs(pool, technicalFixture.promptJobId))[0]?.status,
+        "failed"
+      );
+      assert.equal(
+        (await promptState(pool, technicalFixture.promptJobId)).status,
+        "failed"
+      );
+      assert.equal(
+        (
+          await pool.query<{ status: string }>(
+            "SELECT status FROM analysis_runs WHERE analysis_run_id = $1",
+            [technicalFixture.runId]
+          )
+        ).rows[0]?.status,
+        "failed"
       );
     });
 
@@ -599,6 +717,12 @@ async function seedPrompt(
       ]
     )
   ).rows[0]!.id;
+  await pool.query(
+    `INSERT INTO analysis_run_provider_models (
+       analysis_run_id, provider, model, ordinal
+     ) VALUES ($1, 'mock', $2, 0)`,
+    [runId, resolvedModel ?? "mock-fast"]
+  );
   const itemId = (
     await pool.query<{ id: string }>(
       `INSERT INTO analysis_run_items (
@@ -794,7 +918,15 @@ async function sendEnvelope(
       {
         persistent: true,
         contentType: "application/json",
-        messageId: value.messageId
+        messageId: value.messageId,
+        headers: {
+          ...(typeof value.aggregateType === "string"
+            ? { aggregateType: value.aggregateType }
+            : {}),
+          ...(typeof value.aggregateId === "string"
+            ? { aggregateId: value.aggregateId }
+            : {})
+        }
       },
       (error) => (error ? reject(error) : resolve())
     );

@@ -88,14 +88,14 @@ describe(
       await pool?.end();
     });
 
-    it("creates an anonymous report only after all three backend scores exist", async () => {
+    it("creates immutable partial revisions and a final anonymous report", async () => {
       const fixture = await seedRun(pool, "anonymous", lightPrompts);
       const scoring = new ProviderScoreService(pool);
 
       const first = await scoring.process(fixture.results[0]!);
       assert.equal(first.outcome, "scored");
-      assert.equal(first.reportId, null);
-      assert.equal(await count(pool, "reports"), 0);
+      assert.ok(first.reportId);
+      assert.equal(await count(pool, "reports"), 1);
 
       const concurrentFinalScores = await Promise.all([
         scoring.process(fixture.results[1]!),
@@ -106,12 +106,12 @@ describe(
       );
       assert.ok(completed?.reportId);
       assert.equal(await count(pool, "provider_scores"), 3);
-      assert.equal(await count(pool, "reports"), 1);
+      assert.equal(await count(pool, "reports"), 3);
 
       const report = await reportFor(pool, fixture.analysisRunId);
-      assert.equal(report.report_data.reportType, "basic_report");
+      assert.equal(report.report_data.reportType, "multi_provider_report");
       assert.equal(report.report_data.breakdown.length, 3);
-      assert.equal(report.report_data.providerModels[0]?.model, "mock-fast");
+      assert.equal(report.report_data.providerResults[0]?.model, "mock-fast");
       assert.equal(report.run_status, "completed");
       assert.ok(report.completed_at);
       const executionStates = await pool.query<{
@@ -133,17 +133,17 @@ describe(
 
       const replay = await scoring.process(fixture.results.at(-1)!);
       assert.equal(replay.outcome, "noop");
-      assert.equal(replay.reportId, completed.reportId);
+      assert.ok(replay.reportId);
       assert.equal(await count(pool, "provider_scores"), 3);
-      assert.equal(await count(pool, "reports"), 1);
+      assert.equal(await count(pool, "reports"), 3);
     });
 
-    it("requires five scores for logged-in and claimed runs", async () => {
+    it("revises logged-in and claimed reports through all five scores", async () => {
       for (const actor of ["user", "claimed"] as const) {
         const fixture = await seedRun(pool, actor, richPrompts);
         const scoring = new ProviderScoreService(pool);
         for (const result of fixture.results.slice(0, 4)) {
-          assert.equal((await scoring.process(result)).reportId, null);
+          assert.ok((await scoring.process(result)).reportId);
         }
         assert.equal(
           Number(
@@ -154,14 +154,14 @@ describe(
               )
             ).rows[0]!.count
           ),
-          0
+          4
         );
         const completed = await scoring.process(fixture.results[4]!);
         assert.ok(completed.reportId);
         const report = await reportFor(pool, fixture.analysisRunId);
         assert.equal(report.report_data.breakdown.length, 5);
         assert.equal(
-          report.report_data.providerModels[0]?.model,
+          report.report_data.providerResults[0]?.model,
           "mock-standard"
         );
         if (actor === "claimed") {
@@ -241,7 +241,7 @@ describe(
           report: { reportType: string };
         };
         assert.equal(body.analysisRunId, anonymous.analysisRunId);
-        assert.equal(body.report.reportType, "basic_report");
+        assert.equal(body.report.reportType, "multi_provider_report");
 
         const crossOwner = await fetch(
           `${server.url}/v1/analysis/runs/${user.analysisRunId}/report`,
@@ -338,7 +338,7 @@ describe(
       assert.equal(await count(pool, "reports"), 1);
     });
 
-    it("creates only the Phase 12 report notification around Phase 9 state", async () => {
+    it("creates one report notification per immutable report revision", async () => {
       const fixture = await seedRun(pool, "user", richPrompts);
       for (const result of fixture.results) {
         await new ProviderScoreService(pool).process(result);
@@ -353,9 +353,14 @@ describe(
           FROM notifications
         `
       );
-      assert.deepEqual(notifications.rows, [
-        { type: "report_ready", is_admin_notification: false }
-      ]);
+      assert.equal(notifications.rows.length, 5);
+      assert.ok(
+        notifications.rows.every(
+          (notification) =>
+            notification.type === "report_ready" &&
+            notification.is_admin_notification === false
+        )
+      );
       assert.equal(await count(pool, "scheduler_jobs"), 0);
       const providers = await pool.query<{ provider: string }>(
         "SELECT DISTINCT provider FROM provider_jobs"
@@ -470,9 +475,9 @@ async function seedRun(
       `
         INSERT INTO analysis_run_items (
           idempotency_key, analysis_run_id, entity_path_id,
-          item_ordinal, status, started_at
+          item_ordinal, status, started_at, completed_at
         )
-        VALUES ($1, $2, $3, 0, 'processing', now())
+        VALUES ($1, $2, $3, 0, 'completed', now(), now())
         RETURNING analysis_run_item_id
       `,
       [`phase9-item:${unique}`, analysisRunId, pathId]
@@ -613,7 +618,7 @@ async function reportFor(pool: pg.Pool, analysisRunId: string) {
       report_data: {
         reportType: string;
         breakdown: unknown[];
-        providerModels: Array<{ model: string }>;
+        providerResults: Array<{ model: string }>;
       };
       run_status: string;
       completed_at: Date | null;
@@ -624,6 +629,8 @@ async function reportFor(pool: pg.Pool, analysisRunId: string) {
         JOIN analysis_runs AS run
           ON run.analysis_run_id = report.analysis_run_id
         WHERE report.analysis_run_id = $1
+        ORDER BY report.revision DESC
+        LIMIT 1
       `,
       [analysisRunId]
     )

@@ -372,6 +372,57 @@ describe(
       );
     });
 
+    it("grants a claimant derived access to runs created before the claim", async () => {
+      const anonymous = await anonymousSessions.create();
+      const created = await postAnalysis(
+        { domain: "pre-claim.example" },
+        "pre-claim-run",
+        {
+          anonymousToken: anonymous.token
+        }
+      );
+      const claimant = await createUserOwner(
+        "phase4-claimant@example.com",
+        "Claimant Workspace"
+      );
+      const other = await createUserOwner(
+        "phase4-other-claimant@example.com",
+        "Other Workspace"
+      );
+      await anonymousSessions.claim({
+        anonymousSessionId: anonymous.session.anonymous_session_id,
+        userId: claimant.userId,
+        workspaceId: claimant.workspaceId
+      });
+
+      assert.equal(
+        (
+          await getStatus(created.body.analysisRunId, {
+            ...claimant.credentials,
+            anonymousToken: anonymous.token
+          })
+        ).response.status,
+        200
+      );
+      assert.equal(
+        (
+          await getStatus(created.body.analysisRunId, {
+            anonymousToken: anonymous.token
+          })
+        ).response.status,
+        200
+      );
+      assert.equal(
+        (
+          await getStatus(
+            created.body.analysisRunId,
+            other.credentials
+          )
+        ).response.status,
+        404
+      );
+    });
+
     it("allows bounded user model selection, rejects anonymous selection, and includes it in request identity", async () => {
       const anonymous = await createAnonymousOwner();
       const denied = await postAnalysis(
@@ -714,14 +765,7 @@ describe(
       });
       assert.deepEqual(
         Object.keys(event.rows[0]?.payload ?? {}).sort(),
-        [
-          "actorType",
-          "analysisRunId",
-          "anonymousSessionId",
-          "startingEntityPathId",
-          "userId",
-          "workspaceId"
-        ].sort()
+        ["analysisRunId"]
       );
       assert.equal(
         Object.values(event.rows[0]?.payload ?? {}).some(

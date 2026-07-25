@@ -145,9 +145,15 @@ describe(
       const fixture = await seedLlmRun(pool, "claimed");
       await new PromptPlanningService(pool).plan(payload(fixture));
       const events = await promptOutbox(pool, fixture.llmRunId);
+      const claimedJobs = await promptJobs(pool, fixture.llmRunId);
+      const promptTypeById = new Map(
+        claimedJobs.map((job) => [job.prompt_job_id, job.prompt_type])
+      );
       assert.equal(events.length, 5);
       for (const event of events) {
-        const promptType = event.payload.promptType as keyof typeof queueByPromptType;
+        const promptType = promptTypeById.get(
+          event.aggregate_id
+        ) as keyof typeof queueByPromptType;
         assert.equal(
           event.event_key,
           `prompt_job.created:${event.aggregate_id}`
@@ -157,29 +163,8 @@ describe(
         });
         assert.deepEqual(
           Object.keys(event.payload).sort(),
-          [
-            "promptJobId",
-            "llmRunId",
-            "analysisRunItemId",
-            "analysisRunId",
-            "entityPathId",
-            "startingEntityPathId",
-            "promptType",
-            "promptVersion",
-            "actorType",
-            "userId",
-            "workspaceId",
-            "anonymousSessionId"
-          ].sort()
+          ["promptJobId"]
         );
-        assert.equal(event.payload.actorType, "user");
-        assert.equal(event.payload.userId, fixture.userId);
-        assert.equal(event.payload.workspaceId, fixture.workspaceId);
-        assert.equal(
-          event.payload.anonymousSessionId,
-          fixture.anonymousSessionId
-        );
-        assert.equal(event.payload.promptVersion, "v1");
         assert.ok(!("promptText" in event.payload));
         assert.ok(!("domain" in event.payload));
       }

@@ -147,6 +147,58 @@ describe("Phase 11 real provider execution", { skip: !enabled, concurrency: 1 },
     );
   });
 
+  it("persists malformed successful responses as invalid, unscored evidence", async () => {
+    const fixture = await seedRun(
+      pool,
+      "openai",
+      "gpt-4o-mini",
+      ["visibility"]
+    );
+    const adapter = new FakeAdapter("openai", "gpt-4o-mini");
+    adapter.error = new ProviderExecutionError(
+      "PROVIDER_RESPONSE_INVALID",
+      "malformed provider response",
+      true,
+      {
+        rawResponse: { unexpected: "retained safely" },
+        validationErrors: ["evidence must be an array"]
+      }
+    );
+    const outcome = await new ProviderExecutionService(
+      pool,
+      new ProviderAdapterRegistry([adapter]),
+      500
+    ).execute(fixture.jobs[0]!.payload);
+    assert.equal(outcome.outcome, "completed");
+    const evidence = await pool.query<{
+      status: string;
+      raw_response: string;
+      validation_errors: string[];
+      job_status: string;
+    }>(
+      `SELECT result.status, result.raw_response,
+              result.validation_errors, job.status AS job_status
+       FROM provider_results AS result
+       JOIN provider_jobs AS job
+         ON job.provider_job_id = result.provider_job_id`
+    );
+    assert.deepEqual(evidence.rows, [
+      {
+        status: "invalid",
+        raw_response: '{"unexpected":"retained safely"}',
+        validation_errors: ["evidence must be an array"],
+        job_status: "failed"
+      }
+    ]);
+    assert.equal(await count(pool, "provider_scores"), 0);
+    const report = await pool.query<{ lifecycle_state: string }>(
+      `SELECT report_data->>'lifecycleState' AS lifecycle_state
+       FROM reports WHERE analysis_run_id = $1`,
+      [fixture.analysisRunId]
+    );
+    assert.deepEqual(report.rows, [{ lifecycle_state: "failed_empty" }]);
+  });
+
   it("feeds real evidence into backend scoring/reporting idempotently", async () => {
     const fixture = await seedRun(pool, "openai", "gpt-4o-mini", [
       "visibility",
@@ -179,7 +231,7 @@ describe("Phase 11 real provider execution", { skip: !enabled, concurrency: 1 },
     assert.ok(reportId);
     assert.equal(await count(pool, "provider_results"), 5);
     assert.equal(await count(pool, "provider_scores"), 5);
-    assert.equal(await count(pool, "reports"), 1);
+    assert.equal(await count(pool, "reports"), 5);
     assert.equal(await count(pool, "token_usage"), 10);
   });
 });

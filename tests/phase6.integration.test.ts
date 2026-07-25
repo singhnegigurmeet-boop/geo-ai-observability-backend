@@ -106,17 +106,7 @@ describe(
       assert.deepEqual(event[0]?.headers, { queueName: "llm_run_queue" });
       assert.deepEqual(
         Object.keys(event[0]?.payload ?? {}).sort(),
-        [
-          "llmRunId",
-          "analysisRunItemId",
-          "analysisRunId",
-          "entityPathId",
-          "startingEntityPathId",
-          "actorType",
-          "userId",
-          "workspaceId",
-          "anonymousSessionId"
-        ].sort()
+        ["llmRunId"]
       );
       assert.ok(
         Object.values(event[0]?.payload ?? {}).every(
@@ -125,14 +115,26 @@ describe(
       );
     });
 
-    it("preserves claimed ownership IDs in the LLM-run event", async () => {
+    it("keeps claimed ownership in PostgreSQL while emitting an ID-only event", async () => {
       const fixture = await seedItem(pool, "claimed");
       await new LlmRunCreationService(pool).create(payload(fixture));
       const event = (await llmOutbox(pool, fixture.itemId))[0]!.payload;
-      assert.equal(event.actorType, "user");
-      assert.equal(event.userId, fixture.userId);
-      assert.equal(event.workspaceId, fixture.workspaceId);
-      assert.equal(event.anonymousSessionId, fixture.anonymousSessionId);
+      assert.deepEqual(Object.keys(event), ["llmRunId"]);
+      const owner = await pool.query<{
+        user_id: string;
+        workspace_id: string;
+        anonymous_session_id: string;
+      }>(
+        `SELECT user_id, workspace_id, anonymous_session_id
+         FROM analysis_runs WHERE analysis_run_id = $1`,
+        [fixture.runId]
+      );
+      assert.equal(owner.rows[0]?.user_id, fixture.userId);
+      assert.equal(owner.rows[0]?.workspace_id, fixture.workspaceId);
+      assert.equal(
+        owner.rows[0]?.anonymous_session_id,
+        fixture.anonymousSessionId
+      );
     });
 
     it("rejects run and path payload mismatches as retryable technical errors", async () => {

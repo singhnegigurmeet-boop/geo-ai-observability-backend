@@ -83,7 +83,8 @@ describe("Production Core shell routes", () => {
       "/ready",
       "/v1/analysis",
       "/v1/analysis/runs/{analysisRunId}",
-      "/v1/analysis/runs/{analysisRunId}/report"
+      "/v1/analysis/runs/{analysisRunId}/report",
+      "/v1/analysis/runs/{analysisRunId}/cancel"
     ]);
   });
 

@@ -22,16 +22,12 @@ describe("provider_job.created validation and mock worker", () => {
     assert.deepEqual(received, envelope().payload);
   });
 
-  it("rejects malformed aggregate and provider/model pairs", () => {
+  it("rejects malformed aggregate linkage and unexpected payload data", () => {
     for (const invalid of [
       { ...envelope(), aggregateId: "999" },
       {
         ...envelope(),
-        payload: { ...envelope().payload, provider: "openai" }
-      },
-      {
-        ...envelope(),
-        payload: { ...envelope().payload, model: "gpt-4o-mini" }
+        payload: { ...envelope().payload, rawPrompt: "unsafe" }
       }
     ]) {
       assert.throws(

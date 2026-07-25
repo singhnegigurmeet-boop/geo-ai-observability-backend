@@ -213,7 +213,7 @@ describe(
             fixture.jobs[2]!.payload
           )
         ).outcome,
-        "paused_budget"
+        "noop"
       );
       assert.equal(await count(pool, "provider_results"), 1);
       assert.deepEqual(
@@ -271,7 +271,12 @@ describe(
           outcomes.filter(
             (outcome) => outcome.outcome === "paused_budget"
           ).length,
-          2,
+          1,
+          testCase.scope
+        );
+        assert.equal(
+          outcomes.filter((outcome) => outcome.outcome === "noop").length,
+          1,
           testCase.scope
         );
         assert.equal(await count(pool, "provider_results"), 1);
@@ -591,13 +596,10 @@ describe(
         assert.equal(allowed.status, 200);
         const body = (await allowed.json()) as {
           status: string;
-          errorMessage: string;
+          errorMessage: string | null;
         };
         assert.equal(body.status, "paused_budget");
-        assert.equal(
-          body.errorMessage,
-          "Analysis paused because provider budget was reached before all prompts could be executed."
-        );
+        assert.equal(body.errorMessage, null);
         const denied = await fetch(
           `${server.url}/v1/analysis/runs/${fixture.analysisRunId}`,
           { headers: { "x-test-owner": "wrong" } }
@@ -632,7 +634,7 @@ describe(
         await new ProviderScoreService(pool).process(result);
       }
       assert.equal(await count(pool, "provider_scores"), 3);
-      assert.equal(await count(pool, "reports"), 1);
+      assert.equal(await count(pool, "reports"), 3);
       assert.equal(await runStatus(pool, fixture.analysisRunId), "completed");
     });
   }

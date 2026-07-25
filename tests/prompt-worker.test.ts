@@ -9,15 +9,18 @@ import { PromptWorker } from "../src/prompts/prompt-worker.js";
 describe("prompt_job.created validation and worker", () => {
   it("validates and dispatches a correctly routed message", async () => {
     let received: unknown;
+    let expectedType: unknown;
     const worker = new PromptWorker("visibility", {
-      async execute(payload) {
+      async execute(payload, promptType) {
         received = payload;
+        expectedType = promptType;
         return { outcome: "enqueued", providerJobId: "8" };
       }
     });
     const result = await worker.process(envelope());
     assert.deepEqual(result, { outcome: "enqueued", providerJobId: "8" });
     assert.deepEqual(received, envelope().payload);
+    assert.equal(expectedType, "visibility");
   });
 
   it("rejects malformed linkage, ownership, and cross-queue prompt types", async () => {
@@ -41,14 +44,14 @@ describe("prompt_job.created validation and worker", () => {
         }),
       InvalidPromptJobMessageError
     );
-    await assert.rejects(
-      new PromptWorker("ranking", {
-        async execute() {
-          return { outcome: "noop", providerJobId: null };
-        }
-      }).process(envelope()),
-      InvalidPromptJobMessageError
-    );
+    let expectedType: unknown;
+    await new PromptWorker("ranking", {
+      async execute(_payload, promptType) {
+        expectedType = promptType;
+        return { outcome: "noop", providerJobId: null };
+      }
+    }).process({ ...envelope(), payload: { promptJobId: "5" } });
+    assert.equal(expectedType, "ranking");
   });
 });
 

@@ -63,15 +63,10 @@ describe("llm_run.created message validation", () => {
     assert.deepEqual(parseLlmRunCreatedMessage(message), message);
   });
 
-  for (const required of [
-    "llmRunId",
-    "analysisRunItemId",
-    "analysisRunId",
-    "entityPathId"
-  ] as const) {
+  for (const required of ["llmRunId"] as const) {
     it(`rejects missing ${required}`, () => {
       const message = validLlmRunEnvelope();
-      const payload = { ...message.payload };
+      const payload: Partial<typeof message.payload> = { ...message.payload };
       delete payload[required];
       assert.throws(
         () => parseLlmRunCreatedMessage({ ...message, payload }),

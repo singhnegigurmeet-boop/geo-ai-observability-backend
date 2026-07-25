@@ -112,7 +112,7 @@ describe(
       await pool?.end();
     });
 
-    it("creates four ID-only relationship tables and 30 production tables", async () => {
+    it("creates four ID-only relationship tables and 31 production tables", async () => {
       const tables = await pool.query<{ table_name: string }>(
         `
           SELECT table_name
@@ -122,7 +122,7 @@ describe(
           ORDER BY table_name
         `
       );
-      assert.equal(tables.rows.length, 30);
+      assert.equal(tables.rows.length, 31);
       for (const table of [
         "domain_categories",
         "category_brands",
@@ -573,14 +573,7 @@ describe(
       });
       assert.deepEqual(
         Object.keys(event.rows[0]?.payload ?? {}).sort(),
-        [
-          "actorType",
-          "analysisRunId",
-          "anonymousSessionId",
-          "startingEntityPathId",
-          "userId",
-          "workspaceId"
-        ].sort()
+        ["analysisRunId"]
       );
       const items = await pool.query<{ count: string }>(
         "SELECT count(*) FROM analysis_run_items"

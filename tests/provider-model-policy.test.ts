@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   InvalidProviderModelSelectionError,
+  resolveProviderModelSet,
   selectProviderModel
 } from "../src/providers/provider-model.policy.js";
 
@@ -89,5 +90,39 @@ describe("Phase 8 provider/model policy", () => {
         InvalidProviderModelSelectionError
       );
     }
+  });
+
+  it("normalizes, deduplicates, and stably sorts an explicit provider set", () => {
+    assert.deepEqual(
+      resolveProviderModelSet({
+        actorType: "user",
+        requestedProvider: null,
+        requestedModel: null,
+        requestedProviderModels: [
+          { provider: "openai", model: "gpt-4o-mini" },
+          { provider: "claude", model: "claude-3-5-sonnet" },
+          { provider: "openai", model: "gpt-4o-mini" },
+          { provider: "gemini", model: "gemini-1.5-flash" }
+        ],
+        realProvidersEnabled: true
+      }),
+      [
+        {
+          provider: "claude",
+          model: "claude-3-5-sonnet",
+          queueName: "claude_queue"
+        },
+        {
+          provider: "gemini",
+          model: "gemini-1.5-flash",
+          queueName: "gemini_queue"
+        },
+        {
+          provider: "openai",
+          model: "gpt-4o-mini",
+          queueName: "openai_queue"
+        }
+      ]
+    );
   });
 });
