@@ -11,7 +11,12 @@ export type MockProviderExecutionState = ProviderJobRow & {
   prompt_status: string;
   prompt_text: string | null;
   prompt_type: PromptType;
+  prompt_version: string;
   analysis_run_id: string;
+  analysis_run_status: string;
+  anonymous_session_id: string | null;
+  user_id: string | null;
+  workspace_id: string | null;
 };
 
 export class MockProviderRepository {
@@ -25,7 +30,12 @@ export class MockProviderRepository {
           prompt.status AS prompt_status,
           prompt.prompt_text,
           prompt.prompt_type,
-          item.analysis_run_id
+          prompt.prompt_version,
+          item.analysis_run_id,
+          run.status AS analysis_run_status,
+          run.anonymous_session_id,
+          run.user_id,
+          run.workspace_id
         FROM provider_jobs AS provider_job
         JOIN prompt_jobs AS prompt
           ON prompt.prompt_job_id = provider_job.prompt_job_id
@@ -33,6 +43,8 @@ export class MockProviderRepository {
           ON llm.llm_run_id = prompt.llm_run_id
         JOIN analysis_run_items AS item
           ON item.analysis_run_item_id = llm.analysis_run_item_id
+        JOIN analysis_runs AS run
+          ON run.analysis_run_id = item.analysis_run_id
         WHERE provider_job.provider_job_id = $1
         FOR UPDATE OF provider_job, prompt
       `,
@@ -115,6 +127,7 @@ export class MockProviderRepository {
     providerJobId: string;
     inputTokens: number;
     outputTokens: number;
+    costMicros: number;
   }) {
     const idempotencyKey = `token_usage:${input.providerJobId}:actual`;
     const inserted = await this.database.query<TokenUsageRow>(
@@ -129,7 +142,7 @@ export class MockProviderRepository {
           reasoning_tokens,
           cost_micros
         )
-        VALUES ($1, $2, 'actual', $3, $4, 0, 0, 0)
+        VALUES ($1, $2, 'actual', $3, $4, 0, 0, $5)
         ON CONFLICT (provider_job_id, usage_kind) DO NOTHING
         RETURNING *
       `,
@@ -137,7 +150,8 @@ export class MockProviderRepository {
         idempotencyKey,
         input.providerJobId,
         input.inputTokens,
-        input.outputTokens
+        input.outputTokens,
+        input.costMicros
       ]
     );
     if (inserted.rows[0]) {
@@ -154,13 +168,14 @@ export class MockProviderRepository {
           AND output_tokens = $4
           AND cached_tokens = 0
           AND reasoning_tokens = 0
-          AND cost_micros = 0
+          AND cost_micros = $5
       `,
       [
         input.providerJobId,
         idempotencyKey,
         input.inputTokens,
-        input.outputTokens
+        input.outputTokens,
+        input.costMicros
       ]
     );
     if (!existing.rows[0]) {
@@ -199,6 +214,80 @@ export class MockProviderRepository {
         RETURNING prompt_job_id
       `,
       [promptJobId]
+    );
+    return Boolean(provider.rows[0] && prompt.rows[0]);
+  }
+
+  async markBudgetPaused(input: {
+    providerJobId: string;
+    promptJobId: string;
+    analysisRunId: string;
+    reasonCode: string;
+    reasonMessage: string;
+  }) {
+    const provider = await this.database.query<{ provider_job_id: string }>(
+      `
+        UPDATE provider_jobs
+        SET status = 'paused_budget',
+            error_code = $2,
+            error_message = $3,
+            updated_at = now()
+        WHERE provider_job_id = $1
+          AND status IN ('pending', 'queued', 'processing')
+        RETURNING provider_job_id
+      `,
+      [input.providerJobId, input.reasonCode, input.reasonMessage]
+    );
+    const prompt = await this.database.query<{ prompt_job_id: string }>(
+      `
+        UPDATE prompt_jobs
+        SET status = 'paused_budget',
+            error_code = $2,
+            error_message = $3,
+            updated_at = now()
+        WHERE prompt_job_id = $1
+          AND status IN ('pending', 'queued', 'processing')
+        RETURNING prompt_job_id
+      `,
+      [input.promptJobId, input.reasonCode, input.reasonMessage]
+    );
+    await this.database.query(
+      `
+        UPDATE llm_runs AS llm
+        SET status = 'paused_budget',
+            error_code = $2,
+            error_message = $3,
+            updated_at = now()
+        FROM analysis_run_items AS item
+        WHERE llm.analysis_run_item_id = item.analysis_run_item_id
+          AND item.analysis_run_id = $1
+          AND llm.status IN ('queued', 'processing')
+      `,
+      [input.analysisRunId, input.reasonCode, input.reasonMessage]
+    );
+    await this.database.query(
+      `
+        UPDATE analysis_run_items
+        SET status = 'paused_budget',
+            error_code = $2,
+            error_message = $3,
+            updated_at = now()
+        WHERE analysis_run_id = $1
+          AND status IN ('queued', 'processing')
+      `,
+      [input.analysisRunId, input.reasonCode, input.reasonMessage]
+    );
+    await this.database.query(
+      `
+        UPDATE analysis_runs
+        SET status = 'paused_budget',
+            error_code = $2,
+            error_message = $3,
+            updated_at = now()
+        WHERE analysis_run_id = $1
+          AND status IN ('queued', 'processing')
+      `,
+      [input.analysisRunId, input.reasonCode, input.reasonMessage]
     );
     return Boolean(provider.rows[0] && prompt.rows[0]);
   }

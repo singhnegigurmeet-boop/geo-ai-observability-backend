@@ -1,6 +1,6 @@
 # GEO V6 Production Core Backend
 
-This branch contains the Phase 9 scoring and basic-report slice for GEO V6. PostgreSQL remains authoritative. Phase 8 stores immutable mock provider evidence; Phase 9 interprets that evidence with deterministic backend scoring and creates an ownership-protected basic report only when every planned prompt is scored.
+This branch contains the Phase 10 provider-budget enforcement slice for GEO V6. PostgreSQL remains authoritative. Provider workers now reserve deterministic estimated usage before execution, reconcile accounting to immutable actual usage, and move work to the `paused_budget` business state before evidence is created when a provider budget is unavailable.
 
 ## Implemented
 
@@ -27,9 +27,13 @@ This branch contains the Phase 9 scoring and basic-report slice for GEO V6. Post
 - ID-only `provider_result.created` events routed through a dedicated `scoring_queue` and DLQ
 - Immutable `backend-v1` provider scores computed independently of provider-supplied score fields
 - Idempotent `basic-v1` reports with prompt-type breakdown, provider/model provenance, and usage totals
+- Provider-specific platform and workspace budget policies enforced before provider execution
+- Deterministic model-aware estimated token/cost reservations and actual-usage reconciliation
+- Concurrency-safe hard limits and one-crossing-prompt soft limits using PostgreSQL policy locks
+- Budget pause propagation across provider deliveries, prompts, LLM runs, run items, and analysis runs
 - Shared reliable RabbitMQ consumer runtime across the business workers
 
-Phase 9 does not call any external provider or use AI to generate reports. OpenAI, Gemini, and Claude queues remain declared for later implementation, but mock and scoring work never routes to them.
+Phase 10 does not call any external provider, use AI to generate reports, or implement billing. OpenAI, Gemini, and Claude queues remain declared for later implementation, but mock and scoring work never routes to them.
 
 ## HTTP Surface
 
@@ -192,6 +196,20 @@ npm run scoring-worker:dev
 
 The scoring worker consumes ID-only `provider_result.created` events. It reloads immutable evidence from PostgreSQL, computes one versioned backend score, and checks report readiness from existing prompt jobs. Anonymous runs naturally complete after their three planned prompts; logged-in and claimed runs complete after their five planned prompts. No actor count is hardcoded in report aggregation.
 
+Before the mock provider creates evidence, it estimates input/output tokens and integer micro-cost from the rendered prompt, prompt type/version, provider, and model. It then locks all applicable enabled budget policies:
+
+```text
+anonymous -> platform_default provider policies
+user      -> platform_default + workspace provider policies
+claimed   -> platform_default + workspace provider policies
+```
+
+The sealed schema currently supports only `platform_default` and `workspace` policy scopes. User, anonymous-session, and analysis-run policies remain deferred rather than being simulated with fake ownership.
+
+An absent enabled policy means no limit for that scope. A hard policy rejects an execution whose projection crosses either configured limit. A soft policy permits the one prompt that crosses the limit, then pauses subsequent executions while accounted usage remains over the limit.
+
+Estimated and actual records are both immutable. Budget accounting chooses the actual record when it exists and otherwise uses the estimate, so reconciliation never double-counts a provider job. Budget pause is acknowledged as a business result: it creates no provider evidence, no actual usage, no score/report, no failure record, and no DLQ delivery. Each worker transitions only its already-locked provider/prompt row; later deliveries observe the paused parent run and pause themselves without competing lock order.
+
 Retrieve a completed report with:
 
 ```text
@@ -211,7 +229,7 @@ npm run mock-provider-worker:dev
 
 The prompt worker consumes all five prompt-type queues. It locks each pending job, reloads canonical hierarchy, ownership, and run model preference, renders the chosen `v1_light` or `v1` template, then applies provider/model policy. Anonymous uses `mock-fast`; logged-in/claimed uses its validated selection or defaults to `mock-standard`.
 
-The mock provider worker rejects unrendered prompts. For valid work it stores deterministic evidence in immutable `provider_results`, records deterministic `actual` token usage with zero cost, and marks both jobs succeeded. Stable database identities make both stages safe under redelivery.
+The mock provider worker rejects unrendered prompts. For valid budget-approved work it stores deterministic evidence in immutable `provider_results`, records deterministic model-priced `actual` token usage in integer micros, and marks both jobs succeeded. Stable database identities make both stages safe under redelivery.
 
 Migration `018_require_rendered_prompt_for_provider_jobs.sql` enforces the render-before-provider invariant inside PostgreSQL, including direct inserts outside the service path.
 
@@ -242,6 +260,8 @@ npm run test:phase5
 npm run test:phase6
 npm run test:phase7
 npm run test:phase8
+npm run test:phase9
+npm run test:phase10
 npm run infra:test:down
 ```
 
@@ -251,8 +271,9 @@ Integration launchers wait for their dependencies. Destructive test schema setup
 
 - Dynamic prompt/model policy or prompt experimentation
 - Real OpenAI, Gemini, or Claude execution and provider fallback
-- Budget enforcement
-- Scoring or reports
+- User, anonymous-session, and analysis-run budget-policy scopes
+- Advanced billing, payments, and external pricing/tokenizer APIs
+- Advanced scoring science, premium reports, and report diffs
 - Scheduler or notification execution
 - Redis cache, rate limiting, locks, or deduplication
 - Country, market, or global-scope expansion

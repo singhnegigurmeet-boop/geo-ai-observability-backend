@@ -928,6 +928,16 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       `,
       [providerJobId]
     );
+    await assert.rejects(
+      pool.query(
+        `
+          UPDATE token_usage
+          SET input_tokens = input_tokens + 1
+          WHERE idempotency_key = 'usage-estimated-workflow'
+        `
+      ),
+      hasPostgresCode("23514")
+    );
     await pool.query(
       `
         INSERT INTO provider_scores (

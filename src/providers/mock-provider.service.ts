@@ -3,6 +3,9 @@ import type {
   TransactionPool
 } from "../db/database-executor.js";
 import { inTransaction } from "../db/database-executor.js";
+import { BudgetCheckService } from "../budgets/budget-check.service.js";
+import { BudgetRepository } from "../budgets/budget.repository.js";
+import { estimateCostMicros } from "../budgets/provider-pricing.policy.js";
 import { OutboxEventWriterRepository } from "../outbox/outbox-event-writer.repository.js";
 import type { JsonObject } from "../types/database.types.js";
 import { MockProviderRepository } from "./mock-provider.repository.js";
@@ -13,6 +16,11 @@ type MockProviderDatabase = DatabaseExecutor & TransactionPool;
 
 export type MockProviderResult =
   | { outcome: "completed"; providerResultId: string }
+  | {
+      outcome: "paused_budget";
+      providerResultId: null;
+      budgetPolicyId: string | null;
+    }
   | { outcome: "noop"; providerResultId: null };
 
 export class MockProviderExecutionError extends Error {
@@ -69,6 +77,33 @@ export class MockProviderService {
           "Mock provider requires a nonblank rendered prompt"
         );
       }
+      if (state.analysis_run_status === "paused_budget") {
+        await pauseCurrentJob(repository, state);
+        return {
+          outcome: "paused_budget",
+          providerResultId: null,
+          budgetPolicyId: null
+        };
+      }
+      const budget = await new BudgetCheckService(
+        new BudgetRepository(client)
+      ).checkAndReserve({
+        providerJobId: state.provider_job_id,
+        provider: state.provider,
+        model: state.model,
+        workspaceId: state.workspace_id,
+        promptText: state.prompt_text,
+        promptType: state.prompt_type,
+        promptVersion: state.prompt_version
+      });
+      if (!budget.allowed) {
+        await pauseCurrentJob(repository, state);
+        return {
+          outcome: "paused_budget",
+          providerResultId: null,
+          budgetPolicyId: budget.decision.budgetPolicyId
+        };
+      }
 
       const parsedResponse = deterministicEvidence(
         state.provider_job_id,
@@ -85,7 +120,13 @@ export class MockProviderService {
       await repository.createOrReuseActualUsage({
         providerJobId: state.provider_job_id,
         inputTokens: Math.max(1, Math.ceil(state.prompt_text.length / 4)),
-        outputTokens: 32
+        outputTokens: 32,
+        costMicros: estimateCostMicros({
+          provider: state.provider,
+          model: state.model,
+          totalTokens:
+            Math.max(1, Math.ceil(state.prompt_text.length / 4)) + 32
+        })
       });
       await new OutboxEventWriterRepository(client).createOrReuse({
         eventKey: `provider_result.created:${result.provider_result_id}`,
@@ -117,6 +158,32 @@ export class MockProviderService {
         providerResultId: result.provider_result_id
       };
     });
+  }
+}
+
+async function pauseCurrentJob(
+  repository: MockProviderRepository,
+  state: {
+    provider_job_id: string;
+    prompt_job_id: string;
+    analysis_run_id: string;
+  }
+) {
+  const reasonMessage =
+    "Analysis paused because provider budget was reached before all prompts could be executed.";
+  if (
+    !(await repository.markBudgetPaused({
+      providerJobId: state.provider_job_id,
+      promptJobId: state.prompt_job_id,
+      analysisRunId: state.analysis_run_id,
+      reasonCode: "BUDGET_LIMIT_REACHED",
+      reasonMessage
+    }))
+  ) {
+    throw new MockProviderExecutionError(
+      "BUDGET_PAUSE_TRANSITION_FAILED",
+      "Provider work could not transition to paused_budget"
+    );
   }
 }
 

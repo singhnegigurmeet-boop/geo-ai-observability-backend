@@ -8,9 +8,9 @@ export const openApiDocument = {
   openapi: "3.0.3",
   info: {
     title: "GEO V6 Production Core API",
-    version: "0.1.0-phase9",
+    version: "0.1.0-phase10",
     description:
-      "GEO V6 Production Core through Phase 9. Stored provider evidence is interpreted by deterministic backend scoring and exposed through ownership-protected basic reports."
+      "GEO V6 Production Core through Phase 10. Provider-specific platform/workspace budgets are enforced before execution; budget exhaustion is exposed as paused_budget business state."
   },
   servers: [
     {

@@ -21,6 +21,7 @@
     "test:phase7": "node scripts/run-phase7-integration-tests.mjs",
     "test:phase8": "node scripts/run-phase8-integration-tests.mjs",
     "test:phase9": "node scripts/run-phase9-integration-tests.mjs",
+    "test:phase10": "node scripts/run-phase10-integration-tests.mjs",
     "typecheck": "npm run typecheck:src && npm run typecheck:tests",
     "typecheck:src": "tsc --noEmit -p tsconfig.json",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",

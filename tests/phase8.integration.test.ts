@@ -237,11 +237,15 @@ describe(
       assert.equal(result.latency_ms, 0);
 
       const usage = await tokenUsage(pool, planned.providerJobId);
-      assert.equal(usage.length, 1);
-      assert.equal(usage[0]?.usage_kind, "actual");
-      assert.ok(Number(usage[0]?.input_tokens) > 0);
-      assert.equal(usage[0]?.output_tokens, "32");
-      assert.equal(usage[0]?.cost_micros, "0");
+      assert.equal(usage.length, 2);
+      const estimated = usage.find((row) => row.usage_kind === "estimated");
+      const actual = usage.find((row) => row.usage_kind === "actual");
+      assert.ok(Number(estimated?.input_tokens) > 0);
+      assert.ok(Number(estimated?.output_tokens) > 0);
+      assert.ok(Number(estimated?.cost_micros) > 0);
+      assert.ok(Number(actual?.input_tokens) > 0);
+      assert.equal(actual?.output_tokens, "32");
+      assert.ok(Number(actual?.cost_micros) > 0);
       assert.equal((await promptState(pool, fixture.promptJobId)).status, "succeeded");
       assert.equal((await providerJobs(pool, fixture.promptJobId))[0]?.status, "succeeded");
       const scoreEvent = await pool.query<{
@@ -275,7 +279,7 @@ describe(
         outcome: "noop",
         providerResultId: null
       });
-      assert.equal((await tokenUsage(pool, planned.providerJobId)).length, 1);
+      assert.equal((await tokenUsage(pool, planned.providerJobId)).length, 2);
       assert.equal(
         (
           await pool.query<{ count: string }>(
@@ -395,7 +399,7 @@ describe(
       );
       await mockRuntime.stop();
       assert.equal(await evidenceCount(pool, providerJob.provider_job_id), 1);
-      assert.equal((await tokenUsage(pool, providerJob.provider_job_id)).length, 1);
+      assert.equal((await tokenUsage(pool, providerJob.provider_job_id)).length, 2);
     });
 
     it("dead-letters malformed prompt messages and exhausted technical mock failures", async () => {

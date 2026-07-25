@@ -1,4 +1,4 @@
-# Phase 9 Backend Scoring and Basic Report Flow
+# Phase 10 Provider Budget Enforcement Flow
 
 ## Process Boundaries
 
@@ -33,7 +33,8 @@ Prompt worker process
 
 Mock provider worker process
   -> consume mock_queue
-  -> PostgreSQL locked evidence transaction
+  -> PostgreSQL locked budget + evidence transaction
+  -> estimated token_usage reservation before execution
   -> provider_results + actual token_usage
   -> provider_result.created outbox event
 
@@ -318,6 +319,10 @@ consume provider_job.created from mock_queue
   -> lock provider_job and prompt_job
   -> non-queued provider job: idempotent no-op
   -> verify provider/model and nonblank rendered prompt
+  -> estimate provider/model token usage and integer micro-cost
+  -> lock enabled platform/workspace provider budget policies
+  -> hard/soft decision from DB-accounted usage
+  -> create/reuse immutable estimated token_usage reservation
   -> create/reuse immutable deterministic provider_result
   -> create/reuse deterministic actual token_usage
   -> create/reuse ID-only provider_result.created outbox event
@@ -325,9 +330,41 @@ consume provider_job.created from mock_queue
   -> commit
 ```
 
-Evidence uses `provider = mock`, the exact resolved model (`mock-fast`, `mock-standard`, or `mock-quality`), a structured evidence array, and no score or report fields. Actual mock usage uses a deterministic prompt-length estimate, fixed output tokens, and zero cost. The schema links usage to provider/model through `provider_jobs`; those values are not duplicated in `token_usage`.
+Evidence uses `provider = mock`, the exact resolved model (`mock-fast`, `mock-standard`, or `mock-quality`), a structured evidence array, and no score or report fields. Actual mock usage uses a deterministic prompt-length estimate, fixed output tokens, and local model-specific integer micro-cost. The schema links usage to provider/model through `provider_jobs`; those values are not duplicated in `token_usage`.
 
-Technical failures roll the whole stage back and use the shared three-attempt retry/failure-record/DLQ behavior. Malformed messages are permanent failures. No external provider network calls occur.
+Technical failures roll the whole stage back and use the shared three-attempt retry/failure-record/DLQ behavior. Malformed messages are permanent failures. A budget rejection instead commits `paused_budget` state and returns normally, so the delivery is acknowledged without a failure record or DLQ. No external provider network calls occur.
+
+## Phase 10 Budget Enforcement
+
+The sealed budget policy scopes are:
+
+```text
+platform_default -> every run for the selected provider
+workspace        -> logged-in and claimed runs in that workspace
+```
+
+Anonymous runs have no fake workspace and therefore receive platform policies only. Logged-in and claimed runs receive platform plus workspace policies; a claim continues to preserve its anonymous origin. User, anonymous-session, and analysis-run policy scopes are deferred because they are not present in the sealed schema.
+
+For every enabled applicable policy, the worker locks the policy row and accounts usage inside the same PostgreSQL transaction. Per provider job, accounting selects actual usage when available and estimated usage otherwise. This provides reservation and reconciliation without mutable accounting rows or an in-memory lock.
+
+```text
+hard:
+  projected tokens/cost > limit -> pause before provider execution
+
+soft:
+  current tokens/cost <= limit -> allow the crossing prompt
+  current tokens/cost > limit  -> pause later prompts
+```
+
+Policies are provider-specific. Model-specific local estimation and pricing distinguish `mock-fast`, `mock-standard`, and `mock-quality`; all token and money units are integers. No pricing API or external tokenizer is used.
+
+On budget pause, the transaction creates no provider result and no actual usage. It moves the current locked provider/prompt work and the related LLM runs, run items, and analysis run to `paused_budget`, using the stable user-facing message:
+
+```text
+Analysis paused because provider budget was reached before all prompts could be executed.
+```
+
+Later provider deliveries observe the paused parent run and pause their own already-locked job without acquiring the budget-policy lock. This avoids cross-job lock-order cycles. Redelivery of completed or paused provider jobs is an idempotent no-op. Concurrent jobs sharing a policy serialize on its row lock, so a hard limit cannot be overspent.
 
 ## Phase 9 Backend Scoring and Reporting
 
@@ -414,7 +451,8 @@ No submitted domain text, prompt content, provider configuration, expanded item,
 ## Explicitly Deferred
 
 - Real provider execution and provider fallback
-- Budget enforcement
+- User, anonymous-session, and analysis-run budget-policy scopes
+- Advanced billing, payment integration, and external pricing/tokenizer APIs
 - Advanced scoring science, premium reports, and report diffs
 - Scheduler and notifications
 - Redis cache, rate limiting, locks, and deduplication
