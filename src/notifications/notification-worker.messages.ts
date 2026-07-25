@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type { QueueMessage } from "../messaging/queue-message.types.js";
 import type { JsonObject } from "../types/database.types.js";
 
 const databaseId = z.string().regex(/^[1-9]\d*$/);
@@ -33,9 +32,6 @@ const envelopeSchema = z
 
 export type NotificationCreatedPayload = z.infer<typeof payloadSchema> &
   JsonObject;
-export type NotificationCreatedMessage =
-  QueueMessage<NotificationCreatedPayload>;
-
 export class InvalidNotificationMessageError extends Error {
   readonly code = "INVALID_NOTIFICATION_MESSAGE";
   readonly permanent = true;

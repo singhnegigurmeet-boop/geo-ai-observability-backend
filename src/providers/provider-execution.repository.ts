@@ -1,4 +1,3 @@
-import type { DatabaseExecutor } from "../db/database-executor.js";
 import type {
   JsonObject,
   PromptType,

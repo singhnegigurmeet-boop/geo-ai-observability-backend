@@ -62,13 +62,13 @@ export class ClaudeProviderAdapter implements ProviderAdapter {
     const blocks = Array.isArray(raw.content) ? raw.content : [];
     const text = blocks
       .map((block) => {
-        const item = objectAt(block, "Claude");
+        const item = objectAt(block);
         return item?.type === "text" ? stringAt(item.text) : null;
       })
       .filter((part): part is string => part !== null)
       .join("");
     if (!text) throw malformed("Claude");
-    const usage = objectAt(raw.usage, "Claude");
+    const usage = objectAt(raw.usage);
     const inputTokens = nonnegativeInteger(usage?.input_tokens);
     const outputTokens = nonnegativeInteger(usage?.output_tokens);
     return {

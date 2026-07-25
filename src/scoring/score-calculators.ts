@@ -1,4 +1,4 @@
-import type { JsonObject, JsonValue, PromptType } from "../types/database.types.js";
+import type { JsonValue, PromptType } from "../types/database.types.js";
 import type {
   ScoreCalculation,
   ScoreCalculationInput

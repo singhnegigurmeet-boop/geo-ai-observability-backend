@@ -1,7 +1,6 @@
 import type { DatabaseExecutor } from "../db/database-executor.js";
 import type {
   JsonObject,
-  UserRow,
   UserSessionRow,
   UserStatus
 } from "../types/database.types.js";

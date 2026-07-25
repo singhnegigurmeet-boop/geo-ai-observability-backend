@@ -8,10 +8,7 @@ export function asObject(value: unknown, provider: string): JsonObject {
   return value as JsonObject;
 }
 
-export function objectAt(
-  value: unknown,
-  provider: string
-): JsonObject | null {
+export function objectAt(value: unknown): JsonObject | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonObject)
     : null;

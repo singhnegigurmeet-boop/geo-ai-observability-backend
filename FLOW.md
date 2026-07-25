@@ -509,3 +509,9 @@ Stable notification/outbox keys prevent duplication across source transitions an
 - Crawler, RAG, agents, and frontend work
 
 PostgreSQL remains the correctness and source-of-truth layer. RabbitMQ is transport, and the outbox remains the reliable database-to-broker handoff. Redis features remain deferred optimization/hardening work.
+
+## Roadmap
+
+Next: V6.5 hardening and product polish.
+
+Later: final cleanup/consolidation, frontend, demo/video/message work, then the V7+ intelligence roadmap. The migration baseline, phase integration matrix, seed strategy, and final product documentation remain unchanged until the post-V6.5 stabilization pass.

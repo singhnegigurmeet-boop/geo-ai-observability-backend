@@ -208,6 +208,14 @@ npm run scheduler-worker:dev
 npm run notification-worker:dev
 ```
 
+The matching Compose services are `scheduler-worker` and
+`notification-worker`; both rely on the existing `outbox-dispatcher` for
+RabbitMQ publication:
+
+```bash
+docker compose up -d outbox-dispatcher scheduler-worker notification-worker
+```
+
 The scheduler polls `scheduler_jobs`, claims due rows with `FOR UPDATE SKIP LOCKED`, and uses `scheduled_analysis:<schedulerJobId>:<dueAt>` as the stable run key. Phase 12 supports UTC-only `interval:<seconds>` schedules from 60 seconds through one year. A successful tick creates/reuses the scheduled run, writes its ID-only `analysis_run.created` outbox event, and advances `next_run_at` in one transaction. Invalid schedules are paused and recorded without leaving partial runs.
 
 Report creation and transitions to `paused_budget` create owner-scoped internal notifications and ID-only `notification.created` events transactionally. Terminal or permanent failure records create admin-only notifications without user/workspace recipients. The notification worker reloads authoritative state and marks only the internal channel as sent; redelivery is a no-op. It does not claim email, SMS, webhook, or push delivery.
@@ -299,6 +307,7 @@ npm run test:phase8
 npm run test:phase9
 npm run test:phase10
 npm run test:phase11
+npm run test:phase12
 npm run infra:test:down
 ```
 
@@ -310,6 +319,12 @@ Integration launchers wait for their dependencies. Destructive test schema setup
 - Provider fallback, racing, or advanced comparison
 - Advanced billing, payments, and external pricing/tokenizer APIs
 - Advanced scoring science, premium reports, and report diffs
-- Scheduler or notification execution
+- Calendar-heavy scheduling and external notification delivery
 - Redis cache, rate limiting, locks, or deduplication
 - Country, market, or global-scope expansion
+
+## Roadmap
+
+Next: V6.5 hardening and product polish.
+
+Later: final cleanup/consolidation, frontend, demo/video/message work, then the V7+ intelligence roadmap. Migration squashing, phase-test consolidation, final seed strategy, and the final documentation rewrite are intentionally deferred until after V6.5.

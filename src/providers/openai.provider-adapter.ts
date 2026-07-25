@@ -58,14 +58,14 @@ export class OpenAiProviderAdapter implements ProviderAdapter {
     }
     const raw = asObject(response.body, "OpenAI");
     const choice = Array.isArray(raw.choices)
-      ? objectAt(raw.choices[0], "OpenAI")
+      ? objectAt(raw.choices[0])
       : null;
-    const message = objectAt(choice?.message, "OpenAI");
+    const message = objectAt(choice?.message);
     const content = stringAt(message?.content);
     const refusal = stringAt(message?.refusal);
     const text = content ?? refusal;
     if (!choice || !message || text === null) throw malformed("OpenAI");
-    const usage = objectAt(raw.usage, "OpenAI");
+    const usage = objectAt(raw.usage);
     return {
       rawResponse: raw,
       parsedEvidence: normalizedEvidence({

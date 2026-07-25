@@ -59,18 +59,18 @@ export class GeminiProviderAdapter implements ProviderAdapter {
     }
     const raw = asObject(response.body, "Gemini");
     const candidate = Array.isArray(raw.candidates)
-      ? objectAt(raw.candidates[0], "Gemini")
+      ? objectAt(raw.candidates[0])
       : null;
-    const content = objectAt(candidate?.content, "Gemini");
+    const content = objectAt(candidate?.content);
     const parts = Array.isArray(content?.parts) ? content.parts : [];
     const text = parts
-      .map((part) => stringAt(objectAt(part, "Gemini")?.text))
+      .map((part) => stringAt(objectAt(part)?.text))
       .filter((part): part is string => part !== null)
       .join("");
-    const blockReason = stringAt(objectAt(raw.promptFeedback, "Gemini")?.blockReason);
+    const blockReason = stringAt(objectAt(raw.promptFeedback)?.blockReason);
     if (!candidate && !blockReason) throw malformed("Gemini");
     const answer = text || `Gemini refusal: ${blockReason ?? "empty response"}`;
-    const usage = objectAt(raw.usageMetadata, "Gemini");
+    const usage = objectAt(raw.usageMetadata);
     return {
       rawResponse: raw,
       parsedEvidence: normalizedEvidence({
