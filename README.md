@@ -1,51 +1,180 @@
-# GEO V6 Production Core Backend
+# GEO V6 Production Core
 
-This branch contains the complete GEO V6 Production Core through Phase 12. PostgreSQL remains authoritative; RabbitMQ is transport; the outbox is the reliable handoff. Phase 12 adds DB-backed interval scheduling, internal notifications, and dependency-aware readiness without adding new intelligence or external delivery systems.
+GEO V6 is a modular TypeScript backend for submitting hierarchy-scoped analyses, executing each logical prompt across an immutable provider/model set, and producing backend-scored, revisioned reports.
 
-## Implemented
+PostgreSQL is the source of truth. RabbitMQ is transport. The transactional outbox is the reliable handoff between them. Provider responses are evidence; scoring and reporting remain backend-owned.
 
-- Production-safe additive PostgreSQL migrations and the current 31-table schema
-- PostgreSQL outbox-to-RabbitMQ delivery infrastructure
-- Opaque user and anonymous sessions with workspace ownership
-- Hostile-input-safe public ASCII domain normalization
-- Explicit active hierarchy-relationship validation
-- Exact entity-path create/reuse
-- Owner-scoped, normalized-request idempotency
-- Transactional `analysis_runs` and `outbox_events` creation
-- Owner-scoped queued-run status reads
-- One-level `analysis_run_worker` expansion through explicit relationships
-- Transactional `analysis_run_items` and `analysis_run_item.created` outbox events
-- PostgreSQL idempotency, bounded worker retries, failure history, and DLQ routing
-- One `llm_run` per queued `analysis_run_item`
-- Transactional `llm_run.created` ID-only outbox events
-- Five deterministic, unrendered `prompt_jobs` per queued `llm_run`
-- Transactional `prompt_job.created` routing events
-- Deterministic code-based `v1_light` and `v1` prompt templates
-- Policy-isolated anonymous/user mock-model selection
-- Idempotent provider jobs, immutable mock provider results, and actual token usage
-- A dedicated `mock_queue` and DLQ; mock work is never routed to a real-provider queue
-- ID-only `provider_result.created` events routed through a dedicated `scoring_queue` and DLQ
-- Immutable `backend-v1` provider scores computed independently of provider-supplied score fields
-- Immutable `multi-provider-v2` partial/final report revisions with provider provenance, coverage, and usage
-- Frozen normalized provider/model sets with one provider job per prompt/pair
-- Transactional cancellation before provider execution starts
-- Invalid-evidence retention without scoring malformed responses
-- Technical-failure terminalization across provider, prompt, LLM, item, and run state
-- Provider/model-aware platform, workspace, user, anonymous-session, and analysis-run budget policies enforced before provider execution
-- Deterministic model-aware estimated token/cost reservations and actual-usage reconciliation
-- Concurrency-safe hard limits and one-crossing-prompt soft limits using PostgreSQL policy locks
-- Budget pause propagation across provider deliveries, prompts, LLM runs, run items, and analysis runs
-- Shared reliable RabbitMQ consumer runtime across the business workers
-- Injectable REST adapters for OpenAI `gpt-4o-mini`, Gemini `gemini-1.5-flash`, and Claude `claude-3-5-sonnet`
-- Provider-specific queues, bounded timeouts, normalized evidence, usage extraction, and deterministic usage fallback
-- Concurrent-safe DB-backed `interval:<seconds>` scheduled analysis creation
-- Transactional, idempotent report-ready, budget-paused, and admin failure notifications
-- Internal delivery through the existing outbox and `notification_queue`
-- Lightweight liveness plus PostgreSQL/migration/RabbitMQ/queue readiness
+## Runtime architecture
 
-Real providers are disabled by default. Phase 12 does not add external notification providers, provider racing/fallback, billing, crawler/RAG/agent features, Redis execution, or Elasticsearch execution.
+The repository is one modular codebase with independently runnable API and worker processes:
 
-## HTTP Surface
+```text
+HTTP API
+  -> PostgreSQL transaction + outbox
+  -> outbox dispatcher
+  -> RabbitMQ
+  -> analysis -> item -> LLM -> prompt -> provider -> scoring workers
+  -> report revisions + notification outbox
+```
+
+Workers receive aggregate-ID messages, reload and lock authoritative rows, make idempotent transitions, and write downstream outbox events in the same transaction. A shared lifecycle service derives parent state from provider jobs through prompt jobs, LLM runs, run items, analysis runs, and report readiness.
+
+## Database
+
+Migrations `001`–`024` create 31 production tables:
+
+- Identity and ownership: `users`, user/anonymous sessions, workspaces, memberships, and role-change requests.
+- Hierarchy: domains, four master levels, four relationship tables, and materialized `entity_paths`.
+- Execution: analysis runs and items, frozen run provider sets, LLM runs, prompts, provider jobs, and immutable provider results.
+- Budgets and interpretation: budget policies, token usage, immutable provider scores, and immutable report revisions.
+- Operations: outbox events, failure records, notifications, and scheduler jobs.
+
+Foreign keys, checks, uniqueness, immutable-row triggers, provider-set freezing, report revision rules, operational notification rules, and query indexes are enforced in PostgreSQL. Multiple `llm_runs.run_key` values and prompt versions remain supported.
+
+## Ownership and hierarchy
+
+An analysis is owned in one of three ways:
+
+- Anonymous session.
+- User plus workspace membership.
+- User/workspace with a validated claimed anonymous origin.
+
+Claiming does not rewrite historical anonymous runs. The exact claimant receives derived access to pre-claim runs; unrelated users, workspaces, and anonymous sessions remain denied. The same ownership predicate protects status, report, and cancellation reads.
+
+Hierarchy relationship tables are authoritative; `entity_paths` are materialized paths only. Every selected master and edge must be active and the path must be contiguous. Manual submissions and scheduled runs share this validation. Expansion follows deterministic administrator ordering and selects at most three children for anonymous work or five for user/claimed work.
+
+## Analysis and provider-set identity
+
+`POST /v1/analysis` requires `Idempotency-Key` and an ownership session. A minimal body is:
+
+```json
+{ "domain": "example.com" }
+```
+
+A user or claimed request may choose up to four exact provider/model pairs:
+
+```json
+{
+  "domain": "example.com",
+  "providerModels": [
+    { "provider": "mock", "model": "mock-quality" },
+    { "provider": "openai", "model": "gpt-4o-mini" }
+  ]
+}
+```
+
+Provider sets are validated, deduplicated, stably sorted, serialized canonically, and frozen on the run. Order and duplicates do not alter idempotency identity. Reusing an owner-scoped key with a different normalized request conflicts.
+
+Defaults are:
+
+- Anonymous: `mock/mock-fast`.
+- User or claimed: `mock/mock-standard`.
+
+Deprecated `preferredProvider`/`preferredModel` fields remain as single-pair HTTP compatibility. They cannot be combined with `providerModels`. Real providers are feature-gated and use only the exact configured OpenAI, Gemini, or Claude model.
+
+## Prompts and independent provider execution
+
+Planning creates logical `prompt_jobs`; rendering renders each logical prompt once. Fan-out creates one `provider_job` and one outbox event for every frozen run provider/model pair:
+
+```text
+one prompt_job
+  -> many provider_jobs
+  -> one provider_result per provider job
+  -> one provider_score per result and scoring version
+```
+
+Providers execute independently. This is parallel fan-out, not racing, and there is no fallback. One successful sibling cannot complete a prompt while another sibling remains executable.
+
+Budget policies may apply at platform, workspace, user, anonymous-session, or run scope, optionally by provider/model. Estimated token/cost reservations use PostgreSQL locks. Actual usage is reconciled once. Hard limits block before crossing; soft limits allow one crossing execution. A budget pause acknowledges work without technical retry, failure record, or DLQ, and preserves completed evidence.
+
+Valid provider results are immutable evidence and become inputs to deterministic `backend-v1` scoring. Malformed successful responses are retained as immutable invalid evidence, remain unscored, and appear as coverage gaps. Valid refusals remain valid evidence. Failed, invalid, paused, cancelled, or absent evidence is never converted to numeric zero.
+
+## Reports, failures, and cancellation
+
+Reports are immutable `multi-provider-v2` revisions. The latest revision may represent:
+
+- `partial`
+- `budget_paused_partial`
+- `completed`
+- `completed_with_gaps`
+- `failed_empty`
+- `cancelled_partial`
+- `cancelled_empty`
+- `completed_empty`
+
+Valid sibling scores are averaged equally at the logical-prompt level. Provider/model provenance, coverage state, usage, invalid evidence, failures, cancellation, pauses, and pending work remain distinct.
+
+Retryable technical failures are confirmed-republished for attempts one and two. Permanent or exhausted work records the failure, terminalizes the addressed aggregate, recalculates parents, creates any ready report and notification, then rejects to the queue's DLQ. DLQ state is operational evidence, not business state.
+
+Cancellation is allowed only before provider execution begins. It cancels queued descendants transactionally; delayed messages become successful no-ops. Late cancellation conflicts and does not create retries, failure records, or DLQ traffic.
+
+An expansion with no eligible child completes normally with `completed_empty`.
+
+## Scheduler and notifications
+
+The scheduler supports UTC `interval:<seconds>` jobs. It claims due rows with `FOR UPDATE SKIP LOCKED`, uses a stable tick identity, revalidates current workspace membership, full hierarchy, and provider-set policy, then creates the run, frozen provider set, outbox event, and next cursor transactionally. Invalid current state rolls back run creation, safely pauses the schedule, and creates one admin notification.
+
+Report-ready, budget-paused, and administrative failure notifications are idempotent database records delivered internally through the outbox and `notification_queue`. No external email, chat, or webhook delivery is implemented.
+
+## Health and readiness
+
+- `GET /health` reports process liveness only.
+- `GET /ready` checks PostgreSQL, the exact migration ledger, RabbitMQ, and every production queue/DLQ.
+
+Readiness does not call external providers and does not require Redis or Elasticsearch.
+
+## Local setup
+
+Requirements: Node.js 22+, Docker with Compose, and npm.
+
+```bash
+copy .env.example .env
+npm ci
+npm run infra:up
+npm run migrate
+```
+
+Run the complete default V6 process set in separate terminals:
+
+```bash
+npm run dev
+npm run outbox:dev
+npm run analysis-worker:dev
+npm run analysis-item-worker:dev
+npm run llm-run-worker:dev
+npm run prompt-worker:dev
+npm run mock-provider-worker:dev
+npm run scoring-worker:dev
+npm run scheduler-worker:dev
+npm run notification-worker:dev
+```
+
+Enable and start real provider workers only with the corresponding API keys and `ENABLE_REAL_PROVIDERS=true`:
+
+```bash
+npm run openai-provider-worker:dev
+npm run gemini-provider-worker:dev
+npm run claude-provider-worker:dev
+```
+
+Compose can build and start the complete default V6 process set with `npm run docker:up`, or only the API and its dependencies with `npm run docker:api`. Redis and Elasticsearch are retained only under the explicit `v65-deferred` profile and are not V6 runtime dependencies.
+
+## Verification
+
+Start isolated test infrastructure with `npm run infra:test:up`, then use:
+
+```bash
+npm run test:unit
+npm run test:migrations
+npm run test:integration
+npm run test:e2e
+npm run test:all
+npm run verify
+```
+
+The phase-named commands remain available as focused regression suites. `verify` runs source/test typechecks, 117 unit tests, 10 migration tests, 96 phase integration tests, 9 final E2E journeys, the production build, and `git diff --check`.
+
+## HTTP surface
 
 ```text
 GET  /health
@@ -58,330 +187,8 @@ GET  /v1/analysis/runs/:analysisRunId/report
 POST /v1/analysis/runs/:analysisRunId/cancel
 ```
 
-Health and documentation are public. Analysis and report routes mount ownership middleware locally and require either:
+Use `X-Anonymous-Session-Token`, or `Authorization: Bearer …` plus `X-Workspace-Id`. A claimed request may include both credential forms. Swagger UI at `/docs` documents request compatibility, provider-set idempotency, report coverage/lifecycle states, and the cancellation boundary.
 
-```text
-X-Anonymous-Session-Token: <anonymous-token>
-```
+## Scope
 
-or:
-
-```text
-Authorization: Bearer <user-token>
-X-Workspace-Id: <workspace-id>
-```
-
-A validated claimed submission may also send the anonymous token with the user credentials. The recorded anonymous origin is preserved only when its claim matches that user and workspace.
-
-## Submit an Analysis
-
-`POST /v1/analysis` requires a client-generated idempotency key:
-
-```text
-Idempotency-Key: <stable-client-key>
-```
-
-Example body:
-
-```json
-{
-  "domain": "example.com",
-  "categoryId": "1",
-  "brandId": "2"
-}
-```
-
-Logged-in requests may also select an allowed Phase 8 mock model:
-
-```json
-{
-  "domain": "example.com",
-  "preferredProvider": "mock",
-  "preferredModel": "mock-quality"
-}
-```
-
-Logged-in requests may instead select a bounded provider/model set:
-
-```json
-{
-  "domain": "example.com",
-  "providerModels": [
-    { "provider": "mock", "model": "mock-quality" },
-    { "provider": "openai", "model": "gpt-4o-mini" }
-  ]
-}
-```
-
-The set is validated, deduplicated, sorted, persisted immutably, and included
-in idempotency identity. `providerModels` cannot be mixed with the legacy
-single-provider preference fields. Real-provider entries require the existing
-real-provider feature flag.
-
-Allowed models are `mock-fast`, `mock-standard`, and `mock-quality`. Logged-in and claimed requests default to `mock-standard`. Anonymous requests cannot send either preference and use the fixed `mock-fast` policy.
-
-The hierarchy must be contiguous:
-
-```text
-domain
-domain -> category
-domain -> category -> brand
-domain -> category -> brand -> product
-domain -> category -> brand -> product -> use_context
-```
-
-The domain field accepts a bare hostname or HTTP(S) URL-like value. The input boundary removes protocol, credentials-free port, path, query, hash, a leading `www.`, and then validates the extracted public ASCII hostname. Instruction-like text, HTML/script-like input, IDNs/punycode, IP literals, localhost, and internal/reserved host suffixes are rejected.
-
-Only the normalized hostname is persisted in `domains`, `analysis_runs.request_payload`, and downstream status data. Raw domain input is never included in outbox messages or retained as `display_domain`.
-
-The original V6 core schema contained 26 public production tables. Phase 4.5
-added four relationship tables—`domain_categories`, `category_brands`,
-`brand_products`, and `product_use_contexts`. Migration 024 adds
-`analysis_run_provider_models`, for a current total of 31.
-
-Categories, brands, products, and use contexts are controlled master records. The relationship tables define valid cascade relationships using IDs only. `entity_paths` materializes reusable concrete paths for analysis state and is not relationship authority.
-
-Normal analysis submission may create/reuse normalized domains and exact selected `entity_paths`. It never creates category, brand, product, or use-context masters, and it never creates relationship rows. Those relationships are admin/system/discovery-controlled.
-
-Hierarchy expansion reads active relationship rows in deterministic admin-controlled order: `sort_order ASC NULLS LAST`, then relationship creation time and relationship ID. Anonymous runs select at most three children; logged-in and claimed runs select at most five. A full use-context path creates one direct item.
-
-Any future crawler or fetcher must additionally resolve and revalidate every destination IP at request time and after redirects. Input normalization alone is not a complete SSRF boundary.
-
-An accepted or idempotently replayed request returns `202`:
-
-```json
-{
-  "analysisRunId": "42",
-  "startingEntityPathId": "9",
-  "status": "queued",
-  "idempotentReplay": false,
-  "createdAt": "2026-07-24T10:00:00.000Z"
-}
-```
-
-Reusing a key for the same owner and normalized request returns the existing run. Reusing it for a different normalized request returns `409 CONFLICT`. The same client key may be used independently by another owner.
-
-Resolved provider/model selection is part of the canonical request identity. The same owner, path, and model replay idempotently; changing the model changes the request and conflicts when the same idempotency key is reused.
-
-## Reliable Handoff
-
-The run and outbox event are written in one PostgreSQL transaction:
-
-```text
-analysis_runs
-  + outbox_events (analysis_run.created)
-  -> COMMIT
-```
-
-The event is routed through `analysis_run_queue` and contains only
-`analysisRunId`. Every downstream event likewise contains only its primary
-aggregate ID. RabbitMQ transports identifiers; workers reload authoritative
-linkage, ownership, routing, and provider state from PostgreSQL.
-
-The worker locks a queued run and atomically materializes child paths, creates
-queued items, emits one ID-only `analysis_run_item.created` event per item, and
-moves the run to `processing`. A path with no eligible children becomes a
-successful `completed_empty` business outcome with an immutable explanatory
-report; it creates no failure record or DLQ entry.
-
-Technical failures roll back the expansion and are recorded in `failure_records`. Consumer attempts are tracked separately from outbox publication attempts. Attempts one and two are confirmed-republished; attempt three is rejected to `analysis_run_queue.dlq`.
-
-## Execution and report lifecycle
-
-Each rendered prompt fans out to every pair frozen in
-`analysis_run_provider_models`. Prompt and parent states are derived from all
-sibling provider jobs; a successful sibling is preserved if another provider
-fails or pauses.
-
-Backend scoring creates immutable `multi-provider-v2` report revisions.
-Evidence that arrives while other work is outstanding produces a partial
-revision; terminal work produces a final revision. Invalid, failed, cancelled,
-and missing evidence remain explicit coverage gaps and are never scored as
-zero. Budget pauses acknowledge the delivery without retry or DLQ and retain a
-budget-paused snapshot of completed evidence.
-
-`POST /v1/analysis/runs/:analysisRunId/cancel` is idempotent before provider
-execution begins. It cancels all unstarted descendants and creates a cancelled
-report. Once any provider execution has started, cancellation returns
-`409 CONFLICT`.
-
-Terminal technical failures now update business state in the same transaction
-as the final failure record. Claimed sessions grant the exact claimant
-user/workspace derived access to pre-claim runs. Scheduler ticks revalidate
-current authorization and the active hierarchy chain immediately before
-creating a run.
-
-## Local Setup
-
-Copy `.env.example` to `.env`, set a private `SESSION_TOKEN_PEPPER`, then:
-
-```bash
-npm install
-npm run infra:up
-npm run migrate
-npm run dev
-```
-
-Run the outbox dispatcher separately when delivery is needed:
-
-```bash
-npm run outbox:dev
-```
-
-Run the Phase 5 consumer separately:
-
-```bash
-npm run analysis-worker:dev
-```
-
-Run the Phase 6 item consumer separately:
-
-```bash
-npm run analysis-item-worker:dev
-```
-
-Phase 6 consumes `analysis_run_item.created`, locks the queued item, validates its parent run, path, and ownership against PostgreSQL, creates/reuses one queued `llm_run` with `run_key = primary`, and emits `llm_run.created` to `llm_run_queue`. The item then moves to `processing`; the parent analysis run is not completed or otherwise updated.
-
-Run the Phase 7 prompt-planning consumer separately:
-
-```bash
-npm run llm-run-worker:dev
-```
-
-Phase 7 consumes `llm_run.created`, reloads and locks the authoritative LLM run, validates its item, run, path, starting path, and ownership, then calls the actor-aware prompt policy. Anonymous work gets visibility, competitor, and ranking jobs at `v1_light`. Logged-in and valid claimed work gets visibility, competitor, ranking, price range, and pros/cons jobs at `v1`. Every planned job has `prompt_text = NULL` and emits `prompt_job.created` to its dedicated queue.
-
-Run the Phase 8 prompt and mock-provider consumers, followed by the Phase 9 scoring consumer:
-
-```bash
-npm run prompt-worker:dev
-npm run mock-provider-worker:dev
-npm run scoring-worker:dev
-```
-
-Run the Phase 12 operational workers separately:
-
-```bash
-npm run scheduler-worker:dev
-npm run notification-worker:dev
-```
-
-The matching Compose services are `scheduler-worker` and
-`notification-worker`; both rely on the existing `outbox-dispatcher` for
-RabbitMQ publication:
-
-```bash
-docker compose up -d outbox-dispatcher scheduler-worker notification-worker
-```
-
-The scheduler polls `scheduler_jobs`, claims due rows with `FOR UPDATE SKIP LOCKED`, and uses `scheduled_analysis:<schedulerJobId>:<dueAt>` as the stable run key. Phase 12 supports UTC-only `interval:<seconds>` schedules from 60 seconds through one year. A successful tick creates/reuses the scheduled run, writes its ID-only `analysis_run.created` outbox event, and advances `next_run_at` in one transaction. Invalid schedules are paused and recorded without leaving partial runs.
-
-Report creation and transitions to `paused_budget` create owner-scoped internal notifications and ID-only `notification.created` events transactionally. Terminal or permanent failure records create admin-only notifications without user/workspace recipients. The notification worker reloads authoritative state and marks only the internal channel as sent; redelivery is a no-op. It does not claim email, SMS, webhook, or push delivery.
-
-`GET /health` is lightweight process liveness. `GET /ready` returns `503` unless PostgreSQL is reachable, the exact migration ledger matches checked-in migrations, RabbitMQ is reachable, and every main queue and DLQ exists. It exposes only `ok`/`failed` component states and never calls providers. No operations-summary endpoint is public because V6 does not yet have an admin authorization boundary.
-
-The scoring worker consumes ID-only `provider_result.created` events. It reloads immutable evidence from PostgreSQL, computes one versioned backend score, and checks report readiness from existing prompt jobs. Anonymous runs naturally complete after their three planned prompts; logged-in and claimed runs complete after their five planned prompts. No actor count is hardcoded in report aggregation.
-
-Before the mock provider creates evidence, it estimates input/output tokens and integer micro-cost from the rendered prompt, prompt type/version, provider, and model. It then locks all applicable enabled budget policies:
-
-```text
-anonymous -> platform_default + anonymous_session + analysis_run
-user      -> platform_default + workspace + user + analysis_run
-claimed   -> platform_default + workspace + user + analysis_run
-```
-
-Migrations `020` and `021` extend the existing generic `budget_policies` table rather than creating separate scope tables. Workspace, user, anonymous-session, and analysis-run policies use real foreign keys. Claimed runs preserve their anonymous origin but deliberately do not apply anonymous-session policies.
-
-Policies may target an entire provider or one exact provider-owned model. An absent enabled policy means no limit for that scope. A hard policy rejects an execution whose projection crosses either configured limit. A soft policy permits the one prompt that crosses the limit, then pauses subsequent executions while accounted usage remains over the limit.
-
-Estimated and actual records are both immutable. Budget accounting chooses the actual record when it exists and otherwise uses the estimate, so reconciliation never double-counts a provider job. Budget pause is acknowledged as a business result: it creates no provider evidence, no actual usage, no score/report, no failure record, and no DLQ delivery. Each worker transitions only its already-locked provider/prompt row; later deliveries observe the paused parent run and pause themselves without competing lock order.
-
-Retrieve a completed report with:
-
-```text
-GET /v1/analysis/runs/:analysisRunId/report
-```
-
-The same anonymous-session or user/workspace ownership rules used by status reads apply. A missing, incomplete, or differently owned report returns `404`.
-
-Migration `017_allow_unrendered_prompt_jobs.sql` permits the Phase 7 planned state (`prompt_text = NULL`) while continuing to reject blank rendered text. Phase 8 fills that field before creating provider work.
-
-Run the Phase 8 prompt renderers and mock provider separately:
-
-```bash
-npm run prompt-worker:dev
-npm run mock-provider-worker:dev
-```
-
-The prompt worker consumes all five prompt-type queues. It locks each pending job, reloads canonical hierarchy, ownership, and run model preference, renders the chosen `v1_light` or `v1` template, then applies provider/model policy. Anonymous uses `mock-fast`; logged-in/claimed uses its validated selection or defaults to `mock-standard`.
-
-The mock provider worker rejects unrendered prompts. For valid budget-approved work it stores deterministic evidence in immutable `provider_results`, records deterministic model-priced `actual` token usage in integer micros, and marks both jobs succeeded. Stable database identities make both stages safe under redelivery.
-
-## Phase 11 Real Providers
-
-Real provider selection is available only to logged-in/claimed requests when `ENABLE_REAL_PROVIDERS=true`, and only for these exact pairs:
-
-```text
-openai -> gpt-4o-mini
-gemini -> gemini-1.5-flash
-claude -> claude-3-5-sonnet
-```
-
-Anonymous work remains fixed on `mock/mock-fast`; the default user path remains `mock/mock-standard`. Start a configured worker with `npm run openai-provider-worker:dev`, `npm run gemini-provider-worker:dev`, or `npm run claude-provider-worker:dev`. Each requires its corresponding API key and uses its configured timeout.
-
-All adapters receive the already-rendered prompt. The provider worker reserves estimated usage under every applicable budget policy before making the HTTP call. Successful responses preserve raw JSON and normalized evidence in immutable `provider_results`. Provider-returned input/output usage is used when available; missing components fall back to the deterministic reservation estimate. Actual usage is locally priced in integer micros and replaces estimated usage in budget accounting.
-
-Timeouts, rate limits, network errors, and 5xx responses are retryable technical errors. Missing keys, invalid provider/model pairs, other 4xx responses, and malformed success responses are permanent technical errors. They follow the existing failure-record/retry/DLQ runtime; budget pause remains an acknowledged business state and never enters that path. Tests inject HTTP clients and make no real provider calls.
-
-Migration `018_require_rendered_prompt_for_provider_jobs.sql` enforces the render-before-provider invariant inside PostgreSQL, including direct inserts outside the service path.
-
-Migration `019_add_analysis_run_model_preference.sql` adds nullable run-level provider/model preference columns. New anonymous runs keep them null; new user/claimed runs persist the validated or default mock selection.
-
-## Verification
-
-```bash
-npm run typecheck
-npm test
-npm run build
-```
-
-`npm run typecheck` performs full semantic TypeScript checking for both
-`src/**/*.ts` and `tests/**/*.ts`. The test suite is not considered type-safe
-merely because `tsx` can execute it.
-
-Integration suites:
-
-```bash
-npm run infra:test:up
-npm run test:migrations
-npm run test:phase2
-npm run test:phase3
-npm run test:phase4
-npm run test:phase45
-npm run test:phase5
-npm run test:phase6
-npm run test:phase7
-npm run test:phase8
-npm run test:phase9
-npm run test:phase10
-npm run test:phase11
-npm run test:phase12
-npm run infra:test:down
-```
-
-Integration launchers wait for their dependencies. Destructive test schema setup is guarded by a `_test` database suffix.
-
-## Not Implemented
-
-- Dynamic prompt/model policy or prompt experimentation
-- Provider fallback, racing, or advanced comparison
-- Advanced billing, payments, and external pricing/tokenizer APIs
-- Advanced scoring science, premium reports, and report diffs
-- Calendar-heavy scheduling and external notification delivery
-- Redis cache, rate limiting, locks, or deduplication
-- Country, market, or global-scope expansion
-
-## Roadmap
-
-Next: V6.5 hardening and product polish.
-
-Later: final cleanup/consolidation, frontend, demo/video/message work, then the V7+ intelligence roadmap. Migration squashing, phase-test consolidation, final seed strategy, and the final documentation rewrite are intentionally deferred until after V6.5.
+Implemented V6 scope is the production core described above. Redis execution, Elasticsearch execution, market/country/global scopes, prompt experimentation, provider racing or fallback, additional providers, crawler, RAG, agents, frontend, billing/payments, and microservice extraction are deferred and are not claimed by this repository.

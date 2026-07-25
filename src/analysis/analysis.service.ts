@@ -7,14 +7,20 @@ import { ApplicationError } from "../errors/application-error.js";
 import { HierarchyService } from "../hierarchy/hierarchy.service.js";
 import { OutboxEventWriterRepository } from "../outbox/outbox-event-writer.repository.js";
 import type { OwnershipContext } from "../ownership/ownership-context.types.js";
+import { AnalysisRunProviderModelRepository } from "../providers/analysis-run-provider-model.repository.js";
 import {
   InvalidProviderModelSelectionError,
+  providerModelPairs,
+  sameProviderModelSet,
   resolveProviderModelSet
 } from "../providers/provider-model.policy.js";
 import { ReportAggregationService } from "../reports/report-aggregation.service.js";
+import { ReportOutcomeService } from "../reports/report-outcome.service.js";
 import { ReportRepository } from "../reports/report.repository.js";
-import { MULTI_PROVIDER_REPORT_VERSION } from "../scoring/score.types.js";
-import type { AnalysisRunRow } from "../types/database.types.js";
+import type {
+  AnalysisRunRow,
+  ProviderName
+} from "../types/database.types.js";
 import type { CreateAnalysisRequest } from "./analysis.schemas.js";
 import { AnalysisRepository } from "./analysis.repository.js";
 import type {
@@ -71,13 +77,15 @@ export class AnalysisService {
         clientIdempotencyKey
       );
       const analyses = new AnalysisRepository(client);
+      const runProviderModels =
+        new AnalysisRunProviderModelRepository(client);
 
       const existing = await analyses.findByIdempotencyKey(idempotencyKey);
       if (existing) {
         return replayResponse(
           existing,
           canonicalRequest,
-          await analyses.findProviderModels(existing.analysis_run_id)
+          await runProviderModels.listPairs(existing.analysis_run_id)
         );
       }
 
@@ -98,10 +106,10 @@ export class AnalysisService {
         return replayResponse(
           raced,
           canonicalRequest,
-          await analyses.findProviderModels(raced.analysis_run_id)
+          await runProviderModels.listPairs(raced.analysis_run_id)
         );
       }
-      await analyses.createProviderModels(
+      await runProviderModels.createOrReuse(
         created.analysis_run_id,
         canonicalRequest.providerModels
       );
@@ -264,35 +272,9 @@ export class AnalysisService {
         reports
       ).createIfReady(analysisRunId);
       if (snapshot.outcome === "not_ready") {
-        await reports.createRevision({
-          analysisRunId,
-          reportVersion: MULTI_PROVIDER_REPORT_VERSION,
-          status: "failed",
-          reportData: {
-            analysisRunId,
-            reportType: "multi_provider_report",
-            reportVersion: MULTI_PROVIDER_REPORT_VERSION,
-            lifecycleState: "cancelled_empty",
-            final: true,
-            summary: "The analysis was cancelled before provider execution began.",
-            counts: {
-              expected: 0,
-              nonterminal: 0,
-              scored: 0,
-              invalid: 0,
-              failed: 0,
-              pausedBudget: 0,
-              cancelled: 0,
-              completionPercentage: 100
-            },
-            providerResults: [],
-            promptScores: [],
-            breakdown: [],
-            usage: { inputTokens: 0, outputTokens: 0, costMicros: 0 }
-          },
-          renderedText:
-            "The analysis was cancelled before provider execution began."
-        });
+        await new ReportOutcomeService(reports).createCancelledEmpty(
+          analysisRunId
+        );
       }
       return { analysisRunId, status: "cancelled" as const, idempotent: false };
     });
@@ -350,7 +332,7 @@ function ownershipColumns(owner: OwnershipContext) {
 function replayResponse(
   existing: AnalysisRunRow,
   canonicalRequest: CanonicalAnalysisRequest,
-  storedProviderModels: Array<{ provider: string; model: string }>
+  storedProviderModels: Array<{ provider: ProviderName; model: string }>
 ) {
   if (
     !sameCanonicalRequest(
@@ -370,7 +352,7 @@ function replayResponse(
 function sameCanonicalRequest(
   stored: AnalysisRunRow["request_payload"],
   expected: CanonicalAnalysisRequest,
-  storedProviderModels: Array<{ provider: string; model: string }>
+  storedProviderModels: Array<{ provider: ProviderName; model: string }>
 ) {
   return (
     stored.domain === expected.domain &&
@@ -380,9 +362,7 @@ function sameCanonicalRequest(
     stored.useContextId === expected.useContextId &&
     (stored.requestedProvider ?? null) === expected.requestedProvider &&
     (stored.requestedModel ?? null) === expected.requestedModel &&
-    JSON.stringify(
-      storedProviderModels.map(({ provider, model }) => ({ provider, model }))
-    ) === JSON.stringify(expected.providerModels)
+    sameProviderModelSet(storedProviderModels, expected.providerModels)
   );
 }
 
@@ -392,13 +372,13 @@ function resolveModelPreferences(
   realProvidersEnabled: boolean
 ) {
   try {
-    return resolveProviderModelSet({
+    return providerModelPairs(resolveProviderModelSet({
       actorType: owner.actorType,
       requestedProvider: request.preferredProvider ?? null,
       requestedModel: request.preferredModel ?? null,
       requestedProviderModels: request.providerModels ?? null,
       realProvidersEnabled
-    });
+    }));
   } catch (error) {
     if (error instanceof InvalidProviderModelSelectionError) {
       throw new ApplicationError("VALIDATION_ERROR", error.message);

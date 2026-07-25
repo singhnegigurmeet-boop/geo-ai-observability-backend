@@ -8,9 +8,9 @@ export const openApiDocument = {
   openapi: "3.0.3",
   info: {
     title: "GEO V6 Production Core API",
-    version: "0.1.0-phase12",
+    version: "6.0.0",
     description:
-      "GEO V6 Production Core through Phase 12, including DB-backed scheduling, internal notifications, and dependency-aware readiness."
+      "GEO V6 Production Core. PostgreSQL is authoritative, RabbitMQ is transport, and provider outputs are evidence scored and reported by the backend."
   },
   servers: [
     {
@@ -62,7 +62,7 @@ export const openApiDocument = {
         tags: ["Analysis"],
         summary: "Submit an analysis run",
         description:
-          "Creates or replays a queued analysis run with an immutable normalized provider/model set. Anonymous requests use mock-fast; logged-in requests may provide an explicit set.",
+          "Creates or replays a queued analysis run with an immutable normalized provider/model set. Anonymous requests use mock/mock-fast. User and claimed requests default to mock/mock-standard or may provide an explicit set. Provider-set order and duplicates do not change idempotency identity; a different normalized set conflicts under the same owner-scoped key.",
         security: ownershipSecurity,
         parameters: [
           {
@@ -137,7 +137,7 @@ export const openApiDocument = {
         tags: ["Analysis"],
         summary: "Read the latest owned report revision",
         description:
-          "Returns the latest immutable multi-provider-v2 partial or final report revision.",
+          "Returns the latest immutable multi-provider-v2 report revision. Revisions may be partial, budget-paused, completed, completed with gaps, failed empty, cancelled, or completed empty. Coverage retains provider/model provenance; invalid, failed, and missing evidence are never scored as zero.",
         security: ownershipSecurity,
         parameters: [
           {
@@ -149,7 +149,7 @@ export const openApiDocument = {
         ],
         responses: {
           "200": {
-            description: "Owned completed basic report",
+            description: "Latest owned partial or terminal report revision",
             content: {
               "application/json": {
                 schema: {
@@ -170,6 +170,8 @@ export const openApiDocument = {
       post: {
         tags: ["Analysis"],
         summary: "Cancel an owned analysis before provider execution begins",
+        description:
+          "Cancellation is idempotent while the run remains cancellable. It conflicts once any provider execution has started or another terminal outcome has won. Delayed queue deliveries for cancelled work are acknowledged as no-ops.",
         security: ownershipSecurity,
         parameters: [
           {
@@ -257,8 +259,9 @@ export const openApiDocument = {
           preferredProvider: {
             type: "string",
             enum: ["mock", "openai", "gemini", "claude"],
+            deprecated: true,
             description:
-              "Logged-in requests only. Real providers also require ENABLE_REAL_PROVIDERS=true."
+              "Deprecated single-pair compatibility field for logged-in requests. Use providerModels. Must be paired consistently with preferredModel and cannot be mixed with providerModels. Real providers require ENABLE_REAL_PROVIDERS=true."
           },
           preferredModel: {
             type: "string",
@@ -270,8 +273,9 @@ export const openApiDocument = {
               "gemini-1.5-flash",
               "claude-3-5-sonnet"
             ],
+            deprecated: true,
             description:
-              "Logged-in requests only. Defaults to mock-standard."
+              "Deprecated single-pair compatibility field for logged-in requests. Use providerModels. Defaults to mock-standard when no provider selection is supplied."
           },
           providerModels: {
             type: "array",
@@ -392,12 +396,59 @@ export const openApiDocument = {
             enum: ["partial", "completed", "failed"]
           },
           report: {
-            type: "object",
+            allOf: [{ $ref: "#/components/schemas/MultiProviderReport" }],
             description:
               "Latest immutable report snapshot with provider coverage, prompt-level means, gaps, and usage."
           },
           renderedText: { type: "string", nullable: true },
           generatedAt: { type: "string", format: "date-time" }
+        }
+      },
+      MultiProviderReport: {
+        type: "object",
+        required: [
+          "reportVersion",
+          "lifecycleState",
+          "final",
+          "resumePossible",
+          "counts",
+          "providerResults",
+          "usage"
+        ],
+        properties: {
+          reportVersion: { type: "string", enum: ["multi-provider-v2"] },
+          lifecycleState: {
+            type: "string",
+            enum: [
+              "partial",
+              "budget_paused_partial",
+              "completed",
+              "completed_with_gaps",
+              "failed_empty",
+              "cancelled_partial",
+              "cancelled_empty",
+              "completed_empty"
+            ]
+          },
+          final: { type: "boolean" },
+          resumePossible: { type: "boolean", enum: [false] },
+          overallScore: { type: "number", nullable: true },
+          counts: {
+            type: "object",
+            description:
+              "Separate counts for expected, nonterminal, scored, invalid, failed, budget-paused, and cancelled provider executions."
+          },
+          providerResults: {
+            type: "array",
+            description:
+              "Coverage metadata and backend scores by logical prompt and provider/model execution. Raw provider bodies are not exposed.",
+            items: { type: "object" }
+          },
+          usage: {
+            type: "object",
+            description:
+              "Aggregate input/output token counts and integer micro-cost; each provider execution is counted once."
+          }
         }
       },
       StartingEntityPath: {

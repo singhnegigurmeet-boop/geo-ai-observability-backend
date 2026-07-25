@@ -7,8 +7,6 @@ services:
       NODE_ENV: development
       PORT: 4000
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
       ENABLE_REAL_PROVIDERS: ${ENABLE_REAL_PROVIDERS:-false}
@@ -28,8 +26,6 @@ services:
       NODE_ENV: development
       PORT: 4000
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       RABBITMQ_EXCHANGE: geo.v6.main
       RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
@@ -56,8 +52,6 @@ services:
       NODE_ENV: development
       PORT: 4000
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       RABBITMQ_EXCHANGE: geo.v6.main
       RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
@@ -78,8 +72,6 @@ services:
       NODE_ENV: development
       PORT: 4000
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       RABBITMQ_EXCHANGE: geo.v6.main
       RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
@@ -100,8 +92,6 @@ services:
       NODE_ENV: development
       PORT: 4000
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       RABBITMQ_EXCHANGE: geo.v6.main
       RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
@@ -122,8 +112,6 @@ services:
       NODE_ENV: development
       PORT: 4000
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       RABBITMQ_EXCHANGE: geo.v6.main
       RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
@@ -145,8 +133,6 @@ services:
       NODE_ENV: development
       PORT: 4000
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       RABBITMQ_EXCHANGE: geo.v6.main
       RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
@@ -166,8 +152,6 @@ services:
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
       ENABLE_REAL_PROVIDERS: "true"
@@ -187,8 +171,6 @@ services:
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
       ENABLE_REAL_PROVIDERS: "true"
@@ -208,8 +190,6 @@ services:
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
       ENABLE_REAL_PROVIDERS: "true"
@@ -230,8 +210,6 @@ services:
       NODE_ENV: development
       PORT: 4000
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       RABBITMQ_EXCHANGE: geo.v6.main
       RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
@@ -251,8 +229,6 @@ services:
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
       ENABLE_REAL_PROVIDERS: ${ENABLE_REAL_PROVIDERS:-false}
@@ -269,8 +245,6 @@ services:
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      REDIS_URL: redis://redis:6379
-      ELASTICSEARCH_NODE: http://elasticsearch:9200
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       RABBITMQ_EXCHANGE: geo.v6.main
       RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
@@ -349,6 +323,7 @@ services:
       retries: 30
 
   redis:
+    profiles: ["v65-deferred"]
     image: redis:7-alpine
     container_name: geo-redis
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
@@ -363,6 +338,7 @@ services:
       retries: 10
 
   elasticsearch:
+    profiles: ["v65-deferred"]
     image: docker.elastic.co/elasticsearch/elasticsearch:8.15.1
     container_name: geo-elasticsearch
     environment:

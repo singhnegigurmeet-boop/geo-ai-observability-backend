@@ -12,7 +12,7 @@ import type {
 import { AnalysisRunExpansionRepository } from "./analysis-run-expansion.repository.js";
 import { AnalysisRunItemRepository } from "./analysis-run-item.repository.js";
 import { ReportRepository } from "../reports/report.repository.js";
-import { MULTI_PROVIDER_REPORT_VERSION } from "../scoring/score.types.js";
+import { ReportOutcomeService } from "../reports/report-outcome.service.js";
 import type { AnalysisRunCreatedPayload } from "./analysis-run-worker.messages.js";
 
 type ExpansionDatabase = DatabaseExecutor & TransactionPool;
@@ -54,7 +54,9 @@ export class AnalysisRunExpansionService {
       }
       assertPayloadMatchesRun(payload, run);
 
-      const startingPath = await expansion.findActiveStartingPath(
+      const startingPath = await new EntityPathRepository(
+        client
+      ).findActiveValidated(
         run.starting_entity_path_id
       );
       if (!startingPath) {
@@ -71,39 +73,13 @@ export class AnalysisRunExpansionService {
           run.analysis_run_id,
           `No active ${nextHierarchyLevel(startingPath.path_type)} relationships exist for the starting path`
         );
-        const reportData = {
+        await new ReportOutcomeService(
+          new ReportRepository(client)
+        ).createCompletedEmpty({
           analysisRunId: run.analysis_run_id,
-          reportType: "multi_provider_report",
-          reportVersion: MULTI_PROVIDER_REPORT_VERSION,
-          lifecycleState: "completed_empty",
-          final: true,
-          summary: "No eligible analysis targets were configured for this path.",
           startingEntityPathId: run.starting_entity_path_id,
-          expandedTargetCount: 0,
           nextAction:
-            "Configure an active child relationship for the selected hierarchy path.",
-          counts: {
-            expected: 0,
-            nonterminal: 0,
-            scored: 0,
-            invalid: 0,
-            failed: 0,
-            pausedBudget: 0,
-            cancelled: 0,
-            completionPercentage: 100
-          },
-          providerResults: [],
-          promptScores: [],
-          breakdown: [],
-          usage: { inputTokens: 0, outputTokens: 0, costMicros: 0 }
-        };
-        await new ReportRepository(client).createRevision({
-          analysisRunId: run.analysis_run_id,
-          reportVersion: MULTI_PROVIDER_REPORT_VERSION,
-          status: "completed",
-          reportData,
-          renderedText:
-            "No eligible analysis targets were configured for this path."
+            "Configure an active child relationship for the selected hierarchy path."
         });
         return { outcome: "empty", itemCount: 0 };
       }

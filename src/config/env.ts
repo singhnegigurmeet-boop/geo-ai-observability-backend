@@ -11,8 +11,6 @@ const envSchema = z
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
     PORT: z.coerce.number().int().positive().default(4000),
     DATABASE_URL: z.string().url(),
-    REDIS_URL: z.string().url(),
-    ELASTICSEARCH_NODE: z.string().url(),
     RABBITMQ_URL: z.string().url(),
     RABBITMQ_EXCHANGE: z.string().min(1).default("geo.v6.main"),
     RABBITMQ_DEAD_LETTER_EXCHANGE: z.string().min(1).default("geo.v6.dlx"),

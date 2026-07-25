@@ -3,14 +3,20 @@ import type {
   TransactionPool
 } from "../db/database-executor.js";
 import { inTransaction } from "../db/database-executor.js";
+import { ApplicationError } from "../errors/application-error.js";
+import { EntityPathRepository } from "../hierarchy/entity-path.repository.js";
 import { OutboxEventWriterRepository } from "../outbox/outbox-event-writer.repository.js";
 import {
+  parseProviderModel,
+  parseProviderModels,
+  parseProviderName,
+  providerModelPairs,
   resolveProviderModelSet,
-  type ProviderModelPair
 } from "../providers/provider-model.policy.js";
 import { FailureRecordRepository } from "../reliability/failure-record.repository.js";
-import type { ProviderName } from "../types/database.types.js";
 import { SchedulerRepository } from "./scheduler.repository.js";
+import { WorkspaceAuthorizationService } from "../workspaces/workspace-authorization.service.js";
+import { WorkspaceMemberRepository } from "../workspaces/workspace-member.repository.js";
 
 type SchedulerDatabase = DatabaseExecutor & TransactionPool;
 
@@ -33,13 +39,24 @@ export class SchedulerService {
       await client.query("SAVEPOINT scheduler_tick_work");
       try {
         const intervalSeconds = parseInterval(job.schedule_expression);
-        if (!job.authorization_valid) {
-          throw new SchedulerValidationError(
-            "SCHEDULER_AUTHORIZATION_NO_LONGER_VALID",
-            "Scheduler owner is no longer active or authorized"
-          );
+        try {
+          await new WorkspaceAuthorizationService(
+            new WorkspaceMemberRepository(client)
+          ).requireMembership(job.created_by_user_id, job.workspace_id);
+        } catch (error) {
+          if (error instanceof ApplicationError) {
+            throw new SchedulerValidationError(
+              "SCHEDULER_AUTHORIZATION_NO_LONGER_VALID",
+              "Scheduler owner is no longer active or authorized"
+            );
+          }
+          throw error;
         }
-        if (!job.hierarchy_valid) {
+        if (
+          !(await new EntityPathRepository(client).findActiveValidated(
+            job.starting_entity_path_id
+          ))
+        ) {
           throw new SchedulerValidationError(
             "HIERARCHY_NO_LONGER_VALID",
             "Scheduled hierarchy path is no longer active and valid"
@@ -48,10 +65,10 @@ export class SchedulerService {
         if (job.timezone !== "UTC") {
           throw new Error("Phase 12 interval schedules require UTC");
         }
-        const requestedProvider = parseRequestedProvider(
+        const requestedProvider = parseProviderName(
           job.request_payload.requestedProvider
         );
-        const requestedModel = parseRequestedModel(
+        const requestedModel = parseProviderModel(
           job.request_payload.requestedModel
         );
         const selection = resolveProviderModelSet({
@@ -70,10 +87,7 @@ export class SchedulerService {
           job,
           idempotencyKey: tickKey,
           policy: {
-            providerModels: selection.map(({ provider, model }) => ({
-              provider,
-              model
-            }))
+            providerModels: providerModelPairs(selection)
           }
         });
         await new OutboxEventWriterRepository(client).createOrReuse({
@@ -152,44 +166,6 @@ class SchedulerValidationError extends Error {
     super(message);
     this.name = "SchedulerValidationError";
   }
-}
-
-function parseRequestedProvider(value: unknown): ProviderName | null {
-  if (value === undefined || value === null) return null;
-  if (
-    value === "mock" ||
-    value === "openai" ||
-    value === "gemini" ||
-    value === "claude"
-  ) {
-    return value;
-  }
-  throw new Error("Scheduler requestedProvider is invalid");
-}
-
-function parseRequestedModel(value: unknown) {
-  if (value === undefined || value === null) return null;
-  if (typeof value === "string" && value.length > 0 && value.length <= 255) {
-    return value;
-  }
-  throw new Error("Scheduler requestedModel is invalid");
-}
-
-function parseProviderModels(value: unknown): ProviderModelPair[] | null {
-  if (value === undefined || value === null) return null;
-  if (!Array.isArray(value) || value.length === 0 || value.length > 4) {
-    throw new Error("Scheduler providerModels is invalid");
-  }
-  return value.map((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new Error("Scheduler providerModels is invalid");
-    }
-    const pair = entry as Record<string, unknown>;
-    return {
-      provider: parseRequestedProvider(pair.provider) as ProviderName,
-      model: parseRequestedModel(pair.model) as string
-    };
-  });
 }
 
 export function parseInterval(expression: string) {

@@ -1,8 +1,8 @@
 import type { DatabaseExecutor } from "../db/database-executor.js";
+import { ownedAnalysisRunClause } from "../ownership/owned-analysis-run.sql.js";
 import type { OwnershipContext } from "../ownership/ownership-context.types.js";
 import type {
   AnalysisRunRow,
-  AnalysisRunProviderModelRow,
   JsonObject,
   ProviderName
 } from "../types/database.types.js";
@@ -66,40 +66,8 @@ export class AnalysisRepository {
     return result.rows[0] ?? null;
   }
 
-  async createProviderModels(
-    analysisRunId: string,
-    providerModels: Array<{ provider: ProviderName; model: string }>
-  ) {
-    for (const [ordinal, pair] of providerModels.entries()) {
-      await this.database.query(
-        `
-          INSERT INTO analysis_run_provider_models (
-            analysis_run_id, provider, model, ordinal
-          )
-          VALUES ($1, $2, $3, $4)
-          ON CONFLICT (analysis_run_id, provider, model) DO NOTHING
-        `,
-        [analysisRunId, pair.provider, pair.model, ordinal]
-      );
-    }
-    return this.findProviderModels(analysisRunId);
-  }
-
-  async findProviderModels(analysisRunId: string) {
-    const result = await this.database.query<AnalysisRunProviderModelRow>(
-      `
-        SELECT *
-        FROM analysis_run_provider_models
-        WHERE analysis_run_id = $1
-        ORDER BY ordinal, provider, model
-      `,
-      [analysisRunId]
-    );
-    return result.rows;
-  }
-
   async findOwnedStatus(analysisRunId: string, owner: OwnershipContext) {
-    const ownership = ownedRunClause(analysisRunId, owner);
+    const ownership = ownedAnalysisRunClause(analysisRunId, owner);
 
     const result = await this.database.query<AnalysisRunStatusRecord>(
       `
@@ -138,7 +106,7 @@ export class AnalysisRepository {
     analysisRunId: string,
     owner: OwnershipContext
   ) {
-    const ownership = ownedRunClause(analysisRunId, owner);
+    const ownership = ownedAnalysisRunClause(analysisRunId, owner);
     const result = await this.database.query<AnalysisRunRow>(
       `
         SELECT run.*
@@ -153,7 +121,7 @@ export class AnalysisRepository {
   }
 
   async findOwnedReport(analysisRunId: string, owner: OwnershipContext) {
-    const ownership = ownedRunClause(analysisRunId, owner);
+    const ownership = ownedAnalysisRunClause(analysisRunId, owner);
     const result = await this.database.query<AnalysisReportRecord>(
       `
         SELECT
@@ -183,40 +151,4 @@ export class AnalysisRepository {
     );
     return result.rows[0] ?? null;
   }
-}
-
-function ownedRunClause(
-  analysisRunId: string,
-  owner: OwnershipContext
-) {
-  return owner.actorType === "anonymous"
-    ? {
-        clause: `
-          run.anonymous_session_id = $2
-          AND run.user_id IS NULL
-          AND run.workspace_id IS NULL
-        `,
-        values: [analysisRunId, owner.anonymousSessionId]
-      }
-      : {
-        clause: `
-          (
-            (run.user_id = $2 AND run.workspace_id = $3)
-            OR (
-              run.user_id IS NULL
-              AND run.workspace_id IS NULL
-              AND EXISTS (
-                SELECT 1
-                FROM anonymous_sessions AS claimed_session
-                WHERE claimed_session.anonymous_session_id =
-                      run.anonymous_session_id
-                  AND claimed_session.claimed_by_user_id = $2
-                  AND claimed_session.claimed_workspace_id = $3
-                  AND claimed_session.claimed_at IS NOT NULL
-              )
-            )
-          )
-        `,
-        values: [analysisRunId, owner.userId, owner.workspaceId]
-      };
 }

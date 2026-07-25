@@ -2,15 +2,16 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it } from "node:test";
 import pg from "pg";
 import { AnalysisRunExpansionService } from "../src/analysis/analysis-run-expansion.service.js";
-import {
-  getDefaultMigrationsDirectory,
-  runMigrations
-} from "../src/db/migration-runner.js";
 import { RabbitMqConnection } from "../src/messaging/rabbitmq.connection.js";
-import { declareRabbitMqTopology } from "../src/messaging/rabbitmq.topology.js";
 import { NotificationService } from "../src/notifications/notification.service.js";
 import { ReadinessService } from "../src/observability/readiness.service.js";
 import { SchedulerService } from "../src/scheduler/scheduler.service.js";
+import {
+  createIntegrationPool,
+  createIntegrationRabbitMq,
+  resetTestSchema,
+  truncatePublicTables
+} from "./support/integration-environment.js";
 
 const enabled = process.env.RUN_PHASE12_INTEGRATION_TESTS === "true";
 
@@ -22,45 +23,13 @@ describe("Phase 12 scheduler, notifications, and readiness", {
   let rabbitMq: RabbitMqConnection;
 
   before(async () => {
-    pool = new pg.Pool({
-      connectionString:
-        process.env.TEST_DATABASE_URL ??
-        "postgres://postgres:postgres@127.0.0.1:5433/geo_observability_test"
-    });
-    const database = await pool.query<{ name: string }>(
-      "SELECT current_database() AS name"
-    );
-    if (!database.rows[0]?.name.endsWith("_test")) {
-      throw new Error("Refusing to reset a non-test database");
-    }
-    await pool.query("DROP SCHEMA IF EXISTS geo_meta CASCADE");
-    await pool.query("DROP SCHEMA public CASCADE");
-    await pool.query("CREATE SCHEMA public");
-    await runMigrations({
-      pool,
-      migrationsDirectory: getDefaultMigrationsDirectory()
-    });
-    rabbitMq = new RabbitMqConnection({
-      url:
-        process.env.TEST_RABBITMQ_URL ??
-        "amqp://guest:guest@127.0.0.1:5673?heartbeat=10",
-      initializeChannel: (channel) =>
-        declareRabbitMqTopology(channel, {
-          mainExchange: "geo.v6.test.main",
-          deadLetterExchange: "geo.v6.test.dlx"
-        })
-    });
+    pool = createIntegrationPool();
+    await resetTestSchema(pool);
+    rabbitMq = createIntegrationRabbitMq();
   });
 
   beforeEach(async () => {
-    const tables = await pool.query<{ tablename: string }>(
-      "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-    );
-    await pool.query(
-      `TRUNCATE ${tables.rows
-        .map((row) => `"${row.tablename}"`)
-        .join(", ")} RESTART IDENTITY CASCADE`
-    );
+    await truncatePublicTables(pool);
   });
 
   after(async () => {
@@ -440,15 +409,4 @@ async function seedRun(
     [fixture.userId, fixture.workspaceId, fixture.pathId, status]
   );
   return result.rows[0]!.analysis_run_id;
-}
-
-async function truncatePublicTables(pool: pg.Pool) {
-  const tables = await pool.query<{ tablename: string }>(
-    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-  );
-  await pool.query(
-    `TRUNCATE ${tables.rows
-      .map((row) => `"${row.tablename}"`)
-      .join(", ")} RESTART IDENTITY CASCADE`
-  );
 }

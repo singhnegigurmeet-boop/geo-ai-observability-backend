@@ -4,8 +4,9 @@ import type {
 } from "../db/database-executor.js";
 import { inTransaction } from "../db/database-executor.js";
 import { OutboxEventWriterRepository } from "../outbox/outbox-event-writer.repository.js";
+import { AnalysisRunProviderModelRepository } from "../providers/analysis-run-provider-model.repository.js";
 import { ProviderJobRepository } from "../providers/provider-job.repository.js";
-import { selectProviderModel } from "../providers/provider-model.policy.js";
+import { validateFrozenProviderModel } from "../providers/provider-model.policy.js";
 import {
   PromptExecutionRepository,
   type PromptExecutionState
@@ -97,9 +98,10 @@ export class PromptExecutionService {
           "Pending prompt job could not transition to processing"
         );
       }
-      const providerModels = await prompts.listRunProviderModels(
-        state.analysis_run_id
-      );
+      const providerModels =
+        await new AnalysisRunProviderModelRepository(client).listPairs(
+          state.analysis_run_id
+        );
       if (providerModels.length === 0) {
         throw new PromptExecutionError(
           "PROVIDER_SET_MISSING",
@@ -110,15 +112,10 @@ export class PromptExecutionService {
       const outbox = new OutboxEventWriterRepository(client);
       let firstProviderJobId: string | null = null;
       for (const pair of providerModels) {
-        const selection = selectProviderModel({
-          // The set was authorized, normalized, and frozen when the run was
-          // created. Re-validate the pair itself without reapplying the
-          // anonymous-request rule to this internal execution step.
-          actorType: "user",
-          requestedProvider: pair.provider,
-          requestedModel: pair.model,
-          realProvidersEnabled: this.realProvidersEnabled
-        });
+        const selection = validateFrozenProviderModel(
+          pair,
+          this.realProvidersEnabled
+        );
         const providerJob = await jobs.createOrReuse({
           promptJobId: state.prompt_job_id,
           provider: selection.provider,

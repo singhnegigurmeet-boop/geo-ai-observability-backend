@@ -1,4 +1,5 @@
 import type { DatabaseExecutor } from "../db/database-executor.js";
+import { AnalysisRunProviderModelRepository } from "../providers/analysis-run-provider-model.repository.js";
 import type { AnalysisRunRow } from "../types/database.types.js";
 import type {
   DueSchedulerJob,
@@ -25,76 +26,11 @@ export class SchedulerRepository {
           path.brand_id,
           path.product_id,
           path.use_context_id
-          ,
-          (
-            workspace.deleted_at IS NULL
-            AND owner.status = 'active'
-            AND member.user_id IS NOT NULL
-          ) AS authorization_valid,
-          (
-            path.is_active
-            AND domain.is_active
-            AND (
-              path.category_id IS NULL
-              OR (
-                category.is_active
-                AND domain_category.domain_category_id IS NOT NULL
-                AND domain_category.is_active
-              )
-            )
-            AND (
-              path.brand_id IS NULL
-              OR (
-                brand.is_active
-                AND category_brand.category_brand_id IS NOT NULL
-                AND category_brand.is_active
-              )
-            )
-            AND (
-              path.product_id IS NULL
-              OR (
-                product.is_active
-                AND brand_product.brand_product_id IS NOT NULL
-                AND brand_product.is_active
-              )
-            )
-            AND (
-              path.use_context_id IS NULL
-              OR (
-                use_context.is_active
-                AND product_use_context.product_use_context_id IS NOT NULL
-                AND product_use_context.is_active
-              )
-            )
-          ) AS hierarchy_valid
         FROM scheduler_jobs AS schedule
-        JOIN workspaces AS workspace
-          ON workspace.workspace_id = schedule.workspace_id
-        JOIN users AS owner ON owner.user_id = schedule.created_by_user_id
-        LEFT JOIN workspace_members AS member
-          ON member.workspace_id = schedule.workspace_id
-         AND member.user_id = schedule.created_by_user_id
         JOIN entity_paths AS path
           ON path.entity_path_id = schedule.starting_entity_path_id
         JOIN domains AS domain
           ON domain.domain_id = path.domain_id
-        LEFT JOIN categories AS category ON category.category_id = path.category_id
-        LEFT JOIN domain_categories AS domain_category
-          ON domain_category.domain_id = path.domain_id
-         AND domain_category.category_id = path.category_id
-        LEFT JOIN brands AS brand ON brand.brand_id = path.brand_id
-        LEFT JOIN category_brands AS category_brand
-          ON category_brand.domain_category_id = domain_category.domain_category_id
-         AND category_brand.brand_id = path.brand_id
-        LEFT JOIN products AS product ON product.product_id = path.product_id
-        LEFT JOIN brand_products AS brand_product
-          ON brand_product.category_brand_id = category_brand.category_brand_id
-         AND brand_product.product_id = path.product_id
-        LEFT JOIN use_contexts AS use_context
-          ON use_context.use_context_id = path.use_context_id
-        LEFT JOIN product_use_contexts AS product_use_context
-          ON product_use_context.brand_product_id = brand_product.brand_product_id
-         AND product_use_context.use_context_id = path.use_context_id
         WHERE schedule.status = 'active'
           AND schedule.next_run_at <= $1
         ORDER BY schedule.next_run_at, schedule.scheduler_job_id
@@ -151,7 +87,9 @@ export class SchedulerRepository {
       ]
     );
     if (inserted.rows[0]) {
-      await this.createProviderModels(
+      await new AnalysisRunProviderModelRepository(
+        this.database
+      ).createOrReuse(
         inserted.rows[0].analysis_run_id,
         input.policy.providerModels
       );
@@ -183,7 +121,9 @@ export class SchedulerRepository {
     if (!existing.rows[0]) {
       throw new Error("Existing scheduled run violates stable tick identity");
     }
-    await this.createProviderModels(
+    await new AnalysisRunProviderModelRepository(
+      this.database
+    ).createOrReuse(
       existing.rows[0].analysis_run_id,
       input.policy.providerModels
     );
@@ -227,23 +167,5 @@ export class SchedulerRepository {
       `,
       [schedulerJobId]
     );
-  }
-
-  private async createProviderModels(
-    analysisRunId: string,
-    providerModels: SchedulerRequestPolicy["providerModels"]
-  ) {
-    for (const [ordinal, pair] of providerModels.entries()) {
-      await this.database.query(
-        `
-          INSERT INTO analysis_run_provider_models (
-            analysis_run_id, provider, model, ordinal
-          )
-          VALUES ($1, $2, $3, $4)
-          ON CONFLICT (analysis_run_id, provider, model) DO NOTHING
-        `,
-        [analysisRunId, pair.provider, pair.model, ordinal]
-      );
-    }
   }
 }

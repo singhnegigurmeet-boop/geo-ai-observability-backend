@@ -1,148 +1,99 @@
-# GEO V6 Production Core Flow
+# GEO V6 Runtime Flow
 
-PostgreSQL is authoritative. RabbitMQ messages carry only the primary
-aggregate ID; every worker reloads and locks the current database state before
-acting. Legacy queued messages with linkage metadata remain readable, and any
-metadata they contain is checked against PostgreSQL.
+PostgreSQL is authoritative, RabbitMQ is transport, and the transactional outbox is the only database-to-broker handoff. Queue messages carry aggregate IDs. Workers reload and lock database state before acting; optional linkage in legacy queued envelopes is accepted only for compatibility and is validated against PostgreSQL.
 
-## Submission and provider-set identity
+## Stage map
 
-```text
-POST /v1/analysis
-  -> authenticate anonymous session or user/workspace
-  -> normalize domain and validate active hierarchy relationships
-  -> resolve providerModels (anonymous: mock/mock-fast; user: configured set)
-  -> normalize, deduplicate, and sort provider/model pairs
-  -> transactionally create analysis_run
-  -> freeze analysis_run_provider_models
-  -> emit analysis_run.created { analysisRunId }
-```
+| Stage | Authoritative tables and transaction | Event / queue / worker | Idempotency and state behavior |
+|---|---|---|---|
+| Request ownership | `user_sessions`, `anonymous_sessions`, `workspace_members`; middleware validates one ownership context before business work | HTTP API | Anonymous, user/workspace, and valid claimed-origin modes. Derived claimant access does not rewrite historical ownership. |
+| Hierarchy and identity | Relationship tables are hierarchy truth; `entity_paths` are create/reuse materializations | HTTP API | Domain normalization plus active, contiguous master/edge validation. Provider set is validated, deduplicated, sorted, canonically serialized, and included in owner-scoped request identity. |
+| Analysis creation | One transaction creates/replays `analysis_runs`, freezes `analysis_run_provider_models`, and inserts `outbox_events` | `analysis_run.created` → `analysis_run_queue` → analysis worker | Same normalized request replays one run; different request under the same key conflicts. Run starts `queued`. |
+| Expansion | Worker locks the run and starting path, selects one active child level, creates `analysis_run_items` and outbox rows | `analysis_run_item.created` → `analysis_run_item_queue` → item worker | Deterministic breadth: anonymous 3, user/claimed 5. No eligible child creates `completed_empty`; no retry/failure/DLQ. |
+| LLM run creation | Item worker transaction creates/reuses `llm_runs` and outbox rows | `llm_run.created` → `llm_run_queue` → LLM worker | Current V6 uses one stable run key per item while schema supports more. Cancelled/terminal parents no-op. |
+| Prompt planning | LLM worker creates logical `prompt_jobs` and one event per prompt | `prompt_job.created` → one of five prompt queues → prompt worker | Anonymous uses three `v1_light` prompts; user/claimed uses five `v1` prompts. Prompt rows are logical prompts, not provider executions. |
+| Rendering and fan-out | Prompt worker locks and renders one prompt, loads the frozen run set, then creates all `provider_jobs` and their outbox rows atomically | `provider_job.created` → provider-specific queue → provider worker | Unique `(prompt_job, provider, model)` plus stable event keys make fan-out idempotent. One provider job is created per frozen pair. |
+| Budget admission | Provider execution transaction locks applicable `budget_policies`, records estimated `token_usage`, or pauses executable work | Same provider delivery | Hard mode blocks crossing; soft mode permits one crossing execution. Pause is a business outcome: acknowledge, preserve evidence, create a budget report/notification, and do not retry, fail, or DLQ. |
+| Provider execution | Worker locks one `provider_job`; adapter result creates one immutable `provider_result`, reconciles actual usage, derives parent lifecycle, and writes outbox | `provider_result.created` → `scoring_queue` → scoring worker | Providers execute independently. There is no racing or fallback. Valid refusals are valid evidence. |
+| Invalid evidence | A successful but malformed adapter response creates an immutable result with `invalid` status and safe validation metadata | `provider_result.created` → scoring worker | Terminal and unscored. It contributes coverage, never numeric zero, and does not use technical retry/DLQ. |
+| Scoring | Scoring worker locks the result, creates one immutable `provider_score` for `backend-v1`, derives lifecycle, and builds a ready report revision | Report notification event may be written to outbox | Unique result/scoring version prevents duplicates. Scores are backend interpretation, never trusted from provider output. |
+| Reporting | `reports` are immutable snapshots; readiness loads provider-aware execution coverage and selects the latest revision for reads | `notification.created` → `notification_queue` → notification worker | `multi-provider-v2`; valid sibling scores are equally averaged per logical prompt. Partial snapshots are not final and history is never mutated. |
+| Technical failure | Reliable runtime records `failure_records`; terminalizer updates the addressed aggregate, invokes shared lifecycle/report derivation, and creates notifications in the transaction | Attempts 1–2 confirmed-republish; permanent/exhausted delivery rejects to its queue DLQ | Successful sibling evidence survives. Final failure cannot leave parents processing. DLQ is operational transport state, not business state. |
 
-The normalized provider set is part of canonical idempotency identity.
-Reordering or duplicating the same set replays the run; changing the normalized
-set conflicts under the same owner-scoped idempotency key. Frozen provider rows
-are immutable.
-
-## Expansion and planning
+## Provider and lifecycle model
 
 ```text
-analysis_run.created { analysisRunId }
-  -> expand one active relationship level
-  -> analysis_run_item.created { analysisRunItemId }
-  -> llm_run.created { llmRunId }
-  -> prompt_job.created { promptJobId }
+analysis_run
+  -> analysis_run_item
+    -> llm_run
+      -> prompt_job (one logical prompt)
+        -> provider_job (one provider/model execution)
+          -> provider_result (immutable evidence)
+            -> provider_score (backend-v1 interpretation)
 ```
 
-Anonymous work selects at most three children and uses three `v1_light`
-prompts. User and valid claimed work selects at most five children and uses
-five `v1` prompts. All hierarchy truth is loaded from active relationship rows,
-never inferred from materialized `entity_paths`.
+One prompt can have many provider jobs. Provider siblings may run concurrently, but the first completion does not win or cancel siblings. Parent rows remain active while executable work remains. The shared lifecycle boundary derives `provider_jobs -> prompt_job -> llm_run -> analysis_run_item -> analysis_run`; report readiness consumes that result.
 
-If expansion has no eligible target, the run becomes `completed`, an immutable
-`completed_empty` report is created, and no failure record, retry, or DLQ entry
-is produced.
+Completed rows never move backward. Successful siblings remain successful when another sibling fails. Budget pause, invalid evidence, cancellation, empty expansion, and valid refusal are explicit business outcomes, not technical exceptions.
 
-## Prompt rendering and provider fan-out
+## Report lifecycle
+
+Every report is an immutable `multi-provider-v2` revision:
+
+| Lifecycle state | Meaning |
+|---|---|
+| `partial` | Scored evidence exists and provider work remains executable. |
+| `budget_paused_partial` | Scored evidence exists and remaining work stopped at budget policy. |
+| `completed` | All expected executions completed with scored evidence. |
+| `completed_with_gaps` | Terminal with scored evidence plus failed, invalid, or cancelled coverage. |
+| `failed_empty` | Terminal without valid scored evidence. |
+| `cancelled_partial` / `cancelled_empty` | Cancellation won before provider execution, with/without evidence. |
+| `completed_empty` | Expansion had no eligible targets. |
+
+Coverage keeps provider/model, provider-job state, evidence state, score, and usage separate. Missing, invalid, failed, paused, and cancelled executions are not zero scores. Latest-report reads select the greatest immutable revision.
+
+## Cancellation
+
+`POST /v1/analysis/runs/:id/cancel` locks the owned run and descendants. Cancellation succeeds only before any provider execution begins, changes queued descendants to `cancelled`, and creates the appropriate empty/partial snapshot. Repeated cancellation is idempotent. Late cancellation conflicts. Delayed messages reload cancelled state and acknowledge as no-ops, without retries, failures, or DLQ messages.
+
+## Claims and protected reads
+
+Status, report, and cancellation use the same ownership SQL:
+
+- Matching anonymous session owns its runs.
+- Matching user and current workspace membership owns user runs.
+- A claimed anonymous origin remains stored, and only its exact claimant gains derived access to runs created before the claim.
+
+Cross-owner access is denied.
+
+## Scheduled execution
+
+The scheduler supports UTC `interval:<seconds>` only:
 
 ```text
-prompt_job.created { promptJobId }
-  -> render canonical prompt once
-  -> for each frozen provider/model pair:
-       create provider_job
-       emit provider_job.created { providerJobId }
+claim due scheduler_jobs with FOR UPDATE SKIP LOCKED
+  -> savepoint
+  -> revalidate current workspace authorization
+  -> validate the full active hierarchy path
+  -> resolve the canonical provider set
+  -> create run + frozen set + outbox + advance cursor
 ```
 
-Provider queues are selected from the authoritative provider job. A queue
-worker also supplies its expected provider, so a job delivered to the wrong
-provider queue is rejected.
+A stable scheduled tick is the idempotency identity. Invalid membership, hierarchy, or provider policy rolls back partial run creation, pauses the schedule safely, and records one administrative notification.
 
-## Evidence, scoring, and parent state
+## Notifications, health, and readiness
 
-```text
-provider_job.created { providerJobId }
-  -> reserve budget
-  -> execute provider
-  -> persist immutable provider_result and actual usage
-  -> emit provider_result.created { providerResultId }
-  -> backend-v1 score
-  -> create an immutable report revision
-```
+Report-ready, budget-paused, and terminal administrative failure notifications are created transactionally and delivered internally through `notification_queue`. Delivery is idempotent; no external notification provider exists.
 
-A prompt succeeds only when all sibling provider jobs succeed. Active,
-budget-paused, failed, invalid, and cancelled siblings derive prompt, LLM-run,
-item, and run state under deterministic run-to-provider lock ordering.
-Successful siblings and their evidence are never rewritten when another
-sibling pauses or fails.
+`GET /health` is process liveness. `GET /ready` checks PostgreSQL, the exact migrations `001`–`024`, RabbitMQ, and every declared production queue and DLQ. It does not call providers. Redis and Elasticsearch are deferred V6.5 infrastructure and are not part of V6 execution or readiness.
 
-Malformed successful provider responses create an immutable `invalid`
-`provider_result` containing safely retained raw evidence and validation
-errors. Invalid evidence is not scored and is not converted to zero. Transport,
-timeout, rate-limit, and provider availability failures do not create invalid
-evidence.
+## Reliability distinctions
 
-## Reports
-
-`multi-provider-v2` reports are provider-execution aware:
-
-```text
-some scored evidence + unfinished work -> partial revision
-additional scored evidence             -> new immutable revision
-all provider executions terminal       -> final revision
-budget reached                          -> budget_paused_partial
-cancelled                               -> cancelled_partial/cancelled_empty
-no valid evidence                       -> failed_empty
-```
-
-Each provider execution retains provider/model provenance, state, evidence
-status, score, validation/failure metadata, and usage. Scores are averaged
-equally across valid provider siblings for a prompt, then deterministically by
-prompt type. Failed, invalid, cancelled, and missing evidence are coverage gaps,
-not numeric zeroes. Report reads return the latest revision.
-
-## Budget behavior
-
-Budget checks and reservations are serialized with PostgreSQL locks. A hard
-limit prevents the crossing execution; soft mode permits one crossing
-execution. When a limit pauses a run, completed evidence remains intact,
-unstarted siblings become `paused_budget`, a partial snapshot is created when
-evidence exists, and the delivery is acknowledged without retry, failure
-record, or DLQ. Automatic resume is not supported.
-
-## Technical failure terminality
-
-Attempts one and two record failure history and confirmed-republish the
-message. A permanent error or exhausted final attempt transactionally records
-the failure and terminalizes the addressed provider job, prompt job, LLM run,
-run item, or analysis run. Parent state and the latest report snapshot are
-derived before the message is rejected to its DLQ.
-
-## Cancellation and claimed access
-
-```text
-POST /v1/analysis/runs/:analysisRunId/cancel
-```
-
-Cancellation succeeds only before any provider job has started. It
-transactionally cancels all unstarted descendants, marks the run cancelled,
-creates a cancelled report revision, and emits the database notification.
-Repeated cancellation is idempotent; cancellation after provider execution
-begins returns `409`.
-
-When an anonymous session is claimed, the exact claimant user/workspace gains
-derived access to pre-claim runs tied to that session. Other users and
-workspaces do not.
-
-## Scheduler
-
-Due rows are claimed with `FOR UPDATE SKIP LOCKED`. Immediately before run
-creation, the scheduler revalidates the creating user, workspace membership,
-workspace state, starting path, and complete active hierarchy chain. Invalid
-authorization or hierarchy pauses the schedule and records a safe operational
-failure without leaving a run or analysis outbox event.
-
-## Readiness and delivery
-
-`GET /health` is process liveness. `GET /ready` checks PostgreSQL, the exact
-checked-in migration ledger, RabbitMQ, and required queues. Notifications and
-all business events use the transactional outbox; RabbitMQ is never treated as
-business-state authority.
+- Retryable technical failure: attempts one and two are recorded and confirmed-republished.
+- Permanent/exhausted technical failure: terminalize, report/notify if ready, reject to DLQ.
+- Invalid successful response: immutable invalid evidence, no normal score.
+- Budget pause: business stop, no failure record or DLQ.
+- Cancellation: business terminal state, delayed work no-ops.
+- Valid refusal: valid provider evidence.
+- Empty expansion: `completed_empty`.
+- Successful completion: all provider-aware lifecycle work terminal and a final snapshot available.

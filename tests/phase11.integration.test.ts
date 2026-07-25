@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { after, before, beforeEach, describe, it } from "node:test";
 import pg from "pg";
-import { getDefaultMigrationsDirectory, runMigrations } from "../src/db/migration-runner.js";
 import { ProviderAdapterRegistry } from "../src/providers/provider-adapter.registry.js";
 import type {
   ProviderAdapter,
@@ -14,6 +13,11 @@ import { ProviderExecutionService } from "../src/providers/provider-execution.se
 import type { ProviderJobCreatedPayload } from "../src/providers/provider-worker.messages.js";
 import { ProviderScoreService } from "../src/scoring/provider-score.service.js";
 import type { PromptType, ProviderName } from "../src/types/database.types.js";
+import {
+  createIntegrationPool,
+  resetTestSchema,
+  truncatePublicTables
+} from "./support/integration-environment.js";
 
 const enabled = process.env.RUN_PHASE11_INTEGRATION_TESTS === "true";
 
@@ -21,28 +25,12 @@ describe("Phase 11 real provider execution", { skip: !enabled, concurrency: 1 },
   let pool: pg.Pool;
 
   before(async () => {
-    pool = new pg.Pool({
-      connectionString:
-        process.env.TEST_DATABASE_URL ??
-        "postgres://postgres:postgres@127.0.0.1:5433/geo_observability_test"
-    });
-    const database = await pool.query<{ name: string }>("SELECT current_database() AS name");
-    if (!database.rows[0]?.name.endsWith("_test")) {
-      throw new Error("Refusing to reset a non-test database");
-    }
-    await pool.query("DROP SCHEMA IF EXISTS geo_meta CASCADE");
-    await pool.query("DROP SCHEMA public CASCADE");
-    await pool.query("CREATE SCHEMA public");
-    await runMigrations({ pool, migrationsDirectory: getDefaultMigrationsDirectory() });
+    pool = createIntegrationPool();
+    await resetTestSchema(pool);
   });
 
   beforeEach(async () => {
-    const tables = await pool.query<{ tablename: string }>(
-      "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-    );
-    await pool.query(
-      `TRUNCATE ${tables.rows.map((row) => `"${row.tablename}"`).join(", ")} RESTART IDENTITY CASCADE`
-    );
+    await truncatePublicTables(pool);
   });
 
   after(async () => pool?.end());

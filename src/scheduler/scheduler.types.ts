@@ -14,8 +14,6 @@ export type DueSchedulerJob = {
   brand_id: string | null;
   product_id: string | null;
   use_context_id: string | null;
-  authorization_valid: boolean;
-  hierarchy_valid: boolean;
 };
 
 export type SchedulerRequestPolicy = {

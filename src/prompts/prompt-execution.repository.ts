@@ -2,8 +2,7 @@ import type { DatabaseExecutor } from "../db/database-executor.js";
 import type {
   EntityPathType,
   JobStatus,
-  PromptType,
-  ProviderName
+  PromptType
 } from "../types/database.types.js";
 
 export type PromptExecutionState = {
@@ -102,19 +101,4 @@ export class PromptExecutionRepository {
     return result.rows[0] ?? null;
   }
 
-  async listRunProviderModels(analysisRunId: string) {
-    const result = await this.database.query<{
-      provider: ProviderName;
-      model: string;
-    }>(
-      `
-        SELECT provider, model
-        FROM analysis_run_provider_models
-        WHERE analysis_run_id = $1
-        ORDER BY ordinal, provider, model
-      `,
-      [analysisRunId]
-    );
-    return result.rows;
-  }
 }

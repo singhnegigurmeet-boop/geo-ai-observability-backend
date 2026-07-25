@@ -62,8 +62,27 @@ export function selectProviderModel(
     };
   }
 
-  const provider = context.requestedProvider ?? "mock";
-  const model = context.requestedModel ?? "mock-standard";
+  return validateProviderModelPair(
+    {
+      provider: context.requestedProvider ?? "mock",
+      model: context.requestedModel ?? "mock-standard"
+    },
+    context.realProvidersEnabled
+  );
+}
+
+export function validateFrozenProviderModel(
+  pair: ProviderModelPair,
+  realProvidersEnabled = false
+): ProviderModelSelection {
+  return validateProviderModelPair(pair, realProvidersEnabled);
+}
+
+function validateProviderModelPair(
+  pair: ProviderModelPair,
+  realProvidersEnabled = false
+): ProviderModelSelection {
+  const { provider, model } = pair;
   if (provider === "mock") {
     if (!isMockModel(model)) {
       throw new InvalidProviderModelSelectionError(
@@ -72,7 +91,7 @@ export function selectProviderModel(
     }
     return { provider, model, queueName: "mock_queue" };
   }
-  if (!context.realProvidersEnabled) {
+  if (!realProvidersEnabled) {
     throw new InvalidProviderModelSelectionError(
       "Real providers are disabled"
     );
@@ -138,6 +157,73 @@ export function resolveProviderModelSet(
       left.provider.localeCompare(right.provider) ||
       left.model.localeCompare(right.model)
   );
+}
+
+export function providerModelPairs(
+  selections: readonly ProviderModelPair[]
+): ProviderModelPair[] {
+  return selections.map(({ provider, model }) => ({ provider, model }));
+}
+
+export function serializeProviderModelSet(
+  providerModels: readonly ProviderModelPair[]
+) {
+  return JSON.stringify(providerModelPairs(providerModels));
+}
+
+export function sameProviderModelSet(
+  left: readonly ProviderModelPair[],
+  right: readonly ProviderModelPair[]
+) {
+  return serializeProviderModelSet(left) === serializeProviderModelSet(right);
+}
+
+export function parseProviderName(value: unknown): ProviderName | null {
+  if (value === undefined || value === null) return null;
+  if (
+    value === "mock" ||
+    value === "openai" ||
+    value === "gemini" ||
+    value === "claude"
+  ) {
+    return value;
+  }
+  throw new InvalidProviderModelSelectionError("Provider is invalid");
+}
+
+export function parseProviderModel(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string" && value.length > 0 && value.length <= 255) {
+    return value;
+  }
+  throw new InvalidProviderModelSelectionError("Model is invalid");
+}
+
+export function parseProviderModels(
+  value: unknown
+): ProviderModelPair[] | null {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 4) {
+    throw new InvalidProviderModelSelectionError(
+      "providerModels must contain between 1 and 4 pairs"
+    );
+  }
+  return value.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new InvalidProviderModelSelectionError(
+        "providerModels contains an invalid pair"
+      );
+    }
+    const pair = entry as Record<string, unknown>;
+    const provider = parseProviderName(pair.provider);
+    const model = parseProviderModel(pair.model);
+    if (!provider || !model) {
+      throw new InvalidProviderModelSelectionError(
+        "providerModels pairs require provider and model"
+      );
+    }
+    return { provider, model };
+  });
 }
 
 export function isMockModel(value: string): value is MockModel {
