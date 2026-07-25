@@ -6,3 +6,5 @@ dist/
 npm-debug.log*
 coverage/
 *.log
+GEO_V6_PRODUCTION_CORE_AUDIT.md
+GEO_V6_PRODUCTION_CORE_REPAIR_AUDIT.md
