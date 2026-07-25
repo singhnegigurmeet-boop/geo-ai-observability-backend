@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ConsumeMessage } from "amqplib";
+import type { AnalysisRunExpansionResult } from "../src/analysis/analysis-run-expansion.service.js";
 import { AnalysisRunWorker } from "../src/analysis/analysis-run-worker.js";
 import type { RecordWorkerFailure } from "../src/reliability/failure-record.repository.js";
 import { AnalysisRunWorkerRuntime } from "../src/runtime/analysis-run-worker.runtime.js";
@@ -34,7 +35,7 @@ describe("analysis run worker RabbitMQ reliability", () => {
     for (const result of [
       { outcome: "expanded" as const, itemCount: 2 },
       { outcome: "empty" as const, itemCount: 0 }
-    ]) {
+    ] satisfies AnalysisRunExpansionResult[]) {
       const harness = createHarness({ result });
       const delivery = message();
       await harness.runtime.handleDelivery(delivery);
@@ -107,7 +108,7 @@ describe("analysis run worker RabbitMQ reliability", () => {
 
 function createHarness(
   options: {
-    result?: { outcome: "expanded" | "empty" | "noop"; itemCount: number };
+    result?: AnalysisRunExpansionResult;
     error?: Error;
     failureError?: Error;
     publishError?: Error;
