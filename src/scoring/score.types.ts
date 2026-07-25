@@ -6,6 +6,7 @@ import type {
 
 export const SCORING_VERSION = "backend-v1";
 export const BASIC_REPORT_VERSION = "basic-v1";
+export const MULTI_PROVIDER_REPORT_VERSION = "multi-provider-v2";
 
 export type ScoreCalculationInput = {
   promptType: PromptType;

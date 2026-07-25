@@ -237,6 +237,15 @@ export type AnalysisRunRow = {
   updated_at: Date;
 };
 
+export type AnalysisRunProviderModelRow = {
+  analysis_run_provider_model_id: DbId;
+  analysis_run_id: DbId;
+  provider: ProviderName;
+  model: string;
+  ordinal: number;
+  created_at: Date;
+};
+
 export type AnalysisRunItemRow = {
   analysis_run_item_id: DbId;
   idempotency_key: string;
@@ -373,6 +382,7 @@ export type ReportRow = {
   idempotency_key: string;
   analysis_run_id: DbId;
   report_version: string;
+  revision: number;
   status: ReportStatus;
   report_data: JsonObject;
   rendered_text: string | null;

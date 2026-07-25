@@ -14,6 +14,10 @@ export type CanonicalAnalysisRequest = JsonObject & {
   useContextId: string | null;
   requestedProvider: ProviderName | null;
   requestedModel: string | null;
+  providerModels: Array<{
+    provider: ProviderName;
+    model: string;
+  }>;
 };
 
 export type CreateAnalysisResponse = {
@@ -70,6 +74,7 @@ export type AnalysisReportRecord = {
   analysis_run_id: string;
   report_id: string;
   report_version: string;
+  revision: number;
   status: "completed" | "partial" | "failed";
   report_data: JsonObject;
   rendered_text: string | null;
@@ -80,6 +85,7 @@ export type AnalysisReportResponse = {
   analysisRunId: string;
   reportId: string;
   reportVersion: string;
+  revision: number;
   status: "completed" | "partial" | "failed";
   report: JsonObject;
   renderedText: string | null;

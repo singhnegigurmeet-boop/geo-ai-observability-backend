@@ -6,6 +6,16 @@ const databaseId = z
   .string()
   .regex(/^[1-9]\d*$/, "Must be a positive database identifier");
 
+const providerName = z.enum(["mock", "openai", "gemini", "claude"]);
+const providerModel = z.enum([
+  "mock-fast",
+  "mock-standard",
+  "mock-quality",
+  "gpt-4o-mini",
+  "gemini-1.5-flash",
+  "claude-3-5-sonnet"
+]);
+
 export const createAnalysisRequestSchema = z
   .object({
     domain: z.string().trim().min(1),
@@ -13,22 +23,51 @@ export const createAnalysisRequestSchema = z
     brandId: databaseId.optional(),
     productId: databaseId.optional(),
     useContextId: databaseId.optional(),
-    preferredProvider: z
-      .enum(["mock", "openai", "gemini", "claude"])
-      .optional(),
-    preferredModel: z
-      .enum([
-        "mock-fast",
-        "mock-standard",
-        "mock-quality",
-        "gpt-4o-mini",
-        "gemini-1.5-flash",
-        "claude-3-5-sonnet"
-      ])
+    preferredProvider: providerName.optional(),
+    preferredModel: providerModel.optional(),
+    providerModels: z
+      .array(
+        z
+          .object({
+            provider: providerName,
+            model: providerModel
+          })
+          .strict()
+      )
+      .min(1)
+      .max(4)
       .optional()
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.providerModels &&
+      (value.preferredProvider !== undefined ||
+        value.preferredModel !== undefined)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["providerModels"],
+        message:
+          "providerModels cannot be combined with legacy preferredProvider/preferredModel"
+      });
+    }
+    for (const [index, pair] of (value.providerModels ?? []).entries()) {
+      const expectedProvider = pair.model.startsWith("mock-")
+        ? "mock"
+        : pair.model === "gpt-4o-mini"
+          ? "openai"
+          : pair.model === "gemini-1.5-flash"
+            ? "gemini"
+            : "claude";
+      if (pair.provider !== expectedProvider) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["providerModels", index, "model"],
+          message: "Provider and model must be an allowed exact pair"
+        });
+      }
+    }
     const modelProvider = value.preferredModel?.startsWith("mock-")
       ? "mock"
       : value.preferredModel === "gpt-4o-mini"

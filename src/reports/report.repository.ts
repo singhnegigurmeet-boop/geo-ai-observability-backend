@@ -1,193 +1,174 @@
 import type { DatabaseExecutor } from "../db/database-executor.js";
+import { isDeepStrictEqual } from "node:util";
 import type {
+  JobStatus,
   JsonObject,
-  ReportRow
+  PromptType,
+  ProviderName,
+  ProviderResultStatus,
+  ReportRow,
+  ReportStatus
 } from "../types/database.types.js";
-import type { ReportScoreRecord } from "../scoring/score.types.js";
 
-export type ReportReadiness = {
-  prompt_count: string;
-  scored_prompt_count: string;
+export type ReportExecutionRecord = {
+  prompt_job_id: string;
+  prompt_type: PromptType;
+  prompt_version: string;
+  provider_job_id: string;
+  provider: ProviderName;
+  model: string;
+  provider_job_status: JobStatus;
+  error_code: string | null;
+  result_status: ProviderResultStatus | null;
+  parsed_response: JsonObject | null;
+  scoring_version: string | null;
+  score: string | null;
+  score_components: JsonObject | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_micros: string | null;
 };
 
 export class ReportRepository {
   constructor(private readonly database: DatabaseExecutor) {}
 
-  async readiness(analysisRunId: string, scoringVersion: string) {
-    const result = await this.database.query<ReportReadiness>(
+  async lockRun(analysisRunId: string) {
+    const result = await this.database.query<{ status: string }>(
       `
-        SELECT
-          count(*)::text AS prompt_count,
-          count(*) FILTER (
-            WHERE EXISTS (
-              SELECT 1
-              FROM provider_jobs AS provider_job
-              JOIN provider_results AS provider_result
-                ON provider_result.provider_job_id = provider_job.provider_job_id
-               AND provider_result.status = 'valid'
-              JOIN provider_scores AS provider_score
-                ON provider_score.provider_result_id =
-                   provider_result.provider_result_id
-               AND provider_score.scoring_version = $2
-              WHERE provider_job.prompt_job_id = prompt.prompt_job_id
-                AND provider_job.status = 'succeeded'
-            )
-          )::text AS scored_prompt_count
-        FROM prompt_jobs AS prompt
-        JOIN llm_runs AS llm
-          ON llm.llm_run_id = prompt.llm_run_id
-        JOIN analysis_run_items AS item
-          ON item.analysis_run_item_id = llm.analysis_run_item_id
-        WHERE item.analysis_run_id = $1
+        SELECT status
+        FROM analysis_runs
+        WHERE analysis_run_id = $1
+        FOR UPDATE
       `,
-      [analysisRunId, scoringVersion]
+      [analysisRunId]
     );
-    return result.rows[0] as ReportReadiness;
+    return result.rows[0] ?? null;
   }
 
-  async scoreRecords(
-    analysisRunId: string,
-    scoringVersion: string
-  ) {
-    const result = await this.database.query<ReportScoreRecord>(
+  async executionRecords(analysisRunId: string, scoringVersion: string) {
+    const result = await this.database.query<ReportExecutionRecord>(
       `
         SELECT
+          prompt.prompt_job_id,
           prompt.prompt_type,
+          prompt.prompt_version,
+          job.provider_job_id,
+          job.provider,
+          job.model,
+          job.status AS provider_job_status,
+          job.error_code,
+          result.status AS result_status,
+          result.parsed_response,
+          score.scoring_version,
           score.score,
           score.score_components,
-          provider_job.provider,
-          provider_job.model,
-          provider_result.parsed_response,
           usage.input_tokens,
           usage.output_tokens,
           usage.cost_micros
         FROM analysis_run_items AS item
         JOIN llm_runs AS llm
           ON llm.analysis_run_item_id = item.analysis_run_item_id
-        JOIN prompt_jobs AS prompt
-          ON prompt.llm_run_id = llm.llm_run_id
-        JOIN provider_jobs AS provider_job
-          ON provider_job.prompt_job_id = prompt.prompt_job_id
-         AND provider_job.status = 'succeeded'
-        JOIN provider_results AS provider_result
-          ON provider_result.provider_job_id = provider_job.provider_job_id
-         AND provider_result.status = 'valid'
-        JOIN provider_scores AS score
-          ON score.provider_result_id = provider_result.provider_result_id
+        JOIN prompt_jobs AS prompt ON prompt.llm_run_id = llm.llm_run_id
+        JOIN provider_jobs AS job ON job.prompt_job_id = prompt.prompt_job_id
+        LEFT JOIN provider_results AS result
+          ON result.provider_job_id = job.provider_job_id
+        LEFT JOIN provider_scores AS score
+          ON score.provider_result_id = result.provider_result_id
          AND score.scoring_version = $2
         LEFT JOIN token_usage AS usage
-          ON usage.provider_job_id = provider_job.provider_job_id
+          ON usage.provider_job_id = job.provider_job_id
          AND usage.usage_kind = 'actual'
         WHERE item.analysis_run_id = $1
-        ORDER BY prompt.prompt_type, prompt.prompt_job_id
+        ORDER BY
+          prompt.prompt_job_id,
+          job.provider,
+          job.model,
+          job.provider_job_id
       `,
       [analysisRunId, scoringVersion]
     );
     return result.rows;
   }
 
-  async createOrReuse(input: {
+  async latest(analysisRunId: string, reportVersion: string) {
+    const result = await this.database.query<ReportRow>(
+      `
+        SELECT *
+        FROM reports
+        WHERE analysis_run_id = $1
+          AND report_version = $2
+        ORDER BY revision DESC
+        LIMIT 1
+      `,
+      [analysisRunId, reportVersion]
+    );
+    return result.rows[0] ?? null;
+  }
+
+  async createRevision(input: {
     analysisRunId: string;
     reportVersion: string;
+    status: ReportStatus;
     reportData: JsonObject;
     renderedText: string;
   }) {
+    const latest = await this.latest(input.analysisRunId, input.reportVersion);
+    if (
+      latest &&
+      latest.status === input.status &&
+      isDeepStrictEqual(latest.report_data, input.reportData) &&
+      latest.rendered_text === input.renderedText
+    ) {
+      return { row: latest, created: false };
+    }
+    const revision = (latest?.revision ?? 0) + 1;
     const idempotencyKey =
-      `report:${input.analysisRunId}:${input.reportVersion}`;
-    const inserted = await this.database.query<ReportRow>(
+      `report:${input.analysisRunId}:${input.reportVersion}:${revision}`;
+    const result = await this.database.query<ReportRow>(
       `
         INSERT INTO reports (
           idempotency_key,
           analysis_run_id,
           report_version,
+          revision,
           status,
           report_data,
           rendered_text
         )
-        VALUES ($1, $2, $3, 'completed', $4, $5)
-        ON CONFLICT (analysis_run_id, report_version) DO NOTHING
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (analysis_run_id, report_version, revision) DO NOTHING
         RETURNING *
       `,
       [
         idempotencyKey,
         input.analysisRunId,
         input.reportVersion,
+        revision,
+        input.status,
         input.reportData,
         input.renderedText
       ]
     );
-    if (inserted.rows[0]) {
-      return { row: inserted.rows[0], created: true };
-    }
-
-    const existing = await this.database.query<ReportRow>(
-      `
-        SELECT *
-        FROM reports
-        WHERE analysis_run_id = $1
-          AND report_version = $2
-          AND idempotency_key = $3
-          AND status = 'completed'
-          AND report_data = $4::jsonb
-          AND rendered_text = $5
-      `,
-      [
-        input.analysisRunId,
-        input.reportVersion,
-        idempotencyKey,
-        input.reportData,
-        input.renderedText
-      ]
-    );
-    if (!existing.rows[0]) {
-      throw new Error("Existing report violates deterministic aggregation");
-    }
-    return { row: existing.rows[0], created: false };
+    if (result.rows[0]) return { row: result.rows[0], created: true };
+    const raced = await this.latest(input.analysisRunId, input.reportVersion);
+    if (!raced) throw new Error("Report revision could not be loaded");
+    return { row: raced, created: false };
   }
 
-  async markRunCompleted(analysisRunId: string) {
+  async markRunFinal(
+    analysisRunId: string,
+    status: "completed" | "partial_success" | "failed" | "cancelled"
+  ) {
     await this.database.query(
-      `
-        UPDATE llm_runs AS llm
-        SET status = 'completed',
-            completed_at = COALESCE(llm.completed_at, now()),
-            error_code = NULL,
-            error_message = NULL,
-            updated_at = now()
-        FROM analysis_run_items AS item
-        WHERE llm.analysis_run_item_id = item.analysis_run_item_id
-          AND item.analysis_run_id = $1
-          AND llm.status = 'processing'
-      `,
-      [analysisRunId]
-    );
-    await this.database.query(
-      `
-        UPDATE analysis_run_items
-        SET status = 'completed',
-            completed_at = COALESCE(completed_at, now()),
-            error_code = NULL,
-            error_message = NULL,
-            updated_at = now()
-        WHERE analysis_run_id = $1
-          AND status = 'processing'
-      `,
-      [analysisRunId]
-    );
-    const result = await this.database.query<{ analysis_run_id: string }>(
       `
         UPDATE analysis_runs
-        SET status = 'completed',
+        SET status = $2,
             completed_at = COALESCE(completed_at, now()),
-            error_code = NULL,
-            error_message = NULL,
             updated_at = now()
         WHERE analysis_run_id = $1
-          AND status = 'processing'
-        RETURNING analysis_run_id
+          AND status <> 'cancelled'
       `,
-      [analysisRunId]
+      [analysisRunId, status]
     );
-    return Boolean(result.rows[0]);
   }
 }
