@@ -62,7 +62,7 @@ export const openApiDocument = {
         tags: ["Analysis"],
         summary: "Submit an analysis run",
         description:
-          "Creates or replays a queued analysis run and atomically records its analysis_run.created outbox event. Anonymous requests cannot select a model; logged-in requests may select an allowed mock model.",
+          "Creates or replays a queued analysis run with an immutable normalized provider/model set. Anonymous requests use mock-fast; logged-in requests may provide an explicit set.",
         security: ownershipSecurity,
         parameters: [
           {
@@ -135,9 +135,9 @@ export const openApiDocument = {
     "/v1/analysis/runs/{analysisRunId}/report": {
       get: {
         tags: ["Analysis"],
-        summary: "Read an owned completed basic report",
+        summary: "Read the latest owned report revision",
         description:
-          "Returns the immutable backend-generated basic-v1 report after every planned prompt has a valid provider result and backend score.",
+          "Returns the latest immutable multi-provider-v2 partial or final report revision.",
         security: ownershipSecurity,
         parameters: [
           {
@@ -163,6 +163,27 @@ export const openApiDocument = {
           "404": {
             description: "Run is not owned by this actor or its report is not ready"
           }
+        }
+      }
+    },
+    "/v1/analysis/runs/{analysisRunId}/cancel": {
+      post: {
+        tags: ["Analysis"],
+        summary: "Cancel an owned analysis before provider execution begins",
+        security: ownershipSecurity,
+        parameters: [
+          {
+            name: "analysisRunId",
+            in: "path",
+            required: true,
+            schema: { type: "string", pattern: "^[1-9][0-9]*$" }
+          }
+        ],
+        responses: {
+          "200": { description: "Analysis cancelled or already cancelled" },
+          "401": { description: "Missing or invalid session" },
+          "404": { description: "Run not found for this owner" },
+          "409": { description: "Provider execution already began or run is terminal" }
         }
       }
     }
@@ -251,6 +272,35 @@ export const openApiDocument = {
             ],
             description:
               "Logged-in requests only. Defaults to mock-standard."
+          },
+          providerModels: {
+            type: "array",
+            minItems: 1,
+            maxItems: 4,
+            description:
+              "Logged-in requests only. Normalized, deduplicated, and sorted; cannot be combined with legacy preferred fields.",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["provider", "model"],
+              properties: {
+                provider: {
+                  type: "string",
+                  enum: ["mock", "openai", "gemini", "claude"]
+                },
+                model: {
+                  type: "string",
+                  enum: [
+                    "mock-fast",
+                    "mock-standard",
+                    "mock-quality",
+                    "gpt-4o-mini",
+                    "gemini-1.5-flash",
+                    "claude-3-5-sonnet"
+                  ]
+                }
+              }
+            }
           }
         }
       },
@@ -323,6 +373,7 @@ export const openApiDocument = {
           "analysisRunId",
           "reportId",
           "reportVersion",
+          "revision",
           "status",
           "report",
           "renderedText",
@@ -331,12 +382,19 @@ export const openApiDocument = {
         properties: {
           analysisRunId: { $ref: "#/components/schemas/DatabaseId" },
           reportId: { $ref: "#/components/schemas/DatabaseId" },
-          reportVersion: { type: "string", enum: ["basic-v1"] },
-          status: { type: "string", enum: ["completed"] },
+          reportVersion: {
+            type: "string",
+            enum: ["multi-provider-v2", "basic-v1"]
+          },
+          revision: { type: "integer", minimum: 1 },
+          status: {
+            type: "string",
+            enum: ["partial", "completed", "failed"]
+          },
           report: {
             type: "object",
             description:
-              "Deterministic basic report with overallScore, prompt-type breakdown, providerModels, and token usage."
+              "Latest immutable report snapshot with provider coverage, prompt-level means, gaps, and usage."
           },
           renderedText: { type: "string", nullable: true },
           generatedAt: { type: "string", format: "date-time" }

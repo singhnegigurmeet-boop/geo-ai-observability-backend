@@ -4,7 +4,7 @@ This branch contains the complete GEO V6 Production Core through Phase 12. Postg
 
 ## Implemented
 
-- Production-safe PostgreSQL migrations and the current 30-table schema
+- Production-safe additive PostgreSQL migrations and the current 31-table schema
 - PostgreSQL outbox-to-RabbitMQ delivery infrastructure
 - Opaque user and anonymous sessions with workspace ownership
 - Hostile-input-safe public ASCII domain normalization
@@ -26,7 +26,11 @@ This branch contains the complete GEO V6 Production Core through Phase 12. Postg
 - A dedicated `mock_queue` and DLQ; mock work is never routed to a real-provider queue
 - ID-only `provider_result.created` events routed through a dedicated `scoring_queue` and DLQ
 - Immutable `backend-v1` provider scores computed independently of provider-supplied score fields
-- Idempotent `basic-v1` reports with prompt-type breakdown, provider/model provenance, and usage totals
+- Immutable `multi-provider-v2` partial/final report revisions with provider provenance, coverage, and usage
+- Frozen normalized provider/model sets with one provider job per prompt/pair
+- Transactional cancellation before provider execution starts
+- Invalid-evidence retention without scoring malformed responses
+- Technical-failure terminalization across provider, prompt, LLM, item, and run state
 - Provider/model-aware platform, workspace, user, anonymous-session, and analysis-run budget policies enforced before provider execution
 - Deterministic model-aware estimated token/cost reservations and actual-usage reconciliation
 - Concurrency-safe hard limits and one-crossing-prompt soft limits using PostgreSQL policy locks
@@ -51,6 +55,7 @@ GET  /docs
 POST /v1/analysis
 GET  /v1/analysis/runs/:analysisRunId
 GET  /v1/analysis/runs/:analysisRunId/report
+POST /v1/analysis/runs/:analysisRunId/cancel
 ```
 
 Health and documentation are public. Analysis and report routes mount ownership middleware locally and require either:
@@ -96,6 +101,23 @@ Logged-in requests may also select an allowed Phase 8 mock model:
 }
 ```
 
+Logged-in requests may instead select a bounded provider/model set:
+
+```json
+{
+  "domain": "example.com",
+  "providerModels": [
+    { "provider": "mock", "model": "mock-quality" },
+    { "provider": "openai", "model": "gpt-4o-mini" }
+  ]
+}
+```
+
+The set is validated, deduplicated, sorted, persisted immutably, and included
+in idempotency identity. `providerModels` cannot be mixed with the legacy
+single-provider preference fields. Real-provider entries require the existing
+real-provider feature flag.
+
 Allowed models are `mock-fast`, `mock-standard`, and `mock-quality`. Logged-in and claimed requests default to `mock-standard`. Anonymous requests cannot send either preference and use the fixed `mock-fast` policy.
 
 The hierarchy must be contiguous:
@@ -112,7 +134,10 @@ The domain field accepts a bare hostname or HTTP(S) URL-like value. The input bo
 
 Only the normalized hostname is persisted in `domains`, `analysis_runs.request_payload`, and downstream status data. Raw domain input is never included in outbox messages or retained as `display_domain`.
 
-The original V6 core schema contained 26 public production tables. Phase 4.5 adds four relationship tables—`domain_categories`, `category_brands`, `brand_products`, and `product_use_contexts`—for a current total of 30.
+The original V6 core schema contained 26 public production tables. Phase 4.5
+added four relationship tables—`domain_categories`, `category_brands`,
+`brand_products`, and `product_use_contexts`. Migration 024 adds
+`analysis_run_provider_models`, for a current total of 31.
 
 Categories, brands, products, and use contexts are controlled master records. The relationship tables define valid cascade relationships using IDs only. `entity_paths` materializes reusable concrete paths for analysis state and is not relationship authority.
 
@@ -148,11 +173,43 @@ analysis_runs
   -> COMMIT
 ```
 
-The event is routed through `analysis_run_queue` and contains only run, path, and ownership identifiers. RabbitMQ transports the event; the worker reloads authoritative state from PostgreSQL.
+The event is routed through `analysis_run_queue` and contains only
+`analysisRunId`. Every downstream event likewise contains only its primary
+aggregate ID. RabbitMQ transports identifiers; workers reload authoritative
+linkage, ownership, routing, and provider state from PostgreSQL.
 
-The worker locks a queued run and atomically materializes child paths, creates queued items, emits one ID-only `analysis_run_item.created` event per item, and moves the run to `processing`. A path with no eligible children becomes `failed` with `NO_EXPANSION_CHILDREN`; this is acknowledged as a business outcome rather than dead-lettered.
+The worker locks a queued run and atomically materializes child paths, creates
+queued items, emits one ID-only `analysis_run_item.created` event per item, and
+moves the run to `processing`. A path with no eligible children becomes a
+successful `completed_empty` business outcome with an immutable explanatory
+report; it creates no failure record or DLQ entry.
 
 Technical failures roll back the expansion and are recorded in `failure_records`. Consumer attempts are tracked separately from outbox publication attempts. Attempts one and two are confirmed-republished; attempt three is rejected to `analysis_run_queue.dlq`.
+
+## Execution and report lifecycle
+
+Each rendered prompt fans out to every pair frozen in
+`analysis_run_provider_models`. Prompt and parent states are derived from all
+sibling provider jobs; a successful sibling is preserved if another provider
+fails or pauses.
+
+Backend scoring creates immutable `multi-provider-v2` report revisions.
+Evidence that arrives while other work is outstanding produces a partial
+revision; terminal work produces a final revision. Invalid, failed, cancelled,
+and missing evidence remain explicit coverage gaps and are never scored as
+zero. Budget pauses acknowledge the delivery without retry or DLQ and retain a
+budget-paused snapshot of completed evidence.
+
+`POST /v1/analysis/runs/:analysisRunId/cancel` is idempotent before provider
+execution begins. It cancels all unstarted descendants and creates a cancelled
+report. Once any provider execution has started, cancellation returns
+`409 CONFLICT`.
+
+Terminal technical failures now update business state in the same transaction
+as the final failure record. Claimed sessions grant the exact claimant
+user/workspace derived access to pre-claim runs. Scheduler ticks revalidate
+current authorization and the active hierarchy chain immediately before
+creating a run.
 
 ## Local Setup
 
