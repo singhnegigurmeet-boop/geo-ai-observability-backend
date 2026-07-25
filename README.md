@@ -1,6 +1,6 @@
 # GEO V6 Production Core Backend
 
-This branch contains the Phase 7 prompt-planning slice for GEO V6. PostgreSQL remains authoritative. The API creates a queued run, Phase 5 expands it into concrete items, Phase 6 creates one LLM control unit per item, and Phase 7 plans the five downstream prompt jobs without rendering prompt text.
+This branch contains the Phase 8 prompt-rendering and mock-provider slice for GEO V6. PostgreSQL remains authoritative. Phase 7 plans five prompt jobs; Phase 8 renders them from canonical database context and stores deterministic mock provider evidence.
 
 ## Implemented
 
@@ -20,9 +20,13 @@ This branch contains the Phase 7 prompt-planning slice for GEO V6. PostgreSQL re
 - Transactional `llm_run.created` ID-only outbox events
 - Five deterministic, unrendered `prompt_jobs` per queued `llm_run`
 - Transactional `prompt_job.created` routing events
-- Shared reliable RabbitMQ consumer runtime for all three business workers
+- Deterministic code-based v1 templates for all five prompt types
+- Policy-isolated `mock` / `mock-fast` provider selection
+- Idempotent provider jobs, immutable mock provider results, and actual token usage
+- A dedicated `mock_queue` and DLQ; mock work is never routed to a real-provider queue
+- Shared reliable RabbitMQ consumer runtime across the business workers
 
-The Phase 4 API still does not create `analysis_run_items`; only the Phase 5 worker does. Phase 7 plans prompt work but does not render prompts, select providers/models, or execute provider calls.
+Phase 8 does not call any external provider. OpenAI, Gemini, and Claude queues remain declared for later implementation, but no Phase 8 code publishes mock work to them or consumes them.
 
 ## HTTP Surface
 
@@ -160,7 +164,20 @@ npm run llm-run-worker:dev
 
 Phase 7 consumes `llm_run.created`, reloads and locks the authoritative LLM run, validates its item, run, path, starting path, and ownership, then creates exactly five pending jobs in fixed order: competitor, ranking, visibility, price range, and pros/cons. Each job uses prompt version `v1`, has `prompt_text = NULL`, and emits a `prompt_job.created` event to its dedicated prompt queue. The LLM run then moves to `processing`; its parent item and analysis run are not updated.
 
-Migration `017_allow_unrendered_prompt_jobs.sql` permits `prompt_text` to be `NULL` while continuing to reject blank rendered text. Rendering remains a later phase.
+Migration `017_allow_unrendered_prompt_jobs.sql` permits the Phase 7 planned state (`prompt_text = NULL`) while continuing to reject blank rendered text. Phase 8 fills that field before creating provider work.
+
+Run the Phase 8 prompt renderers and mock provider separately:
+
+```bash
+npm run prompt-worker:dev
+npm run mock-provider-worker:dev
+```
+
+The prompt worker consumes all five prompt-type queues. It locks each pending job, reloads its canonical hierarchy and ownership context, renders a nonblank v1 prompt, selects `provider = mock` and `model = mock-fast` through policy, creates one queued provider job, and emits `provider_job.created` to `mock_queue`.
+
+The mock provider worker rejects unrendered prompts. For valid work it stores deterministic evidence in immutable `provider_results`, records deterministic `actual` token usage with zero cost, and marks both jobs succeeded. Stable database identities make both stages safe under redelivery.
+
+Migration `018_require_rendered_prompt_for_provider_jobs.sql` enforces the render-before-provider invariant inside PostgreSQL, including direct inserts outside the service path.
 
 ## Verification
 
@@ -186,6 +203,7 @@ npm run test:phase45
 npm run test:phase5
 npm run test:phase6
 npm run test:phase7
+npm run test:phase8
 npm run infra:test:down
 ```
 
@@ -193,8 +211,8 @@ Integration launchers wait for their dependencies. Destructive test schema setup
 
 ## Not Implemented
 
-- Prompt rendering, templates, or dynamic prompt/model policy
-- Provider jobs, execution, or results
+- Dynamic prompt/model policy or prompt experimentation
+- Real OpenAI, Gemini, or Claude execution and provider fallback
 - Budget enforcement
 - Scoring or reports
 - Scheduler or notification execution

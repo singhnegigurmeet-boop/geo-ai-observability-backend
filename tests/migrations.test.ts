@@ -308,6 +308,41 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
       retainedPrompt.rows[0]?.prompt_text,
       "Existing rendered prompt"
     );
+
+    await pool.query(`
+      INSERT INTO provider_jobs (
+        idempotency_key, prompt_job_id, provider, model
+      )
+      SELECT
+        'migration-018-existing-provider',
+        prompt_job_id,
+        'mock',
+        'mock-fast'
+      FROM prompt_jobs
+      WHERE idempotency_key = 'migration-017-rendered-prompt'
+    `);
+    const providerGuardMigration =
+      "018_require_rendered_prompt_for_provider_jobs.sql";
+    const providerGuardIndex =
+      migrationFilenames.indexOf(providerGuardMigration);
+    if (providerGuardIndex !== promptPlanningIndex + 1) {
+      throw new Error("Expected migration 018 immediately after migration 017");
+    }
+    await cp(
+      path.join(sourceDirectory, providerGuardMigration),
+      path.join(temporaryMigrationsDirectory, providerGuardMigration)
+    );
+    const providerGuardRun = await runMigrations({
+      pool,
+      migrationsDirectory: temporaryMigrationsDirectory
+    });
+    assert.equal(providerGuardRun.applied.length, 1);
+    assert.equal(providerGuardRun.skipped.length, providerGuardIndex);
+    const retainedProvider = await pool.query<{ count: string }>(
+      `SELECT count(*) FROM provider_jobs
+       WHERE idempotency_key = 'migration-018-existing-provider'`
+    );
+    assert.equal(retainedProvider.rows[0]?.count, "1");
   });
 
   it("is a no-op on the second complete run", async () => {
@@ -365,14 +400,25 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
     );
     const llmRunId = llmRun.rows[0]!.llm_run_id;
 
-    await pool.query(
+    const nullPrompt = await pool.query<{ prompt_job_id: string }>(
       `
         INSERT INTO prompt_jobs (
           idempotency_key, llm_run_id, prompt_type, prompt_version, prompt_text
         )
         VALUES ('migration-017-null', $1, 'competitor', 'v1', NULL)
+        RETURNING prompt_job_id
       `,
       [llmRunId]
+    );
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO provider_jobs (
+           idempotency_key, prompt_job_id, provider, model
+         )
+         VALUES ('migration-018-unrendered-provider', $1, 'mock', 'mock-fast')`,
+        [nullPrompt.rows[0]!.prompt_job_id]
+      ),
+      hasPostgresCode("23514")
     );
     for (const [key, type, text] of [
       ["migration-017-empty", "visibility", ""],
@@ -395,7 +441,7 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
         hasPostgresCode("23514")
       );
     }
-    await pool.query(
+    const nonblankPrompt = await pool.query<{ prompt_job_id: string }>(
       `
         INSERT INTO prompt_jobs (
           idempotency_key, llm_run_id, prompt_type, prompt_version, prompt_text
@@ -407,8 +453,16 @@ describe("incremental GEO V6 migrations", { skip: !runDatabaseTests }, () => {
           'v1',
           'Real prompt text'
         )
+        RETURNING prompt_job_id
       `,
       [llmRunId]
+    );
+    await pool.query(
+      `INSERT INTO provider_jobs (
+         idempotency_key, prompt_job_id, provider, model
+       )
+       VALUES ('migration-018-rendered-provider', $1, 'mock', 'mock-fast')`,
+      [nonblankPrompt.rows[0]!.prompt_job_id]
     );
   });
 

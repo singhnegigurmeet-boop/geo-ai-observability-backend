@@ -1,4 +1,4 @@
-# Phase 7 Prompt Planning Flow
+# Phase 8 Prompt Rendering and Mock Evidence Flow
 
 ## Process Boundaries
 
@@ -25,6 +25,16 @@ LLM run worker process
   -> consume llm_run_queue
   -> PostgreSQL locked planning transaction
   -> five prompt_job.created outbox events
+
+Prompt worker process
+  -> consume five prompt-type queues
+  -> render from canonical PostgreSQL context
+  -> provider_job.created outbox event
+
+Mock provider worker process
+  -> consume mock_queue
+  -> PostgreSQL locked evidence transaction
+  -> provider_results + actual token_usage
 ```
 
 ## Submission
@@ -174,7 +184,7 @@ worker attempt 3
 
 The `x-worker-attempt` consumer header is independent of the queue envelope's outbox publication `attempt`. If failure recording or retry publication fails, the original delivery is requeued.
 
-The same reliable consumer implementation handles Phases 5, 6, and 7 with different fixed queue names. Phase 6 retries exhaust into `analysis_run_item_queue.dlq`.
+The same reliable consumer implementation handles Phases 5 through 8 with fixed queue names. Phase 6 retries exhaust into `analysis_run_item_queue.dlq`.
 
 Phase 7 uses that same runtime with the fixed `llm_run_queue`. Technical failures are recorded for attempts one through three and exhaust into `llm_run_queue.dlq`. Malformed messages are permanent failures; authoritative-state mismatches remain retryable technical failures.
 
@@ -246,6 +256,56 @@ outbox:     prompt_job.created:<promptJobId>
 
 Phase 7 does not update the parent item or analysis run and creates no provider jobs/results, token usage, scores, reports, budgets, scheduler jobs, or notifications.
 
+## Phase 8 Prompt Rendering
+
+```text
+consume prompt_job.created from its prompt-type queue
+  -> validate strict envelope and queue/prompt-type match
+  -> begin PostgreSQL transaction
+  -> SELECT prompt_job FOR UPDATE
+  -> non-pending prompt job: idempotent no-op
+  -> reload LLM run, item, run, active path, canonical names, and ownership
+  -> validate every message identifier against authoritative state
+  -> render deterministic, nonblank v1 prompt text
+  -> select mock / mock-fast through provider policy
+  -> create/reuse queued provider_job
+  -> create/reuse provider_job.created outbox event for mock_queue
+  -> mark prompt_job processing
+  -> commit
+```
+
+Templates exist for competitor, ranking, visibility, price range, and pros/cons. They use only normalized domains and controlled hierarchy names loaded from PostgreSQL. Raw request input is not retained or rendered.
+
+Stable identities:
+
+```text
+provider job: provider_job:<promptJobId>:mock:mock-fast
+outbox:       provider_job.created:<providerJobId>
+```
+
+`mock_queue` extends the Phase 2 topology with a dedicated quorum queue and DLQ. Mock work is never routed to `openai_queue`, `gemini_queue`, or `claude_queue`.
+
+Migration `018` adds a PostgreSQL trigger that rejects any provider job whose referenced prompt text is null or blank. The prompt rendering update and provider job/outbox inserts still commit or roll back as one transaction.
+
+## Phase 8 Mock Provider Execution
+
+```text
+consume provider_job.created from mock_queue
+  -> validate strict mock / mock-fast envelope
+  -> begin PostgreSQL transaction
+  -> lock provider_job and prompt_job
+  -> non-queued provider job: idempotent no-op
+  -> verify provider/model and nonblank rendered prompt
+  -> create/reuse immutable deterministic provider_result
+  -> create/reuse deterministic actual token_usage
+  -> mark provider_job and prompt_job succeeded
+  -> commit
+```
+
+Evidence uses `provider = mock`, `model_version = mock-fast`, a structured evidence array, and no score or report fields. Actual mock usage uses a deterministic prompt-length estimate, fixed output tokens, and zero cost. The schema links usage to provider/model through `provider_jobs`; those values are not duplicated in `token_usage`.
+
+Technical failures roll the whole stage back and use the shared three-attempt retry/failure-record/DLQ behavior. Malformed messages are permanent failures. No external provider network calls occur.
+
 ## Ownership Storage
 
 ```text
@@ -297,8 +357,8 @@ No submitted domain text, prompt content, provider configuration, expanded item,
 
 ## Explicitly Deferred
 
-- Prompt rendering, templates, and dynamic prompt/model policy
-- Provider execution
+- Dynamic prompt/model policy and prompt experimentation
+- Real provider execution and provider fallback
 - Budget enforcement
 - Scoring and reports
 - Scheduler and notifications

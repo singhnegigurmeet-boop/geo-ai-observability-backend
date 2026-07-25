@@ -10,11 +10,22 @@ export const QUEUE_NAMES = [
   "openai_queue",
   "gemini_queue",
   "claude_queue",
+  "mock_queue",
   "scheduler_queue",
   "notification_queue"
 ] as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[number];
+
+export const PROMPT_QUEUE_NAMES = [
+  "competitor_prompt_queue",
+  "ranking_prompt_queue",
+  "visibility_prompt_queue",
+  "price_range_prompt_queue",
+  "pros_cons_prompt_queue"
+] as const satisfies readonly QueueName[];
+
+export type PromptQueueName = (typeof PROMPT_QUEUE_NAMES)[number];
 
 const queueNameSet = new Set<string>(QUEUE_NAMES);
 
