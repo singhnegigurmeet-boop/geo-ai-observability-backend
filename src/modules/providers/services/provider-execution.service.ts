@@ -27,6 +27,7 @@ import type {
   ProviderGeneratedOutput
 } from "../types/provider-adapter.types.js";
 import type { ProviderExecutionState } from "../repositories/provider-execution.repository.js";
+import { AuthoritativeEntityPathContextRepository } from "../repositories/authoritative-entity-path-context.repository.js";
 
 type ProviderDatabase = DatabaseExecutor & TransactionPool;
 
@@ -80,6 +81,7 @@ export class ProviderExecutionService {
         state.prompt_type === null ||
         state.prompt_depth === null ||
         state.business_prompt_version === null ||
+        state.prompt_input_payload === null ||
         state.prompt_status !== "processing" ||
         state.prompt_text === null ||
         !state.prompt_text.trim()
@@ -116,7 +118,7 @@ export class ProviderExecutionService {
           true
         );
       }
-      const exactTargetName = exactTargetNameFromPayload(
+      const exactTargetName = targetNameFromFrozenPayload(
         state.request_payload
       );
       const budget = await new BudgetCheckService(
@@ -217,12 +219,18 @@ export class ProviderExecutionService {
       const outputTokens =
         execution.outputTokens ?? budget.estimate.outputTokens;
       const retained = retainGeneratedContent(execution.generatedContent);
+      const authoritativeContext =
+        await new AuthoritativeEntityPathContextRepository(
+          client
+        ).loadForProviderJob(state.provider_job_id);
       const validation = validateProviderOutput({
         generatedContent: execution.generatedContent,
         promptType: state.prompt_type,
         promptDepth: state.prompt_depth,
         responseContractVersion: state.response_contract_version,
-        exactTargetName
+        frozenContext: state.prompt_input_payload.entityPathContext,
+        authoritativeContext,
+        promptInputPayload: state.prompt_input_payload
       });
       const result = await repository.createOrReuseProviderResult({
         providerJobId: state.provider_job_id,
@@ -483,14 +491,10 @@ export class ProviderExecutionService {
   }
 }
 
-function exactTargetNameFromPayload(payload: Record<string, unknown>) {
+function targetNameFromFrozenPayload(payload: Record<string, unknown>) {
   const context = payload.entityPathContext;
   if (!context || typeof context !== "object" || Array.isArray(context)) {
-    throw new ProviderExecutionError(
-      "ENTITY_PATH_CONTEXT_MISSING",
-      "Provider job request has no frozen entity path context",
-      true
-    );
+    return "Unknown target";
   }
   const record = context as Record<string, unknown>;
   for (const key of ["useContext", "product", "brand", "category", "domain"]) {
@@ -500,11 +504,7 @@ function exactTargetNameFromPayload(payload: Record<string, unknown>) {
       if (typeof name === "string" && name.trim()) return name;
     }
   }
-  throw new ProviderExecutionError(
-    "ENTITY_PATH_TARGET_MISSING",
-    "Provider job context has no exact target",
-    true
-  );
+  return "Unknown target";
 }
 
 function parseClassificationContext(payload: Record<string, unknown>) {

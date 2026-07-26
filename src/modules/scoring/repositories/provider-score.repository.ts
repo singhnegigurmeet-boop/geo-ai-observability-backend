@@ -15,6 +15,7 @@ export type ProviderResultScoringState = {
   prompt_job_id: string;
   analysis_run_id: string;
   result_status: ProviderResultStatus;
+  context_validation_status: "valid" | "invalid" | "not_applicable";
   validated_response: JsonObject | null;
   provider: ProviderName;
   model: string;
@@ -35,6 +36,7 @@ export class ProviderScoreRepository {
           prompt.prompt_job_id,
           item.analysis_run_id,
           result.status AS result_status,
+          result.context_validation_status,
           result.validated_response,
           job.provider,
           job.model,

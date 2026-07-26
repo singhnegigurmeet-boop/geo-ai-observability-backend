@@ -1,6 +1,7 @@
 import type { DatabaseExecutor } from "../../../common/database/database-executor.js";
 import type { EntityPathType } from "../../../common/types/database.types.js";
 import type { EntityPathContext } from "../types/prompt-rendering.types.js";
+import { entityPathContextSchema } from "../contracts/entity-path-context.contract.js";
 
 type EntityPathContextRecord = {
   domain_id: string;
@@ -46,14 +47,49 @@ export class EntityPathContextRepository {
           ON domain.domain_id = path.domain_id AND domain.is_active
         LEFT JOIN categories AS category
           ON category.category_id = path.category_id AND category.is_active
+        LEFT JOIN domain_categories AS domain_category
+          ON domain_category.domain_id = path.domain_id
+         AND domain_category.category_id = path.category_id
+         AND domain_category.is_active
         LEFT JOIN brands AS brand
           ON brand.brand_id = path.brand_id AND brand.is_active
+        LEFT JOIN category_brands AS category_brand
+          ON category_brand.domain_category_id =
+             domain_category.domain_category_id
+         AND category_brand.brand_id = path.brand_id
+         AND category_brand.is_active
         LEFT JOIN products AS product
           ON product.product_id = path.product_id AND product.is_active
+        LEFT JOIN brand_products AS brand_product
+          ON brand_product.category_brand_id =
+             category_brand.category_brand_id
+         AND brand_product.product_id = path.product_id
+         AND brand_product.is_active
         LEFT JOIN use_contexts AS use_context
           ON use_context.use_context_id = path.use_context_id
          AND use_context.is_active
+        LEFT JOIN product_use_contexts AS product_use_context
+          ON product_use_context.brand_product_id =
+             brand_product.brand_product_id
+         AND product_use_context.use_context_id = path.use_context_id
+         AND product_use_context.is_active
         WHERE path.entity_path_id = $1 AND path.is_active
+          AND (
+            path.category_id IS NULL
+            OR domain_category.domain_category_id IS NOT NULL
+          )
+          AND (
+            path.brand_id IS NULL
+            OR category_brand.category_brand_id IS NOT NULL
+          )
+          AND (
+            path.product_id IS NULL
+            OR brand_product.brand_product_id IS NOT NULL
+          )
+          AND (
+            path.use_context_id IS NULL
+            OR product_use_context.product_use_context_id IS NOT NULL
+          )
       `,
       [entityPathId, startingEntityPathId]
     );
@@ -96,6 +132,7 @@ export class EntityPathContextRepository {
         name: row.use_context_name
       };
     }
-    return context;
+    const parsed = entityPathContextSchema.safeParse(context);
+    return parsed.success ? parsed.data : null;
   }
 }

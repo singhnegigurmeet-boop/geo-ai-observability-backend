@@ -16,6 +16,7 @@ export type ProviderExecutionState = ProviderJobRow & {
   prompt_type: PromptType | null;
   prompt_depth: PromptDepth | null;
   business_prompt_version: string | null;
+  prompt_input_payload: JsonObject | null;
   response_contract_version: string;
   classification_status: string | null;
   classification_input_payload: JsonObject | null;
@@ -57,6 +58,7 @@ export class ProviderExecutionRepository extends MockProviderRepository {
           prompt.prompt_type,
           prompt.prompt_depth,
           prompt.business_prompt_version,
+          prompt.input_payload AS prompt_input_payload,
           classification.status AS classification_status,
           classification.input_payload AS classification_input_payload,
           run.analysis_run_id,

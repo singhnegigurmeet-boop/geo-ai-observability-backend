@@ -52,6 +52,7 @@ export class ProviderScoreService {
       }
       if (
         state.result_status !== "valid" ||
+        state.context_validation_status !== "valid" ||
         state.validated_response === null ||
         !requiresScoring(state.prompt_type) ||
         state.provider_job_status !== "succeeded"

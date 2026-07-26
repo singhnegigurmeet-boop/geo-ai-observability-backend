@@ -1,19 +1,10 @@
 import type {
-  EntityPathType,
   PromptDepth,
   PromptType
 } from "../../../common/types/database.types.js";
+import type { EntityPathContext } from "../contracts/entity-path-context.contract.js";
 
-export type EntityPathContext = {
-  domain: { id: string; name: string };
-  category?: { id: string; name: string };
-  brand?: { id: string; name: string };
-  product?: { id: string; name: string };
-  useContext?: { id: string; name: string };
-  startingLevel: EntityPathType;
-  targetLevel: EntityPathType;
-  canonicalPath: string;
-};
+export type { EntityPathContext } from "../contracts/entity-path-context.contract.js";
 
 export type PromptRenderingContext = {
   promptType: PromptType;

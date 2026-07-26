@@ -790,15 +790,24 @@ async function seedRun(
     const promptPolicy = promptTypePolicy(promptType);
     const promptText =
       `Canonical ${promptType} prompt for ${unique} item ${index}.`;
+    const entityPathContext = {
+      domain: {
+        id: domainId,
+        name: `budget-${unique}.example`
+      },
+      canonicalPath: `budget-${unique}.example`,
+      startingLevel: "domain",
+      targetLevel: "domain"
+    };
     const promptJobId = (
       await pool.query<{ prompt_job_id: string }>(
         `
           INSERT INTO prompt_jobs (
             idempotency_key, llm_run_id, prompt_type, prompt_depth,
             business_prompt_version, response_contract_version,
-            status, prompt_text, started_at
+            status, prompt_text, input_payload, started_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, 'processing', $7, now())
+          VALUES ($1, $2, $3, $4, $5, $6, 'processing', $7, $8, now())
           RETURNING prompt_job_id
         `,
         [
@@ -808,7 +817,8 @@ async function seedRun(
           promptDepth,
           promptPolicy.businessPromptVersion,
           promptPolicy.responseContractVersion,
-          promptText
+          promptText,
+          { entityPathContext }
         ]
       )
     ).rows[0]!.prompt_job_id;
@@ -834,19 +844,7 @@ async function seedRun(
           promptPolicy.responseContractVersion,
           modelProfile.modelProfileVersion,
           {
-            entityPathContext: {
-              domain: {
-                id: domainId,
-                name: `budget-${unique}.example`
-              },
-              category: null,
-              brand: null,
-              product: null,
-              useContext: null,
-              canonicalPath: `budget-${unique}.example`,
-              startingLevel: "domain",
-              targetLevel: "domain"
-            }
+            entityPathContext
           }
         ]
       )

@@ -5,6 +5,7 @@ import type {
   PromptType
 } from "../../../common/types/database.types.js";
 import type { EntityPathContext } from "../types/prompt-rendering.types.js";
+import { entityPathContextSchema } from "../contracts/entity-path-context.contract.js";
 
 export class PromptJobRepository {
   constructor(private readonly database: DatabaseExecutor) {}
@@ -17,6 +18,14 @@ export class PromptJobRepository {
     responseContractVersion: string;
     entityPathContext: EntityPathContext;
   }) {
+    const parsedContext = entityPathContextSchema.safeParse(
+      input.entityPathContext
+    );
+    if (!parsedContext.success) {
+      throw new Error(
+        "Entity path context violates its authoritative runtime contract"
+      );
+    }
     const idempotencyKey =
       `prompt_job:${input.llmRunId}:${input.promptType}:${input.businessPromptVersion}:${input.promptDepth}`;
     const inserted = await this.database.query<PromptJobRow>(
@@ -45,7 +54,7 @@ export class PromptJobRepository {
         input.promptDepth,
         input.businessPromptVersion,
         input.responseContractVersion,
-        { entityPathContext: input.entityPathContext }
+        { entityPathContext: parsedContext.data }
       ]
     );
     if (inserted.rows[0]) {
@@ -70,7 +79,7 @@ export class PromptJobRepository {
         input.businessPromptVersion,
         input.promptDepth,
         input.responseContractVersion,
-        { entityPathContext: input.entityPathContext },
+        { entityPathContext: parsedContext.data },
         idempotencyKey
       ]
     );

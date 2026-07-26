@@ -10,6 +10,11 @@ import {
   parseGeneratedJson,
   validateNormalResponse
 } from "../contracts/provider-response.contracts.js";
+import {
+  entityPathContextSchema,
+  entityPathTarget
+} from "../../prompts/contracts/entity-path-context.contract.js";
+import type { AuthoritativeEntityPathContextResult } from "../repositories/authoritative-entity-path-context.repository.js";
 
 export const MAX_RETAINED_GENERATED_CONTENT_BYTES = 256 * 1024;
 
@@ -59,13 +64,19 @@ export function retainGeneratedContent(
   };
 }
 
-export function validateProviderOutput(input: {
+export type NormalProviderValidationInput = {
   generatedContent: string;
   promptType: PromptType;
   promptDepth: PromptDepth;
   responseContractVersion: string;
-  exactTargetName: string;
-}): ProviderOutputValidation {
+  frozenContext: unknown;
+  authoritativeContext: AuthoritativeEntityPathContextResult;
+  promptInputPayload: JsonObject;
+};
+
+export function validateProviderOutput(
+  input: NormalProviderValidationInput
+): ProviderOutputValidation {
   let parsed: unknown;
   try {
     parsed = parseGeneratedJson(input.generatedContent);
@@ -96,13 +107,24 @@ export function validateProviderOutput(input: {
     input.promptType,
     input.promptDepth,
     contract.data as JsonObject,
-    input.exactTargetName
+    input.authoritativeContext.valid
+      ? entityPathTarget(input.authoritativeContext.context).name
+      : null
   );
   if (semanticErrors.length > 0) {
     return {
       valid: false,
       validatedResponse: null,
       validationErrors: semanticErrors,
+      contextValidationStatus: "invalid"
+    };
+  }
+  const contextErrors = validateEntityPathContext(input);
+  if (contextErrors.length > 0) {
+    return {
+      valid: false,
+      validatedResponse: null,
+      validationErrors: contextErrors,
       contextValidationStatus: "invalid"
     };
   }
@@ -169,7 +191,7 @@ function semanticValidation(
   promptType: PromptType,
   promptDepth: PromptDepth,
   response: JsonObject,
-  exactTargetName: string
+  exactTargetName: string | null
 ): JsonValue[] {
   const errors: JsonValue[] = [];
   const limits = PROMPT_DEPTH_LIMITS[promptDepth];
@@ -206,7 +228,34 @@ function semanticValidation(
     if (rankPosition !== null && rankPosition > topK) {
       errors.push(error("RANKING_POSITION_RANGE", "rank_position exceeds requested_top_k"));
     }
-    if (result.found === true && rankPosition !== null) {
+    if (exactTargetName !== null) {
+      const targetCandidates = candidates.filter(
+        (candidate) =>
+          normalizeName(candidate.name as string) ===
+          normalizeName(exactTargetName)
+      );
+      if (targetCandidates.length > 1) {
+        errors.push(
+          error(
+            "RANKING_TARGET_DUPLICATED",
+            "The exact backend target appears more than once"
+          )
+        );
+      }
+      if (result.found === false && targetCandidates.length > 0) {
+        errors.push(
+          error(
+            "RANKING_TARGET_MISMATCH",
+            "A missing target cannot appear in ordered_candidates"
+          )
+        );
+      }
+    }
+    if (
+      exactTargetName !== null &&
+      result.found === true &&
+      rankPosition !== null
+    ) {
       const ranked = candidates.find(
         (candidate) => candidate.rank === rankPosition
       );
@@ -233,7 +282,167 @@ function semanticValidation(
       }
     }
   }
+  if (promptType === "price_range") {
+    const applicability = result.applicability as string;
+    const currency = result.currency as string | null;
+    const minimum = result.minimum as number | null;
+    const maximum = result.maximum as number | null;
+    const hasNumericRange = minimum !== null || maximum !== null;
+    if (
+      applicability === "applicable" &&
+      ((hasNumericRange && currency === null) ||
+        (!hasNumericRange && currency !== null))
+    ) {
+      errors.push(
+        error(
+          "PRICE_RANGE_CURRENCY_INCONSISTENT",
+          "Currency and numeric price range must be supplied together"
+        )
+      );
+    }
+  }
   return errors;
+}
+
+function validateEntityPathContext(
+  input: NormalProviderValidationInput
+): JsonValue[] {
+  if (
+    !Object.prototype.hasOwnProperty.call(
+      input.promptInputPayload,
+      "entityPathContext"
+    ) ||
+    input.promptInputPayload.entityPathContext === null
+  ) {
+    return [
+      contextError(
+        "ENTITY_PATH_CONTEXT_MISSING",
+        "The prompt job has no frozen entity path context"
+      )
+    ];
+  }
+  if (
+    input.promptInputPayload.entityPathContext !== input.frozenContext &&
+    JSON.stringify(input.promptInputPayload.entityPathContext) !==
+      JSON.stringify(input.frozenContext)
+  ) {
+    return [
+      contextError(
+        "ENTITY_PATH_CONTEXT_SCHEMA_INVALID",
+        "The supplied frozen context is not the prompt job snapshot"
+      )
+    ];
+  }
+  const frozen = entityPathContextSchema.safeParse(input.frozenContext);
+  if (!frozen.success) {
+    return [
+      {
+        ...contextError(
+          "ENTITY_PATH_CONTEXT_SCHEMA_INVALID",
+          "The frozen entity path context violates its runtime contract"
+        ),
+        issues: frozen.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          code: issue.code,
+          message: issue.message
+        }))
+      }
+    ];
+  }
+  if (!input.authoritativeContext.valid) {
+    return input.authoritativeContext.errors;
+  }
+  const authoritative = input.authoritativeContext.context;
+  const errors: JsonObject[] = [];
+  compareEntity(
+    errors,
+    "ENTITY_PATH_DOMAIN_MISMATCH",
+    frozen.data.domain,
+    authoritative.domain,
+    "domain"
+  );
+  compareEntity(
+    errors,
+    "ENTITY_PATH_CATEGORY_MISMATCH",
+    frozen.data.category,
+    authoritative.category,
+    "category"
+  );
+  compareEntity(
+    errors,
+    "ENTITY_PATH_BRAND_MISMATCH",
+    frozen.data.brand,
+    authoritative.brand,
+    "brand"
+  );
+  compareEntity(
+    errors,
+    "ENTITY_PATH_PRODUCT_MISMATCH",
+    frozen.data.product,
+    authoritative.product,
+    "product"
+  );
+  compareEntity(
+    errors,
+    "ENTITY_PATH_USE_CONTEXT_MISMATCH",
+    frozen.data.useContext,
+    authoritative.useContext,
+    "use context"
+  );
+  if (frozen.data.startingLevel !== authoritative.startingLevel) {
+    errors.push(
+      contextError(
+        "ENTITY_PATH_STARTING_LEVEL_MISMATCH",
+        "Frozen starting level differs from PostgreSQL authority"
+      )
+    );
+  }
+  if (frozen.data.targetLevel !== authoritative.targetLevel) {
+    errors.push(
+      contextError(
+        "ENTITY_PATH_TARGET_LEVEL_MISMATCH",
+        "Frozen target level differs from PostgreSQL authority"
+      )
+    );
+  }
+  if (frozen.data.canonicalPath !== authoritative.canonicalPath) {
+    errors.push(
+      contextError(
+        "ENTITY_PATH_CANONICAL_PATH_MISMATCH",
+        "Frozen canonical path differs from PostgreSQL authority"
+      )
+    );
+  }
+  return errors;
+}
+
+function compareEntity(
+  errors: JsonObject[],
+  code:
+    | "ENTITY_PATH_DOMAIN_MISMATCH"
+    | "ENTITY_PATH_CATEGORY_MISMATCH"
+    | "ENTITY_PATH_BRAND_MISMATCH"
+    | "ENTITY_PATH_PRODUCT_MISMATCH"
+    | "ENTITY_PATH_USE_CONTEXT_MISMATCH",
+  frozen: { id: string; name: string } | undefined,
+  authoritative: { id: string; name: string } | undefined,
+  label: string
+) {
+  if (
+    frozen?.id !== authoritative?.id ||
+    frozen?.name !== authoritative?.name
+  ) {
+    errors.push(
+      contextError(
+        code,
+        `Frozen ${label} differs from PostgreSQL authority`
+      )
+    );
+  }
+}
+
+function contextError(code: string, message: string): JsonObject {
+  return { layer: "postgres_context", code, message };
 }
 
 function invalid(code: string, message: string): ProviderOutputValidation {

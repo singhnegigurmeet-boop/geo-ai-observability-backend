@@ -13,6 +13,7 @@ import { ProviderExecutionService } from "../../../src/modules/providers/service
 import type { ProviderJobCreatedPayload } from "../../../src/modules/providers/messages/provider-worker.messages.js";
 import { ProviderScoreService } from "../../../src/modules/scoring/services/provider-score.service.js";
 import type { PromptType, ProviderName } from "../../../src/common/types/database.types.js";
+import type { EntityPathType } from "../../../src/common/types/database.types.js";
 import { promptTypePolicy } from "../../../src/modules/prompts/policies/prompt-policy.registry.js";
 import { providerModelProfile } from "../../../src/modules/providers/registry/provider-model.registry.js";
 import {
@@ -20,6 +21,7 @@ import {
   resetTestSchema,
   truncatePublicTables
 } from "../../support/integration-environment.js";
+import { AuthoritativeEntityPathContextRepository } from "../../../src/modules/providers/repositories/authoritative-entity-path-context.repository.js";
 
 const enabled = process.env.RUN_PROVIDER_EXECUTION_INTEGRATION_TESTS === "true";
 
@@ -193,6 +195,268 @@ describe("Real provider execution integration", { skip: !enabled, concurrency: 1
       [fixture.analysisRunId]
     );
     assert.deepEqual(report.rows, [{ lifecycle_state: "failed_empty" }]);
+  });
+
+  it("persists a frozen-context mismatch as terminal invalid evidence without scoring", async () => {
+    const fixture = await seedRun(
+      pool,
+      "openai",
+      "gpt-4o-mini",
+      ["visibility"]
+    );
+    await pool.query(
+      `
+        UPDATE prompt_jobs
+        SET input_payload =
+          jsonb_set(input_payload, '{entityPathContext,domain,name}', '"changed.example"')
+        WHERE prompt_job_id = $1
+      `,
+      [fixture.jobs[0]!.promptJobId]
+    );
+    const adapter = new FakeAdapter("openai", "gpt-4o-mini");
+    const service = new ProviderExecutionService(
+      pool,
+      new ProviderAdapterRegistry([adapter]),
+      500
+    );
+    const first = await service.execute(fixture.jobs[0]!.payload);
+    assert.equal(first.outcome, "completed");
+    assert.equal((await service.execute(fixture.jobs[0]!.payload)).outcome, "noop");
+
+    const evidence = await pool.query<{
+      status: string;
+      validated_response: unknown;
+      context_validation_status: string;
+      raw_response: string;
+      raw_response_truncated: boolean;
+      raw_response_original_bytes: number;
+      validation_errors: Array<{ code: string }>;
+      job_status: string;
+    }>(
+      `
+        SELECT result.status, result.validated_response,
+               result.context_validation_status, result.raw_response,
+               result.raw_response_truncated,
+               result.raw_response_original_bytes,
+               result.validation_errors, job.status AS job_status
+        FROM provider_results AS result
+        JOIN provider_jobs AS job
+          ON job.provider_job_id = result.provider_job_id
+      `
+    );
+    assert.equal(evidence.rows.length, 1);
+    assert.equal(evidence.rows[0]!.status, "invalid");
+    assert.equal(evidence.rows[0]!.validated_response, null);
+    assert.equal(evidence.rows[0]!.context_validation_status, "invalid");
+    assert.equal(evidence.rows[0]!.job_status, "succeeded");
+    assert.ok(evidence.rows[0]!.raw_response.length > 0);
+    assert.equal(evidence.rows[0]!.raw_response_truncated, false);
+    assert.equal(
+      evidence.rows[0]!.raw_response_original_bytes,
+      Buffer.byteLength(evidence.rows[0]!.raw_response)
+    );
+    assert.ok(
+      evidence.rows[0]!.validation_errors.some(
+        (error) => error.code === "ENTITY_PATH_DOMAIN_MISMATCH"
+      )
+    );
+    assert.equal(await count(pool, "provider_results"), 1);
+    assert.equal(await count(pool, "provider_scores"), 0);
+    assert.equal(
+      Number(
+        (
+          await pool.query<{ count: string }>(
+            `SELECT count(*) FROM outbox_events
+             WHERE event_type = 'provider_result.created'`
+          )
+        ).rows[0]!.count
+      ),
+      0
+    );
+  });
+
+  it("rejects an authoritative path with a missing relationship", async () => {
+    const fixture = await seedRun(
+      pool,
+      "openai",
+      "gpt-4o-mini",
+      ["visibility"]
+    );
+    await moveFixtureToUnrelatedCategoryPath(pool, fixture.jobs[0]!.promptJobId);
+    const result = await new ProviderExecutionService(
+      pool,
+      new ProviderAdapterRegistry([
+        new FakeAdapter("openai", "gpt-4o-mini")
+      ]),
+      500
+    ).execute(fixture.jobs[0]!.payload);
+    assert.equal(result.outcome, "completed");
+    const persisted = await pool.query<{
+      status: string;
+      context_validation_status: string;
+      validation_errors: Array<{ code: string }>;
+    }>(
+      `SELECT status, context_validation_status, validation_errors
+       FROM provider_results`
+    );
+    assert.equal(persisted.rows[0]!.status, "invalid");
+    assert.equal(persisted.rows[0]!.context_validation_status, "invalid");
+    assert.ok(
+      persisted.rows[0]!.validation_errors.some(
+        (error) => error.code === "ENTITY_PATH_RELATIONSHIP_INVALID"
+      )
+    );
+    assert.equal(await count(pool, "provider_scores"), 0);
+  });
+
+  it("rolls back when authoritative PostgreSQL lookup fails and fabricates no result", async () => {
+    const fixture = await seedRun(
+      pool,
+      "openai",
+      "gpt-4o-mini",
+      ["visibility"]
+    );
+    const failingDatabase = databaseFailingAuthoritativeLookup(pool);
+    await assert.rejects(
+      new ProviderExecutionService(
+        failingDatabase,
+        new ProviderAdapterRegistry([
+          new FakeAdapter("openai", "gpt-4o-mini")
+        ]),
+        500
+      ).execute(fixture.jobs[0]!.payload),
+      /simulated authoritative lookup failure/
+    );
+    assert.equal(await count(pool, "provider_results"), 0);
+    const job = await pool.query<{ status: string }>(
+      "SELECT status FROM provider_jobs WHERE provider_job_id = $1",
+      [fixture.jobs[0]!.providerJobId]
+    );
+    assert.equal(job.rows[0]!.status, "queued");
+  });
+
+  for (const level of [
+    "domain",
+    "category",
+    "brand",
+    "product",
+    "use_context"
+  ] as const) {
+    it(`loads the authoritative ${level} path`, async () => {
+      const fixture = await seedRun(
+        pool,
+        "openai",
+        "gpt-4o-mini",
+        ["visibility"]
+      );
+      if (level !== "domain") {
+        await moveFixtureToRelatedPath(
+          pool,
+          fixture.jobs[0]!.promptJobId,
+          level
+        );
+      }
+      const loaded =
+        await new AuthoritativeEntityPathContextRepository(
+          pool
+        ).loadForProviderJob(fixture.jobs[0]!.providerJobId);
+      assert.equal(loaded.valid, true);
+      if (loaded.valid) {
+        assert.equal(loaded.context.targetLevel, level);
+        assert.equal(
+          loaded.context.canonicalPath.split(" > ").length,
+          pathLevelIndex(level) + 1
+        );
+      }
+    });
+  }
+
+  for (const [level, relationship] of [
+    ["category", "domain_categories"],
+    ["brand", "category_brands"],
+    ["product", "brand_products"],
+    ["use_context", "product_use_contexts"]
+  ] as const) {
+    it(`rejects a missing ${relationship} relationship`, async () => {
+      const fixture = await seedRun(
+        pool,
+        "openai",
+        "gpt-4o-mini",
+        ["visibility"]
+      );
+      const path = await moveFixtureToRelatedPath(
+        pool,
+        fixture.jobs[0]!.promptJobId,
+        level
+      );
+      await deleteRelationship(pool, relationship, path.relationshipIds);
+      const loaded =
+        await new AuthoritativeEntityPathContextRepository(
+          pool
+        ).loadForProviderJob(fixture.jobs[0]!.providerJobId);
+      assert.equal(loaded.valid, false);
+      if (!loaded.valid) {
+        assert.equal(
+          loaded.errors[0]!.code,
+          "ENTITY_PATH_RELATIONSHIP_INVALID"
+        );
+      }
+    });
+  }
+
+  it("rejects inactive taxonomy masters and relationships", async () => {
+    const masterFixture = await seedRun(
+      pool,
+      "openai",
+      "gpt-4o-mini",
+      ["visibility"]
+    );
+    const masterPath = await moveFixtureToRelatedPath(
+      pool,
+      masterFixture.jobs[0]!.promptJobId,
+      "category"
+    );
+    await pool.query(
+      "UPDATE categories SET is_active = false WHERE category_id = $1",
+      [masterPath.categoryId]
+    );
+    const inactiveMaster =
+      await new AuthoritativeEntityPathContextRepository(
+        pool
+      ).loadForProviderJob(masterFixture.jobs[0]!.providerJobId);
+    assert.equal(inactiveMaster.valid, false);
+    if (!inactiveMaster.valid) {
+      assert.equal(inactiveMaster.errors[0]!.code, "ENTITY_PATH_ENTITY_INACTIVE");
+    }
+
+    await truncatePublicTables(pool);
+    const relationshipFixture = await seedRun(
+      pool,
+      "openai",
+      "gpt-4o-mini",
+      ["visibility"]
+    );
+    const relationshipPath = await moveFixtureToRelatedPath(
+      pool,
+      relationshipFixture.jobs[0]!.promptJobId,
+      "category"
+    );
+    await pool.query(
+      `UPDATE domain_categories SET is_active = false
+       WHERE domain_category_id = $1`,
+      [relationshipPath.relationshipIds.domain_categories]
+    );
+    const inactiveRelationship =
+      await new AuthoritativeEntityPathContextRepository(
+        pool
+      ).loadForProviderJob(relationshipFixture.jobs[0]!.providerJobId);
+    assert.equal(inactiveRelationship.valid, false);
+    if (!inactiveRelationship.valid) {
+      assert.equal(
+        inactiveRelationship.errors[0]!.code,
+        "ENTITY_PATH_RELATIONSHIP_INVALID"
+      );
+    }
   });
 
   it("feeds real evidence into backend scoring/reporting idempotently", async () => {
@@ -428,16 +692,25 @@ async function seedRun(
   const jobs = [];
   for (const [index, promptType] of promptTypes.entries()) {
     const promptPolicy = promptTypePolicy(promptType);
+    const entityPathContext = {
+      domain: {
+        id: domainId,
+        name: `provider-execution-${unique}.example`
+      },
+      canonicalPath: `provider-execution-${unique}.example`,
+      startingLevel: "domain",
+      targetLevel: "domain"
+    };
     const promptJobId = (
       await pool.query<{ prompt_job_id: string }>(
         `
           INSERT INTO prompt_jobs (
             idempotency_key, llm_run_id, prompt_type, prompt_depth,
             business_prompt_version, response_contract_version,
-            status, prompt_text, started_at
+            status, prompt_text, input_payload, started_at
           )
           VALUES (
-            $1, $2, $3, 'high', $4, $5, 'processing', $6, now()
+            $1, $2, $3, 'high', $4, $5, 'processing', $6, $7, now()
           )
           RETURNING prompt_job_id
         `,
@@ -447,7 +720,8 @@ async function seedRun(
           promptType,
           promptPolicy.businessPromptVersion,
           promptPolicy.responseContractVersion,
-          `Rendered ${promptType} prompt`
+          `Rendered ${promptType} prompt`,
+          { entityPathContext }
         ]
       )
     ).rows[0]!.prompt_job_id;
@@ -475,19 +749,7 @@ async function seedRun(
           modelProfile.modelProfileVersion,
           modelProfile.preferredStructuredOutputMode,
           {
-            entityPathContext: {
-              domain: {
-                id: domainId,
-                name: `provider-execution-${unique}.example`
-              },
-              category: null,
-              brand: null,
-              product: null,
-              useContext: null,
-              canonicalPath: `provider-execution-${unique}.example`,
-              startingLevel: "domain",
-              targetLevel: "domain"
-            }
+            entityPathContext
           }
         ]
       )
@@ -515,4 +777,269 @@ async function count(pool: pg.Pool, table: string) {
     throw new Error("Unsupported count table");
   }
   return Number((await pool.query<{ count: string }>(`SELECT count(*) FROM ${table}`)).rows[0]!.count);
+}
+
+async function moveFixtureToUnrelatedCategoryPath(
+  pool: pg.Pool,
+  promptJobId: string
+) {
+  const lineage = await pool.query<{
+    domain_id: string;
+    analysis_run_item_id: string;
+    normalized_domain: string;
+  }>(
+    `
+      SELECT path.domain_id, item.analysis_run_item_id,
+             domain.normalized_domain
+      FROM prompt_jobs AS prompt
+      JOIN llm_runs AS llm ON llm.llm_run_id = prompt.llm_run_id
+      JOIN analysis_run_items AS item
+        ON item.analysis_run_item_id = llm.analysis_run_item_id
+      JOIN entity_paths AS path ON path.entity_path_id = item.entity_path_id
+      JOIN domains AS domain ON domain.domain_id = path.domain_id
+      WHERE prompt.prompt_job_id = $1
+    `,
+    [promptJobId]
+  );
+  const row = lineage.rows[0]!;
+  const categoryId = (
+    await pool.query<{ category_id: string }>(
+      `INSERT INTO categories (category_name, normalized_name)
+       VALUES ('Unrelated', 'unrelated') RETURNING category_id`
+    )
+  ).rows[0]!.category_id;
+  const pathId = (
+    await pool.query<{ entity_path_id: string }>(
+      `INSERT INTO entity_paths (domain_id, category_id, path_type)
+       VALUES ($1, $2, 'category') RETURNING entity_path_id`,
+      [row.domain_id, categoryId]
+    )
+  ).rows[0]!.entity_path_id;
+  const context = {
+    domain: { id: row.domain_id, name: row.normalized_domain },
+    category: { id: categoryId, name: "Unrelated" },
+    startingLevel: "domain",
+    targetLevel: "category",
+    canonicalPath: `${row.normalized_domain} > Unrelated`
+  };
+  await pool.query(
+    "UPDATE analysis_run_items SET entity_path_id = $2 WHERE analysis_run_item_id = $1",
+    [row.analysis_run_item_id, pathId]
+  );
+  await pool.query(
+    "UPDATE prompt_jobs SET input_payload = $2 WHERE prompt_job_id = $1",
+    [promptJobId, { entityPathContext: context }]
+  );
+}
+
+function databaseFailingAuthoritativeLookup(pool: pg.Pool) {
+  return {
+    async connect() {
+      const client = await pool.connect();
+      const query = client.query.bind(client);
+      const release = client.release.bind(client);
+      return new Proxy(client, {
+        get(target, property, receiver) {
+          if (property === "query") {
+            return (text: string, values?: unknown[]) => {
+              if (
+                typeof text === "string" &&
+                text.includes("starting_path.path_type AS starting_path_type")
+              ) {
+                throw new Error("simulated authoritative lookup failure");
+              }
+              return query(text, values);
+            };
+          }
+          if (property === "release") return release;
+          return Reflect.get(target, property, receiver);
+        }
+      });
+    }
+  } as pg.Pool;
+}
+
+async function moveFixtureToRelatedPath(
+  pool: pg.Pool,
+  promptJobId: string,
+  targetLevel: Exclude<EntityPathType, "domain">
+) {
+  const lineage = await pool.query<{
+    domain_id: string;
+    analysis_run_item_id: string;
+    normalized_domain: string;
+  }>(
+    `
+      SELECT path.domain_id, item.analysis_run_item_id,
+             domain.normalized_domain
+      FROM prompt_jobs AS prompt
+      JOIN llm_runs AS llm ON llm.llm_run_id = prompt.llm_run_id
+      JOIN analysis_run_items AS item
+        ON item.analysis_run_item_id = llm.analysis_run_item_id
+      JOIN entity_paths AS path ON path.entity_path_id = item.entity_path_id
+      JOIN domains AS domain ON domain.domain_id = path.domain_id
+      WHERE prompt.prompt_job_id = $1
+    `,
+    [promptJobId]
+  );
+  const row = lineage.rows[0]!;
+  const categoryId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO categories (category_name, normalized_name)
+       VALUES ('Analytics', 'analytics') RETURNING category_id AS id`
+    )
+  ).rows[0]!.id;
+  const domainCategoryId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO domain_categories (domain_id, category_id)
+       VALUES ($1, $2) RETURNING domain_category_id AS id`,
+      [row.domain_id, categoryId]
+    )
+  ).rows[0]!.id;
+  const brandId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO brands (brand_name, normalized_name)
+       VALUES ('Acme', 'acme') RETURNING brand_id AS id`
+    )
+  ).rows[0]!.id;
+  const categoryBrandId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO category_brands (domain_category_id, brand_id)
+       VALUES ($1, $2) RETURNING category_brand_id AS id`,
+      [domainCategoryId, brandId]
+    )
+  ).rows[0]!.id;
+  const productId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO products (product_name, normalized_name)
+       VALUES ('Observer', 'observer') RETURNING product_id AS id`
+    )
+  ).rows[0]!.id;
+  const brandProductId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO brand_products (category_brand_id, product_id)
+       VALUES ($1, $2) RETURNING brand_product_id AS id`,
+      [categoryBrandId, productId]
+    )
+  ).rows[0]!.id;
+  const useContextId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO use_contexts (use_context_name, normalized_name)
+       VALUES ('Enterprise monitoring', 'enterprise monitoring')
+       RETURNING use_context_id AS id`
+    )
+  ).rows[0]!.id;
+  const productUseContextId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO product_use_contexts (brand_product_id, use_context_id)
+       VALUES ($1, $2) RETURNING product_use_context_id AS id`,
+      [brandProductId, useContextId]
+    )
+  ).rows[0]!.id;
+  const level = pathLevelIndex(targetLevel);
+  const ids = [
+    row.domain_id,
+    level >= 1 ? categoryId : null,
+    level >= 2 ? brandId : null,
+    level >= 3 ? productId : null,
+    level >= 4 ? useContextId : null
+  ];
+  const pathId = (
+    await pool.query<{ id: string }>(
+      `
+        INSERT INTO entity_paths (
+          domain_id, category_id, brand_id, product_id,
+          use_context_id, path_type
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING entity_path_id AS id
+      `,
+      [...ids, targetLevel]
+    )
+  ).rows[0]!.id;
+  const parts = [
+    row.normalized_domain,
+    "Analytics",
+    "Acme",
+    "Observer",
+    "Enterprise monitoring"
+  ].slice(0, level + 1);
+  const context: Record<string, unknown> = {
+    domain: { id: row.domain_id, name: row.normalized_domain },
+    startingLevel: "domain",
+    targetLevel,
+    canonicalPath: parts.join(" > ")
+  };
+  if (level >= 1) context.category = { id: categoryId, name: "Analytics" };
+  if (level >= 2) context.brand = { id: brandId, name: "Acme" };
+  if (level >= 3) context.product = { id: productId, name: "Observer" };
+  if (level >= 4) {
+    context.useContext = {
+      id: useContextId,
+      name: "Enterprise monitoring"
+    };
+  }
+  await pool.query(
+    "UPDATE analysis_run_items SET entity_path_id = $2 WHERE analysis_run_item_id = $1",
+    [row.analysis_run_item_id, pathId]
+  );
+  await pool.query(
+    "UPDATE prompt_jobs SET input_payload = $2 WHERE prompt_job_id = $1",
+    [promptJobId, { entityPathContext: context }]
+  );
+  return {
+    categoryId,
+    relationshipIds: {
+      domain_categories: domainCategoryId,
+      category_brands: categoryBrandId,
+      brand_products: brandProductId,
+      product_use_contexts: productUseContextId
+    }
+  };
+}
+
+async function deleteRelationship(
+  pool: pg.Pool,
+  table:
+    | "domain_categories"
+    | "category_brands"
+    | "brand_products"
+    | "product_use_contexts",
+  ids: Record<
+    | "domain_categories"
+    | "category_brands"
+    | "brand_products"
+    | "product_use_contexts",
+    string
+  >
+) {
+  const primaryKeys = {
+    domain_categories: "domain_category_id",
+    category_brands: "category_brand_id",
+    brand_products: "brand_product_id",
+    product_use_contexts: "product_use_context_id"
+  } as const;
+  const order = [
+    "product_use_contexts",
+    "brand_products",
+    "category_brands",
+    "domain_categories"
+  ] as const;
+  for (const current of order) {
+    await pool.query(
+      `DELETE FROM ${current} WHERE ${primaryKeys[current]} = $1`,
+      [ids[current]]
+    );
+    if (current === table) break;
+  }
+}
+
+function pathLevelIndex(level: EntityPathType) {
+  return [
+    "domain",
+    "category",
+    "brand",
+    "product",
+    "use_context"
+  ].indexOf(level);
 }
