@@ -179,7 +179,30 @@ describe(
         score_components: Record<string, unknown>;
       }>("SELECT score, scoring_version, score_components FROM provider_scores");
       assert.equal(score.rows[0]?.score, "64.0000");
-      assert.equal(score.rows[0]?.scoring_version, "geo-backend-v1");
+      assert.equal(score.rows[0]?.scoring_version, "geo-scoring-v2");
+    });
+
+    it("uses the 60/40 model-path GEO score for provider/model averages", async () => {
+      const fixture = await seedRun(
+        pool,
+        "anonymous",
+        ["visibility", "ranking"],
+        {
+          visibilityLikelihood: 1,
+          rankingFound: false
+        }
+      );
+      const scoring = new ProviderScoreService(pool);
+      for (const result of fixture.results) await scoring.process(result);
+      const report = await reportFor(pool, fixture.analysisRunId);
+      assert.equal(
+        report.report_data.modelPathScores[0]?.geoScore,
+        60
+      );
+      assert.equal(
+        report.report_data.providerModelComparison[0]?.averageGeoScore,
+        60
+      );
     });
 
     it("serves reports only to the owning anonymous session or workspace", async () => {
@@ -781,6 +804,7 @@ async function seedRun(
     providerScore?: number;
     confidence?: number;
     rankingFound?: boolean;
+    visibilityLikelihood?: number;
     invalidPromptTypes?: readonly PromptType[];
   } = {}
 ) {
@@ -1036,9 +1060,11 @@ async function seedRun(
         promptType === "visibility"
           ? {
               target_mentioned: true,
-              mention_likelihood: 0.6,
-              recommendation_likelihood: 0.6,
-              competitive_prominence: 0.8,
+              mention_likelihood: evidence.visibilityLikelihood ?? 0.6,
+              recommendation_likelihood:
+                evidence.visibilityLikelihood ?? 0.6,
+              competitive_prominence:
+                evidence.visibilityLikelihood ?? 0.8,
               query_intents: [],
               strengths: [],
               visibility_gaps: [],
@@ -1348,7 +1374,7 @@ async function seedExactCoverageRun(
             `INSERT INTO provider_scores (
                idempotency_key, provider_result_id, metric_type,
                scoring_version, score, score_components
-             ) VALUES ($1, $2, $3, 'geo-backend-v1', 80, '{}'::jsonb)`,
+             ) VALUES ($1, $2, $3, 'geo-scoring-v2', 80, '{}'::jsonb)`,
             [
               `exact-coverage-score:${unique}:${itemIndex}:${promptType}:${model}`,
               providerResultId,
@@ -1602,6 +1628,10 @@ async function reportFor(pool: pg.Pool, analysisRunId: string) {
         reportType: string;
         breakdown: unknown[];
         providerResults: Array<{ model: string }>;
+        modelPathScores: Array<{ geoScore: number | null }>;
+        providerModelComparison: Array<{
+          averageGeoScore: number | null;
+        }>;
       };
       run_status: string;
       completed_at: Date | null;

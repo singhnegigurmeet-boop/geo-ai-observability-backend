@@ -31,17 +31,28 @@ ceilings, supported depths, and pricing.
 Creation resolves `all` to exact active category IDs and vendor-wide `all` to
 exact enabled models. Both sets are immutable for the life of the run.
 
-`POST /v1/analysis/preview` applies the same normalization and policy but does
-not create business rows. It reports classification need, selected-path and
-prompt estimates, exact model count, provider-job count, token estimate, and a
-cost range.
+`POST /v1/analysis/preview` and creation call one
+`CanonicalAnalysisPlannerService`. The planner performs read-only hierarchy
+validation, freezes the category and exact model/profile sets, resolves prompt
+applicability, detects category reuse/classification, computes bounded path,
+prompt, job, token and cost ranges, applies safety limits, and hashes the same
+canonical identity creation persists. Preview creates no domain, entity path,
+run, classification/provider job, outbox, budget, token-usage, or report row.
+Unknown classifier matches remain a minimum/maximum range rather than being
+treated as future matches. Normal input-token ranges use the versioned prompt
+identity plus a 16 KiB hierarchy/context envelope; output estimates use each
+exact model/depth maximum. Classification input is rendered from the frozen
+candidate set, and all costs use the same registry pricing estimator used by
+budget reservation. These are planning bounds, not promised billing.
 
 ## 2. Canonical creation and idempotency
 
 The canonical request contains the normalized hostname, hierarchy IDs, exact
-category IDs, category-selection mode, prompt depth, prompt-policy version, and
-exact provider/model pairs. The client idempotency key is namespaced by the
-resolved anonymous session or user/workspace.
+category IDs, category-selection mode, prompt depth, prompt-policy version,
+exact provider/model/profile pairs, classification execution profile, planner
+version, canonical hash, and a bounded sanitized planning estimate. The client
+idempotency key is namespaced by the resolved anonymous session or
+user/workspace.
 
 - Same owner, key, and canonical request: replay the existing run.
 - Same owner and key with different canonical input: conflict.
@@ -207,7 +218,7 @@ ranking, valid not-found evidence = 0
 
 Confidence is reported separately and never inflates the score.
 
-Report version `multi-provider-geo-v3` aggregates in this order:
+Report version `multi-provider-geo-report-v3` aggregates in this order:
 
 1. visibility/ranking scores for each entity-path + provider/model;
 2. model-path GEO score, weighted 60/40 and renormalized if one metric is
@@ -224,7 +235,13 @@ Classification evidence and cost are included separately in the report.
 The report also materializes methodology, executive and overall dimensions,
 category and provider/model comparisons, visibility, ranking, competitor,
 price, pros/cons, coverage, and category/classification usage sections from
-validated evidence only.
+validated evidence only. Provider/model `averageGeoScore` averages available
+model-path GEO scores (60% visibility and 40% ranking with existing
+renormalization), never raw metric values. Ranking not-found evidence affects
+found rate but is not invented as a rank; currencies are never converted;
+competitor and pros/cons normalization is conservative Unicode/whitespace/case
+normalization. Repeated aggregation over unchanged authoritative state reuses
+the immutable report revision.
 
 ## 9. Lifecycle, retries, cancellation, and scheduling
 

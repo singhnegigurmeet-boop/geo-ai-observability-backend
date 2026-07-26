@@ -876,6 +876,45 @@ describe(
       );
     });
 
+    it("keeps preview read-only and freezes the same canonical hash for creation", async () => {
+      const owner = await createAnonymousOwner();
+      const tables = [
+        "domains",
+        "entity_paths",
+        "analysis_runs",
+        "analysis_run_requested_categories",
+        "analysis_run_provider_models",
+        "domain_category_classification_jobs",
+        "provider_jobs",
+        "outbox_events"
+      ];
+      const before = await tableCounts(tables);
+      const request = { domain: "phase-five-preview.example" };
+      const preview = await previewAnalysis(request, owner);
+      assert.equal(preview.response.status, 200);
+      assert.match(preview.body.canonicalRequestHash, /^[0-9a-f]{64}$/);
+      assert.equal(preview.body.classificationRequired, true);
+      assert.equal(preview.body.classificationProviderJobCount, 1);
+      assert.deepEqual(await tableCounts(tables), before);
+
+      const created = await postAnalysis(
+        request,
+        "phase-five-preview-parity",
+        owner
+      );
+      assert.equal(created.response.status, 202);
+      const frozen = await pool.query<{
+        request_payload: Record<string, unknown>;
+      }>(
+        "SELECT request_payload FROM analysis_runs WHERE analysis_run_id = $1",
+        [created.body.analysisRunId]
+      );
+      assert.equal(
+        frozen.rows[0]?.request_payload.canonicalRequestHash,
+        preview.body.canonicalRequestHash
+      );
+    });
+
     async function createAnonymousOwner() {
       const created = await anonymousSessions.create();
       return {
@@ -919,6 +958,36 @@ describe(
         response,
         body: (await response.json()) as Record<string, any>
       };
+    }
+
+    async function previewAnalysis(
+      body: Record<string, unknown>,
+      credentials: Credentials
+    ) {
+      const requestBody =
+        credentials.userToken && body.promptDepth === undefined
+          ? { ...body, promptDepth: "medium" }
+          : body;
+      const response = await fetch(`${baseUrl}/v1/analysis/preview`, {
+        method: "POST",
+        headers: requestHeaders(credentials, null),
+        body: JSON.stringify(requestBody)
+      });
+      return {
+        response,
+        body: (await response.json()) as Record<string, any>
+      };
+    }
+
+    async function tableCounts(tables: string[]) {
+      const counts: Record<string, string> = {};
+      for (const table of tables) {
+        const result = await pool.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM ${table}`
+        );
+        counts[table] = result.rows[0]!.count;
+      }
+      return counts;
     }
 
     async function getStatus(

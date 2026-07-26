@@ -5,9 +5,9 @@ import type {
   ProviderName
 } from "../../../common/types/database.types.js";
 
-export const SCORING_VERSION = "geo-backend-v1";
+export const SCORING_VERSION = "geo-scoring-v2";
 export const BASIC_REPORT_VERSION = "basic-v1";
-export const MULTI_PROVIDER_REPORT_VERSION = "multi-provider-geo-v3";
+export const MULTI_PROVIDER_REPORT_VERSION = "multi-provider-geo-report-v3";
 
 export type ScoreCalculationInput = {
   promptType: PromptType;

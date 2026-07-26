@@ -149,6 +149,13 @@ describe("GEO V6 final end-to-end runtime", {
   it("runs a successful multi-provider request through API, outbox, workers, reports, and notifications", async () => {
     const owner = await createUserOwner(pool, "success");
     await seedHierarchy(pool, "success.example");
+    const preview = await previewAnalysis(
+      server.url,
+      owner,
+      "success.example",
+      multiProviderSet()
+    );
+    assert.equal(preview.status, 200);
     const created = await postAnalysis(
       server.url,
       owner,
@@ -157,6 +164,22 @@ describe("GEO V6 final end-to-end runtime", {
       multiProviderSet()
     );
     assert.equal(created.status, 202);
+    const frozenIdentity = await pool.query<{
+      canonical_hash: string;
+    }>(
+      `SELECT request_payload->>'canonicalRequestHash' AS canonical_hash
+       FROM analysis_runs WHERE analysis_run_id = $1`,
+      [created.body.analysisRunId]
+    );
+    assert.equal(
+      frozenIdentity.rows[0]?.canonical_hash,
+      preview.body.canonicalRequestHash
+    );
+    assert.equal(preview.body.normalProviderJobCountEstimate.minimum, 6);
+    assert.equal(
+      preview.body.totalProviderJobCountEstimate.minimum,
+      6 + preview.body.classificationProviderJobCount
+    );
 
     await driveUntil(
       dispatcher,
@@ -197,6 +220,33 @@ describe("GEO V6 final end-to-end runtime", {
     const latest = await latestReport(pool, created.body.analysisRunId);
     assert.equal(latest.report_data.final, true);
     assert.equal(latest.report_data.lifecycleState, "completed");
+    assert.equal(
+      latest.report_data.reportVersion,
+      "multi-provider-geo-report-v3"
+    );
+    assert.equal(
+      latest.report_data.methodology.scoringVersion,
+      "geo-scoring-v2"
+    );
+    assert.ok(latest.report_data.usageAndCost.planningEstimate);
+    assert.equal(
+      latest.report_data.usageAndCost.actual.totalTokens,
+      latest.report_data.providerResults.reduce(
+        (
+          total: number,
+          result: { usage: { inputTokens: number; outputTokens: number } }
+        ) => total + result.usage.inputTokens + result.usage.outputTokens,
+        0
+      )
+    );
+    assert.equal(Array.isArray(latest.report_data.promptOutcomes), true);
+    assert.equal(Array.isArray(latest.report_data.visibility), true);
+    assert.equal(Array.isArray(latest.report_data.ranking), true);
+    assert.equal(Array.isArray(latest.report_data.competitors), true);
+    assert.equal(
+      JSON.stringify(latest.report_data).includes("validationErrors"),
+      false
+    );
     assert.deepEqual(
       new Set(
         (latest.report_data.providerResults as Array<{ provider: string }>).map(
@@ -1085,19 +1135,13 @@ async function postAnalysis(
   providerModels?: Array<{ provider: string; model: string }>,
   extra: Record<string, unknown> = {}
 ) {
-  const authenticated = "authorization" in owner.headers;
   const response = await fetch(`${baseUrl}/v1/analysis`, {
     method: "POST",
     headers: {
       ...owner.headers,
       "idempotency-key": idempotencyKey
     },
-    body: JSON.stringify({
-      domain,
-      ...(authenticated ? { promptDepth: "high" } : {}),
-      ...(providerModels ? { providerModels } : {}),
-      ...extra
-    })
+    body: JSON.stringify(analysisBody(owner, domain, providerModels, extra))
   });
   return {
     status: response.status,
@@ -1105,6 +1149,39 @@ async function postAnalysis(
       analysisRunId: string;
       idempotentReplay: boolean;
     }
+  };
+}
+
+async function previewAnalysis(
+  baseUrl: string,
+  owner: { headers: Record<string, string> },
+  domain: string,
+  providerModels?: Array<{ provider: string; model: string }>,
+  extra: Record<string, unknown> = {}
+) {
+  const response = await fetch(`${baseUrl}/v1/analysis/preview`, {
+    method: "POST",
+    headers: owner.headers,
+    body: JSON.stringify(analysisBody(owner, domain, providerModels, extra))
+  });
+  return {
+    status: response.status,
+    body: (await response.json()) as Record<string, any>
+  };
+}
+
+function analysisBody(
+  owner: { headers: Record<string, string> },
+  domain: string,
+  providerModels?: Array<{ provider: string; model: string }>,
+  extra: Record<string, unknown> = {}
+) {
+  const authenticated = "authorization" in owner.headers;
+  return {
+    domain,
+    ...(authenticated ? { promptDepth: "high" } : {}),
+    ...(providerModels ? { providerModels } : {}),
+    ...extra
   };
 }
 

@@ -66,21 +66,7 @@ export class SchedulerRepository {
     policy: SchedulerRequestPolicy;
   }) {
     const requestPayload = {
-      domain: input.job.normalized_domain,
-      categoryId: input.job.category_id,
-      brandId: input.job.brand_id,
-      productId: input.job.product_id,
-      useContextId: input.job.use_context_id,
-      categorySelection: {
-        mode: input.job.category_selection_mode,
-        categoryIds: input.policy.categoryIds
-      },
-      promptDepth: input.job.prompt_depth,
-      promptPolicyVersion: input.job.prompt_policy_version,
-      providerModels: input.policy.providerModels.map(({ provider, model }) => ({
-        provider,
-        model
-      })),
+      ...input.policy.canonicalRequestPayload,
       schedulerJobId: input.job.scheduler_job_id,
       scheduledDueAt: input.job.next_run_at.toISOString()
     };

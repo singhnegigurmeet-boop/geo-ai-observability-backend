@@ -8,16 +8,7 @@ import { HierarchyService } from "../../hierarchy/services/hierarchy.service.js"
 import { OutboxEventWriterRepository } from "../../outbox/repositories/outbox-event-writer.repository.js";
 import type { OwnershipContext } from "../../../common/ownership/ownership-context.types.js";
 import { AnalysisRunProviderModelRepository } from "../../providers/repositories/analysis-run-provider-model.repository.js";
-import {
-  InvalidProviderModelSelectionError,
-  sameProviderModelSet,
-  resolveProviderModelSet
-} from "../../providers/policies/provider-model.policy.js";
-import {
-  InvalidPromptDepthError,
-  PROMPT_POLICY_VERSION,
-  resolvePromptDepth
-} from "../../prompts/policies/prompt-policy.registry.js";
+import { sameProviderModelSet } from "../../providers/policies/provider-model.policy.js";
 import { ReportAggregationService } from "../../reports/services/report-aggregation.service.js";
 import { ReportOutcomeService } from "../../reports/services/report-outcome.service.js";
 import { ReportRepository } from "../../reports/repositories/report.repository.js";
@@ -28,8 +19,7 @@ import type {
 import type { CreateAnalysisRequest } from "../schemas/analysis.schemas.js";
 import { AnalysisRepository } from "../repositories/analysis.repository.js";
 import {
-  AnalysisRunRequestedCategoryRepository,
-  InactiveRequestedCategoryError
+  AnalysisRunRequestedCategoryRepository
 } from "../repositories/analysis-run-requested-category.repository.js";
 import type {
   AnalysisPreviewResponse,
@@ -38,9 +28,10 @@ import type {
   CanonicalAnalysisRequest,
   CreateAnalysisResponse
 } from "../types/analysis.types.js";
-import { normalizeDomain } from "../../../utils/domain-normalizer.js";
-import { applicablePromptTypes } from "../../prompts/policies/prompt-policy.registry.js";
-import { TokenEstimatorService } from "../../budgets/services/token-estimator.service.js";
+import {
+  ANALYSIS_PLANNER_VERSION,
+  CanonicalAnalysisPlannerService
+} from "./canonical-analysis-planner.service.js";
 
 type AnalysisDatabase = DatabaseExecutor & TransactionPool;
 
@@ -48,120 +39,57 @@ export class AnalysisService {
   constructor(
     private readonly database: AnalysisDatabase,
     private readonly hierarchy: HierarchyService = new HierarchyService(),
-    private readonly realProvidersEnabled = false
+    private readonly realProvidersEnabled = false,
+    private readonly classifier: {
+      provider: ProviderName;
+      model: string;
+      realProvidersEnabled: boolean;
+    } = {
+      provider: "mock",
+      model: "mock-fast",
+      realProvidersEnabled: false
+    }
   ) {}
 
   async preview(
     request: CreateAnalysisRequest,
     owner: OwnershipContext
   ): Promise<AnalysisPreviewResponse> {
-    const categorySelection = request.categorySelection ?? { mode: "all" };
-    const normalizedDomain = normalizeDomain(request.domain);
-    const promptDepth = resolveAnalysisPromptDepth(request, owner);
-    const models = resolveModelPreferences(
-      request,
-      owner,
-      this.realProvidersEnabled
-    );
-    const categories = new AnalysisRunRequestedCategoryRepository(
-      this.database
-    );
-    let frozenCategories;
-    try {
-      frozenCategories = await categories.resolveActive(
-        categorySelection
-      );
-    } catch (error) {
-      if (error instanceof InactiveRequestedCategoryError) {
-        throw new ApplicationError("VALIDATION_ERROR", error.message);
-      }
-      throw error;
-    }
-    if (frozenCategories.length === 0) {
-      throw new ApplicationError(
-        "VALIDATION_ERROR",
-        "Category selection resolved to no active categories"
-      );
-    }
-    const domainOnly =
-      !request.categoryId &&
-      !request.brandId &&
-      !request.productId &&
-      !request.useContextId;
-    const reused = domainOnly
-      ? await this.database.query<{ count: string }>(
-          `
-            SELECT count(*)::bigint AS count
-            FROM domains AS domain
-            JOIN domain_categories AS relationship
-              ON relationship.domain_id = domain.domain_id
-             AND relationship.is_active
-            WHERE domain.normalized_domain = $1
-              AND relationship.category_id = ANY($2::bigint[])
-          `,
-          [
-            normalizedDomain,
-            frozenCategories.map((category) => category.category_id)
-          ]
-        )
-      : { rows: [{ count: "0" }] };
-    const reusedCount = Number(reused.rows[0]?.count ?? 0);
-    const classificationRequired =
-      domainOnly && reusedCount < frozenCategories.length;
-    const breadth = owner.actorType === "anonymous" ? 3 : 5;
-    const estimatedSelectedPathCount = domainOnly
-      ? Math.min(breadth, frozenCategories.length)
-      : breadth;
-    const targetLevel = request.useContextId
-      ? "use_context"
-      : request.productId
-        ? "use_context"
-        : request.brandId
-          ? "product"
-          : request.categoryId
-            ? "brand"
-            : "category";
-    const promptTypes = applicablePromptTypes(targetLevel);
-    const estimator = new TokenEstimatorService();
-    let estimatedInputTokens = 0;
-    let estimatedOutputTokens = 0;
-    let estimatedCostMicros = 0;
-    for (const model of models) {
-      for (const promptType of promptTypes) {
-        const estimate = estimator.estimate({
-          provider: model.provider,
-          model: model.model,
-          promptText: "x".repeat(1_200),
-          promptType,
-          promptDepth
-        });
-        estimatedInputTokens +=
-          estimate.inputTokens * estimatedSelectedPathCount;
-        estimatedOutputTokens +=
-          estimate.outputTokens * estimatedSelectedPathCount;
-        estimatedCostMicros +=
-          estimate.costMicros * estimatedSelectedPathCount;
-      }
-    }
+    const plan = await new CanonicalAnalysisPlannerService(
+      this.database,
+      this.hierarchy,
+      this.realProvidersEnabled,
+      this.classifier
+    ).plan(request, owner);
     return {
-      normalizedDomain,
-      categorySelectionMode: categorySelection.mode,
-      resolvedCategoryCandidateCount: frozenCategories.length,
-      reusedMatchedCategoryCount: reusedCount,
-      classificationRequired,
-      estimatedSelectedPathCount,
-      applicablePromptCount:
-        estimatedSelectedPathCount * promptTypes.length,
-      resolvedModelCount: models.length,
-      estimatedProviderJobCount:
-        estimatedSelectedPathCount * promptTypes.length * models.length +
-        (classificationRequired ? 1 : 0),
-      estimatedInputTokens,
-      estimatedOutputTokens,
-      estimatedCostMicros: {
-        minimum: Math.floor(estimatedCostMicros * 0.8),
-        maximum: Math.ceil(estimatedCostMicros * 1.2)
-      }
+      normalizedDomain: plan.normalizedDomain,
+      categorySelectionMode: plan.frozenCategorySelection.mode,
+      frozenCategoryIds: plan.frozenCategorySelection.categoryIds,
+      frozenRequestedCategoryCount: plan.frozenRequestedCategoryCount,
+      reusedMatchedCategoryCount: plan.reusedCategories.length,
+      unresolvedCandidateCount: plan.unresolvedCategoryIds.length,
+      classificationRequired: plan.classificationRequired,
+      estimatedSelectedPathCount: plan.estimatedEligibleCategories,
+      applicablePromptCountEstimate: plan.applicablePromptCountEstimate,
+      applicablePromptTypes: [...plan.applicablePromptsByPath],
+      resolvedModelCount: plan.resolvedProviderModels.length,
+      resolvedProviderModels: plan.resolvedProviderModels,
+      normalProviderJobCountEstimate:
+        plan.expectedExecutions.normalProviderJobCountEstimate,
+      classificationProviderJobCount:
+        plan.expectedExecutions.classificationProviderJobCount,
+      totalProviderJobCountEstimate:
+        plan.expectedExecutions.totalProviderJobCountEstimate,
+      tokenEstimate: plan.tokenEstimate,
+      costEstimate: plan.costEstimate,
+      normalAnalysisEstimate: plan.normalAnalysisEstimate,
+      classificationEstimate: plan.classificationEstimate,
+      byProviderModel: plan.byProviderModel,
+      safetyLimits: plan.safetyLimits,
+      canonicalPlannerVersion: ANALYSIS_PLANNER_VERSION,
+      canonicalRequestHash: plan.canonicalRequestHash,
+      estimateNotice:
+        "Bounded planning estimate; actual provider usage and billing may vary."
     };
   }
 
@@ -170,33 +98,17 @@ export class AnalysisService {
     clientIdempotencyKey: string,
     owner: OwnershipContext
   ): Promise<CreateAnalysisResponse> {
-    const categorySelection = request.categorySelection ?? { mode: "all" };
-    const providerModels = resolveModelPreferences(
-      request,
-      owner,
-      this.realProvidersEnabled
-    );
     return inTransaction(this.database, async (client) => {
+      const plan = await new CanonicalAnalysisPlannerService(
+        client,
+        this.hierarchy,
+        this.realProvidersEnabled,
+        this.classifier
+      ).plan(request, owner);
+      const categorySelection = plan.frozenCategorySelection;
+      const providerModels = plan.resolvedProviderModels;
       const requestedCategories =
         new AnalysisRunRequestedCategoryRepository(client);
-      let frozenCategories;
-      try {
-        frozenCategories = await requestedCategories.resolveActive(
-          categorySelection
-        );
-      } catch (error) {
-        if (error instanceof InactiveRequestedCategoryError) {
-          throw new ApplicationError("VALIDATION_ERROR", error.message);
-        }
-        throw error;
-      }
-      if (frozenCategories.length === 0) {
-        throw new ApplicationError(
-          "VALIDATION_ERROR",
-          "Category selection resolved to no active categories"
-        );
-      }
-      const promptDepth = resolveAnalysisPromptDepth(request, owner);
       const resolved = await this.hierarchy.resolveStartingPath(client, {
         domain: request.domain,
         categoryId: request.categoryId ?? null,
@@ -204,23 +116,7 @@ export class AnalysisService {
         productId: request.productId ?? null,
         useContextId: request.useContextId ?? null
       });
-      const canonicalRequest: CanonicalAnalysisRequest = {
-        domain: resolved.normalizedDomain,
-        categoryId: request.categoryId ?? null,
-        brandId: request.brandId ?? null,
-        productId: request.productId ?? null,
-        useContextId: request.useContextId ?? null,
-        categorySelection: {
-          mode: categorySelection.mode,
-          categoryIds: frozenCategories.map((category) => category.category_id)
-        },
-        promptDepth,
-        promptPolicyVersion: PROMPT_POLICY_VERSION,
-        providerModels: providerModels.map(({ provider, model }) => ({
-          provider,
-          model
-        }))
-      };
+      const canonicalRequest = plan.canonicalRequestPayload;
       const idempotencyKey = ownerScopedIdempotencyKey(
         owner,
         clientIdempotencyKey
@@ -245,8 +141,8 @@ export class AnalysisService {
         ...ownership,
         startingEntityPathId: resolved.path.entity_path_id,
         categorySelectionMode: categorySelection.mode,
-        promptDepth,
-        promptPolicyVersion: PROMPT_POLICY_VERSION,
+        promptDepth: plan.promptDepth,
+        promptPolicyVersion: plan.promptPolicyVersion,
         requestPayload: canonicalRequest
       });
       if (!created) {
@@ -563,40 +459,6 @@ function sameCanonicalRequest(
     stored.promptPolicyVersion === expected.promptPolicyVersion &&
     sameProviderModelSet(storedProviderModels, expected.providerModels)
   );
-}
-
-function resolveModelPreferences(
-  request: CreateAnalysisRequest,
-  owner: OwnershipContext,
-  realProvidersEnabled: boolean
-) {
-  try {
-    return resolveProviderModelSet({
-      actorType: owner.actorType,
-      providerModels: request.providerModels ?? null,
-      promptDepth: resolveAnalysisPromptDepth(request, owner),
-      realProvidersEnabled
-    });
-  } catch (error) {
-    if (error instanceof InvalidProviderModelSelectionError) {
-      throw new ApplicationError("VALIDATION_ERROR", error.message);
-    }
-    throw error;
-  }
-}
-
-function resolveAnalysisPromptDepth(
-  request: CreateAnalysisRequest,
-  owner: OwnershipContext
-) {
-  try {
-    return resolvePromptDepth(owner.actorType, request.promptDepth);
-  } catch (error) {
-    if (error instanceof InvalidPromptDepthError) {
-      throw new ApplicationError("VALIDATION_ERROR", error.message);
-    }
-    throw error;
-  }
 }
 
 function createResponse(

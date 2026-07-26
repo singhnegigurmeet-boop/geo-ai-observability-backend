@@ -232,7 +232,10 @@ it is slower and disruptive by design; `verify` includes the standard E2E gate.
 
 ## HTTP API
 
-- `POST /v1/analysis/preview` - validate and preview the frozen execution plan
+- `POST /v1/analysis/preview` — run the same canonical planner as creation,
+  returning honest classification/path/job uncertainty, exact frozen models,
+  bounded token/cost estimates, safety-limit decisions, and a canonical hash
+  without creating business rows
 
 - `GET /health` — process liveness
 - `GET /ready` — PostgreSQL, exact baseline ledger, RabbitMQ, queues, and DLQs
@@ -245,6 +248,13 @@ it is slower and disruptive by design; `verify` includes the standard E2E gate.
 Readiness never calls an external provider. Public DTOs do not expose provider
 raw bodies, upstream raw errors, credentials, session secrets, or broker
 metadata.
+
+Reports use `geo-scoring-v2` and the immutable
+`multi-provider-geo-report-v3` contract. Category and exact-model coverage is
+derived from the frozen expected execution set. Diagnostic sections consolidate
+only validated evidence with deterministic ordering and bounded output; usage
+shows the frozen planning estimate beside actual telemetry and missing telemetry
+counts.
 
 ## Scope boundaries
 

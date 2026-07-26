@@ -280,6 +280,43 @@ describe("exact report lifecycle", () => {
     assert.equal(report.overallDimensions.averageRankingScore, 0);
   });
 
+  it("averages authoritative model-path GEO scores instead of raw metrics", () => {
+    const visibilityExpected = expectedOne("visibility");
+    const rankingExpected = expectedOne("ranking");
+    const visibility = reconcile(
+      [visibilityExpected],
+      [
+        materialization(visibilityExpected, {
+          provider_score_id: "51",
+          metric_type: "visibility",
+          scoring_version: "geo-scoring-v2",
+          score: "100"
+        })
+      ]
+    )[0]!;
+    const ranking = reconcile(
+      [rankingExpected],
+      [
+        materialization(rankingExpected, {
+          prompt_job_id: "21",
+          provider_job_id: "31",
+          provider_result_id: "41",
+          provider_score_id: "52",
+          metric_type: "ranking",
+          scoring_version: "geo-scoring-v2",
+          score: "0"
+        })
+      ]
+    )[0]!;
+    const report = buildMultiProviderReport(
+      "9",
+      [visibility, ranking],
+      "completed"
+    );
+    assert.equal(report.modelPathScores[0]?.geoScore, 60);
+    assert.equal(report.providerModelComparison[0]?.averageGeoScore, 60);
+  });
+
   it("uses null ratios for zero expected-work denominators", () => {
     const coverage = calculateExactCoverage([]);
     assert.equal(coverage.materializationCoverage, null);

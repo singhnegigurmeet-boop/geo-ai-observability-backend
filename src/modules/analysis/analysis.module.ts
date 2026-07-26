@@ -12,12 +12,15 @@ import { WorkspaceMemberRepository } from "../workspaces/repositories/workspace-
 import { AnalysisController } from "./controllers/analysis.controller.js";
 import { createAnalysisRouter } from "./routes/analysis.router.js";
 import { AnalysisService } from "./services/analysis.service.js";
+import type { ProviderName } from "../../common/types/database.types.js";
 
 export type AnalysisModuleOptions = {
   sessionTokenPepper: string;
   userSessionTtlSeconds: number;
   anonymousSessionTtlSeconds: number;
   realProvidersEnabled?: boolean;
+  classificationProvider?: ProviderName;
+  classificationModel?: string;
 };
 
 export function createAnalysisModule(
@@ -47,7 +50,12 @@ export function createAnalysisModule(
   const analyses = new AnalysisService(
     database,
     undefined,
-    options.realProvidersEnabled ?? false
+    options.realProvidersEnabled ?? false,
+    {
+      provider: options.classificationProvider ?? "mock",
+      model: options.classificationModel ?? "mock-fast",
+      realProvidersEnabled: options.realProvidersEnabled ?? false
+    }
   );
   const controller = new AnalysisController(analyses);
 

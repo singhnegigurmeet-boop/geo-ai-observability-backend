@@ -107,7 +107,7 @@ export const openApiDocument = {
         tags: ["Analysis"],
         summary: "Preview canonical analysis fan-out and estimated cost",
         description:
-          "Uses the same category, prompt-depth, and provider/model planning policies as creation without creating a run.",
+          "Runs the same canonical hierarchy, category, prompt, exact model, classification, estimation, and safety-limit planner as creation. It creates no analysis business rows, outbox events, jobs, reservations, or reports.",
         security: ownershipSecurity,
         requestBody: {
           required: true,
@@ -122,7 +122,9 @@ export const openApiDocument = {
             description: "Resolved planning estimate",
             content: {
               "application/json": {
-                schema: { type: "object", additionalProperties: true }
+                schema: {
+                  $ref: "#/components/schemas/AnalysisPreviewResponse"
+                }
               }
             }
           },
@@ -167,7 +169,7 @@ export const openApiDocument = {
         tags: ["Analysis"],
         summary: "Read the latest owned report revision",
         description:
-          "Returns the latest immutable multi-provider-v2 report revision. Revisions may be partial, budget-paused, completed, completed with gaps, failed empty, cancelled, or completed empty. Coverage retains provider/model provenance; invalid, failed, and missing evidence are never scored as zero.",
+          "Returns the latest immutable multi-provider-geo-report-v3 revision. Revisions may be partial, budget-paused, completed, completed with gaps, failed empty, cancelled, or completed empty. Coverage retains provider/model provenance; invalid, failed, and missing evidence are never scored as zero.",
         security: ownershipSecurity,
         parameters: [
           {
@@ -437,7 +439,7 @@ export const openApiDocument = {
           reportId: { $ref: "#/components/schemas/DatabaseId" },
           reportVersion: {
             type: "string",
-            enum: ["multi-provider-v2", "basic-v1"]
+            enum: ["multi-provider-geo-report-v3", "basic-v1"]
           },
           revision: { type: "integer", minimum: 1 },
           status: {
@@ -465,7 +467,10 @@ export const openApiDocument = {
           "usage"
         ],
         properties: {
-          reportVersion: { type: "string", enum: ["multi-provider-v2"] },
+          reportVersion: {
+            type: "string",
+            enum: ["multi-provider-geo-report-v3"]
+          },
           lifecycleState: {
             type: "string",
             enum: [
@@ -482,6 +487,17 @@ export const openApiDocument = {
           final: { type: "boolean" },
           resumePossible: { type: "boolean", enum: [false] },
           overallScore: { type: "number", nullable: true },
+          methodology: {
+            type: "object",
+            description:
+              "Safe frozen analysis, classification, prompt/model, scoring, report, and canonical-planning lineage."
+          },
+          executiveSummary: {
+            type: "object",
+            description:
+              "Deterministic summary derived from validated report evidence; no report-writing provider call is used."
+          },
+          overallDimensions: { type: "object" },
           counts: {
             type: "object",
             description:
@@ -544,7 +560,124 @@ export const openApiDocument = {
             type: "object",
             description:
               "Aggregate input/output token counts and integer micro-cost; each provider execution is counted once."
-          }
+          },
+          usageAndCost: {
+            type: "object",
+            description:
+              "Frozen bounded planning estimates beside actual telemetry, variance, missing telemetry, and provider/model, category, prompt-type, classification, and normal-analysis breakdowns."
+          },
+          categoryBreakdown: {
+            type: "array",
+            items: { type: "object" },
+            description:
+              "Every expected category/model path, authoritative model-path GEO scores, classification provenance, disagreement, exact coverage, and prompt outcomes."
+          },
+          providerModelComparison: {
+            type: "array",
+            items: { type: "object" },
+            description:
+              "Exact model comparison. averageGeoScore averages available 60/40 model-path GEO scores, never raw metrics."
+          },
+          promptOutcomes: {
+            type: "array",
+            items: { type: "object" }
+          },
+          visibility: { type: "array", items: { type: "object" } },
+          ranking: { type: "array", items: { type: "object" } },
+          competitors: { type: "array", items: { type: "object" } },
+          price: { type: "array", items: { type: "object" } },
+          prosAndCons: { type: "array", items: { type: "object" } }
+        }
+      },
+      AnalysisPreviewResponse: {
+        type: "object",
+        required: [
+          "normalizedDomain",
+          "frozenCategoryIds",
+          "frozenRequestedCategoryCount",
+          "reusedMatchedCategoryCount",
+          "unresolvedCandidateCount",
+          "classificationRequired",
+          "estimatedSelectedPathCount",
+          "applicablePromptCountEstimate",
+          "resolvedProviderModels",
+          "normalProviderJobCountEstimate",
+          "classificationProviderJobCount",
+          "totalProviderJobCountEstimate",
+          "tokenEstimate",
+          "costEstimate",
+          "safetyLimits",
+          "canonicalRequestHash"
+        ],
+        properties: {
+          normalizedDomain: { type: "string" },
+          categorySelectionMode: {
+            type: "string",
+            enum: ["all", "selected"]
+          },
+          frozenCategoryIds: {
+            type: "array",
+            items: { $ref: "#/components/schemas/DatabaseId" }
+          },
+          frozenRequestedCategoryCount: { type: "integer", minimum: 0 },
+          reusedMatchedCategoryCount: { type: "integer", minimum: 0 },
+          unresolvedCandidateCount: { type: "integer", minimum: 0 },
+          classificationRequired: { type: "boolean" },
+          estimatedSelectedPathCount: {
+            $ref: "#/components/schemas/EstimateRange"
+          },
+          applicablePromptCountEstimate: {
+            $ref: "#/components/schemas/EstimateRange"
+          },
+          applicablePromptTypes: {
+            type: "array",
+            items: {
+              type: "string",
+              enum: [
+                "visibility",
+                "ranking",
+                "competitor",
+                "price_range",
+                "pros_cons"
+              ]
+            }
+          },
+          resolvedModelCount: { type: "integer", minimum: 1 },
+          resolvedProviderModels: {
+            type: "array",
+            items: { type: "object" }
+          },
+          normalProviderJobCountEstimate: {
+            $ref: "#/components/schemas/EstimateRange"
+          },
+          classificationProviderJobCount: {
+            type: "integer",
+            minimum: 0,
+            maximum: 1
+          },
+          totalProviderJobCountEstimate: {
+            $ref: "#/components/schemas/EstimateRange"
+          },
+          tokenEstimate: { type: "object" },
+          costEstimate: { type: "object" },
+          normalAnalysisEstimate: { type: "object" },
+          classificationEstimate: { type: "object" },
+          byProviderModel: { type: "array", items: { type: "object" } },
+          safetyLimits: { type: "object" },
+          canonicalPlannerVersion: { type: "string" },
+          canonicalRequestHash: {
+            type: "string",
+            pattern: "^[0-9a-f]{64}$"
+          },
+          estimateNotice: { type: "string" }
+        }
+      },
+      EstimateRange: {
+        type: "object",
+        required: ["minimum", "maximum"],
+        properties: {
+          minimum: { type: "integer", minimum: 0 },
+          maximum: { type: "integer", minimum: 0 }
         }
       },
       StartingEntityPath: {

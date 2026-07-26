@@ -4,6 +4,7 @@ import type {
   EntityPathType,
   JsonObject,
   PromptDepth,
+  PromptType,
   ProviderName
 } from "../../../common/types/database.types.js";
 
@@ -22,22 +23,86 @@ export type CanonicalAnalysisRequest = JsonObject & {
   providerModels: Array<{
     provider: ProviderName;
     model: string;
+    modelProfileVersion: string;
+    providerInstructionProfile: string;
+    structuredOutputMode: string;
   }>;
+  classificationProfile: JsonObject | null;
+  canonicalPlannerVersion: string;
+  canonicalRequestHash: string;
+  planningEstimate: JsonObject;
+};
+
+export type PlanningEstimateRange = {
+  minimum: number;
+  maximum: number;
+};
+
+export type CanonicalAnalysisPlan = {
+  normalizedDomain: string;
+  frozenCategorySelection: {
+    mode: "all" | "selected";
+    categoryIds: string[];
+  };
+  frozenRequestedCategoryCount: number;
+  reusedCategories: JsonObject[];
+  unresolvedCategoryIds: string[];
+  classificationRequired: boolean;
+  estimatedEligibleCategories: PlanningEstimateRange;
+  plannedEntityPaths: JsonObject[];
+  applicablePromptsByPath: readonly PromptType[];
+  applicablePromptCountEstimate: PlanningEstimateRange;
+  resolvedProviderModels: Array<{
+    provider: ProviderName;
+    model: string;
+    queueName: string;
+    modelProfileVersion: string;
+    preferredStructuredOutputMode: string;
+    providerInstructionProfile: string;
+  }>;
+  expectedExecutions: {
+    normalProviderJobCountEstimate: PlanningEstimateRange;
+    classificationProviderJobCount: number;
+    totalProviderJobCountEstimate: PlanningEstimateRange;
+  };
+  promptDepth: PromptDepth;
+  promptPolicyVersion: string;
+  classificationExecutionProfile: JsonObject | null;
+  tokenEstimate: JsonObject;
+  costEstimate: JsonObject;
+  normalAnalysisEstimate: JsonObject;
+  classificationEstimate: JsonObject;
+  byProviderModel: JsonObject[];
+  safetyLimits: JsonObject;
+  canonicalRequestPayload: CanonicalAnalysisRequest;
+  canonicalRequestHash: string;
 };
 
 export type AnalysisPreviewResponse = {
   normalizedDomain: string;
   categorySelectionMode: "all" | "selected";
-  resolvedCategoryCandidateCount: number;
+  frozenCategoryIds: string[];
+  frozenRequestedCategoryCount: number;
   reusedMatchedCategoryCount: number;
+  unresolvedCandidateCount: number;
   classificationRequired: boolean;
-  estimatedSelectedPathCount: number;
-  applicablePromptCount: number;
+  estimatedSelectedPathCount: PlanningEstimateRange;
+  applicablePromptCountEstimate: PlanningEstimateRange;
+  applicablePromptTypes: PromptType[];
   resolvedModelCount: number;
-  estimatedProviderJobCount: number;
-  estimatedInputTokens: number;
-  estimatedOutputTokens: number;
-  estimatedCostMicros: { minimum: number; maximum: number };
+  resolvedProviderModels: JsonObject[];
+  normalProviderJobCountEstimate: PlanningEstimateRange;
+  classificationProviderJobCount: number;
+  totalProviderJobCountEstimate: PlanningEstimateRange;
+  tokenEstimate: JsonObject;
+  costEstimate: JsonObject;
+  normalAnalysisEstimate: JsonObject;
+  classificationEstimate: JsonObject;
+  byProviderModel: JsonObject[];
+  safetyLimits: JsonObject;
+  canonicalPlannerVersion: string;
+  canonicalRequestHash: string;
+  estimateNotice: string;
 };
 
 export type CreateAnalysisResponse = {

@@ -148,6 +148,10 @@ export function reportExecutionRecords(
         provider_score_id: row.provider_score_id,
         provider: row.provider,
         model: row.model,
+        model_profile_version: row.model_profile_version ?? undefined,
+        provider_instruction_profile:
+          row.provider_instruction_profile ?? undefined,
+        structured_output_mode: row.structured_output_mode ?? undefined,
         provider_job_status: row.provider_job_status,
         error_code: row.provider_error_code,
         result_status: row.result_status,
@@ -162,6 +166,10 @@ export function reportExecutionRecords(
         input_tokens: row.input_tokens,
         output_tokens: row.output_tokens,
         cost_micros: row.cost_micros
+        ,
+        estimated_input_tokens: row.estimated_input_tokens,
+        estimated_output_tokens: row.estimated_output_tokens,
+        estimated_cost_micros: row.estimated_cost_micros
       }
     ];
   });

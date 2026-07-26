@@ -1,5 +1,8 @@
 import type { JsonObject, ReportStatus } from "../../../common/types/database.types.js";
-import { MULTI_PROVIDER_REPORT_VERSION } from "../../scoring/types/score.types.js";
+import {
+  MULTI_PROVIDER_REPORT_VERSION,
+  SCORING_VERSION
+} from "../../scoring/types/score.types.js";
 import { ReportRepository } from "../repositories/report.repository.js";
 
 type EmptyOutcomeInput = {
@@ -126,7 +129,7 @@ export class ReportOutcomeService {
           classification?.prompt_version ?? null,
         classificationResponseContractVersion:
           classification?.response_contract_version ?? null,
-        scoringVersion: "geo-backend-v1",
+        scoringVersion: SCORING_VERSION,
         reportVersion: MULTI_PROVIDER_REPORT_VERSION,
         createdAt: methodology?.created_at ?? null,
         completedAt: methodology?.completed_at ?? null

@@ -15,6 +15,8 @@ import { SchedulerRepository } from "../repositories/scheduler.repository.js";
 import { WorkspaceAuthorizationService } from "../../workspaces/services/workspace-authorization.service.js";
 import { WorkspaceMemberRepository } from "../../workspaces/repositories/workspace-member.repository.js";
 import { PROMPT_POLICY_VERSION } from "../../prompts/policies/prompt-policy.registry.js";
+import { CanonicalAnalysisPlannerService } from "../../analysis/services/canonical-analysis-planner.service.js";
+import type { ProviderName } from "../../../common/types/database.types.js";
 
 type SchedulerDatabase = DatabaseExecutor & TransactionPool;
 
@@ -26,7 +28,16 @@ export type SchedulerTickResult =
 export class SchedulerService {
   constructor(
     private readonly database: SchedulerDatabase,
-    private readonly realProvidersEnabled = false
+    private readonly realProvidersEnabled = false,
+    private readonly classifier: {
+      provider: ProviderName;
+      model: string;
+      realProvidersEnabled: boolean;
+    } = {
+      provider: "mock",
+      model: "mock-fast",
+      realProvidersEnabled: false
+    }
   ) {}
 
   async tick(now = new Date()): Promise<SchedulerTickResult> {
@@ -102,12 +113,45 @@ export class SchedulerService {
         const dueAt = job.next_run_at;
         const tickKey =
           `scheduled_analysis:${job.scheduler_job_id}:${dueAt.toISOString()}`;
+        const categorySelection =
+          job.category_selection_mode === "selected"
+            ? { mode: "selected" as const, categoryIds }
+            : { mode: "all" as const };
+        const plan = await new CanonicalAnalysisPlannerService(
+          client,
+          undefined,
+          this.realProvidersEnabled,
+          this.classifier
+        ).plan(
+          {
+            domain: job.normalized_domain,
+            categoryId: job.category_id ?? undefined,
+            brandId: job.brand_id ?? undefined,
+            productId: job.product_id ?? undefined,
+            useContextId: job.use_context_id ?? undefined,
+            categorySelection,
+            promptDepth: job.prompt_depth,
+            providerModels: selection.map(({ provider, model }) => ({
+              provider,
+              model
+            }))
+          },
+          {
+            actorType: "user",
+            anonymousSessionId: null,
+            userId: job.created_by_user_id,
+            workspaceId: job.workspace_id,
+            workspaceRole: "owner"
+          },
+          { frozenCategoryIds: categoryIds }
+        );
         const run = await schedules.createOrReuseRun({
           job,
           idempotencyKey: tickKey,
           policy: {
             providerModels: selection,
-            categoryIds
+            categoryIds,
+            canonicalRequestPayload: plan.canonicalRequestPayload
           }
         });
         await new OutboxEventWriterRepository(client).createOrReuse({

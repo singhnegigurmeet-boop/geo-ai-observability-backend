@@ -35,6 +35,9 @@ export type ReportExecutionRecord = {
   provider_score_id: string | null;
   provider: ProviderName;
   model: string;
+  model_profile_version?: string;
+  provider_instruction_profile?: string;
+  structured_output_mode?: string;
   provider_job_status: JobStatus;
   error_code: string | null;
   result_status: ProviderResultStatus | null;
@@ -49,6 +52,9 @@ export type ReportExecutionRecord = {
   input_tokens: number | null;
   output_tokens: number | null;
   cost_micros: string | null;
+  estimated_input_tokens?: number | null;
+  estimated_output_tokens?: number | null;
+  estimated_cost_micros?: string | null;
 };
 
 export type ReportMaterializationRecord = {
@@ -71,6 +77,9 @@ export type ReportMaterializationRecord = {
   provider_job_id: string | null;
   provider: ProviderName | null;
   model: string | null;
+  model_profile_version?: string | null;
+  provider_instruction_profile?: string | null;
+  structured_output_mode?: string | null;
   provider_job_status: JobStatus | null;
   provider_error_code: string | null;
   provider_result_id: string | null;
@@ -87,6 +96,9 @@ export type ReportMaterializationRecord = {
   input_tokens: number | null;
   output_tokens: number | null;
   cost_micros: string | null;
+  estimated_input_tokens?: number | null;
+  estimated_output_tokens?: number | null;
+  estimated_cost_micros?: string | null;
 };
 
 export type ClassificationReportRecord = {
@@ -96,12 +108,18 @@ export type ClassificationReportRecord = {
   model_profile_version: string;
   prompt_version: string;
   response_contract_version: string;
+  provider_instruction_profile?: string;
+  structured_output_mode?: string;
+  completed_at?: string | null;
   provider_result_id: string | null;
   result_status: ProviderResultStatus | null;
   validated_response: JsonObject | null;
   input_tokens: number | null;
   output_tokens: number | null;
   cost_micros: string | null;
+  estimated_input_tokens?: number | null;
+  estimated_output_tokens?: number | null;
+  estimated_cost_micros?: string | null;
 };
 
 export type ReportMethodologyContext = {
@@ -112,6 +130,7 @@ export type ReportMethodologyContext = {
   requested_category_ids: string[];
   selected_provider_models: JsonObject[];
   matched_categories: JsonObject[];
+  request_payload?: JsonObject;
   created_at: string;
   completed_at: string | null;
 };
@@ -240,6 +259,9 @@ export class ReportRepository {
           job.provider_job_id,
           job.provider,
           job.model,
+          job.model_profile_version,
+          job.provider_instruction_profile,
+          job.structured_output_mode,
           job.status AS provider_job_status,
           job.error_code AS provider_error_code,
           result.provider_result_id,
@@ -254,9 +276,12 @@ export class ReportRepository {
           score.score,
           score.score_components,
           scoring_failure.error_code AS scoring_failure_code,
-          usage.input_tokens,
-          usage.output_tokens,
-          usage.cost_micros
+          actual_usage.input_tokens,
+          actual_usage.output_tokens,
+          actual_usage.cost_micros,
+          estimated_usage.input_tokens AS estimated_input_tokens,
+          estimated_usage.output_tokens AS estimated_output_tokens,
+          estimated_usage.cost_micros AS estimated_cost_micros
         FROM analysis_run_items AS item
         JOIN entity_paths AS path
           ON path.entity_path_id = item.entity_path_id
@@ -274,9 +299,12 @@ export class ReportRepository {
         LEFT JOIN provider_scores AS score
           ON score.provider_result_id = result.provider_result_id
          AND score.scoring_version = $2
-        LEFT JOIN token_usage AS usage
-          ON usage.provider_job_id = job.provider_job_id
-         AND usage.usage_kind = 'actual'
+        LEFT JOIN token_usage AS actual_usage
+          ON actual_usage.provider_job_id = job.provider_job_id
+         AND actual_usage.usage_kind = 'actual'
+        LEFT JOIN token_usage AS estimated_usage
+          ON estimated_usage.provider_job_id = job.provider_job_id
+         AND estimated_usage.usage_kind = 'estimated'
         LEFT JOIN LATERAL (
           SELECT failure.error_code
           FROM failure_records AS failure
@@ -316,21 +344,30 @@ export class ReportRepository {
           classification.model_profile_version,
           classification.prompt_version,
           classification.response_contract_version,
+          classification.provider_instruction_profile,
+          classification.structured_output_mode,
+          classification.completed_at::text,
           result.provider_result_id,
           result.status AS result_status,
           result.validated_response,
-          usage.input_tokens,
-          usage.output_tokens,
-          usage.cost_micros
+          actual_usage.input_tokens,
+          actual_usage.output_tokens,
+          actual_usage.cost_micros,
+          estimated_usage.input_tokens AS estimated_input_tokens,
+          estimated_usage.output_tokens AS estimated_output_tokens,
+          estimated_usage.cost_micros AS estimated_cost_micros
         FROM domain_category_classification_jobs AS classification
         LEFT JOIN provider_jobs AS job
           ON job.classification_job_id =
              classification.domain_category_classification_job_id
         LEFT JOIN provider_results AS result
           ON result.provider_job_id = job.provider_job_id
-        LEFT JOIN token_usage AS usage
-          ON usage.provider_job_id = job.provider_job_id
-         AND usage.usage_kind = 'actual'
+        LEFT JOIN token_usage AS actual_usage
+          ON actual_usage.provider_job_id = job.provider_job_id
+         AND actual_usage.usage_kind = 'actual'
+        LEFT JOIN token_usage AS estimated_usage
+          ON estimated_usage.provider_job_id = job.provider_job_id
+         AND estimated_usage.usage_kind = 'estimated'
         WHERE classification.analysis_run_id = $1
         ORDER BY classification.created_at DESC
         LIMIT 1
@@ -348,6 +385,7 @@ export class ReportRepository {
           run.category_selection_mode,
           run.prompt_depth,
           run.prompt_policy_version,
+          run.request_payload,
           COALESCE(
             (
               SELECT jsonb_agg(requested.category_id::text ORDER BY requested.ordinal)
@@ -378,8 +416,11 @@ export class ReportRepository {
                   'categoryId', matched.category_id,
                   'categoryName', matched.category_name,
                   'source', matched.source,
+                  'providerResultId', matched.classification_provider_result_id,
                   'classificationRank', matched.classification_rank,
-                  'classificationConfidence', matched.classification_confidence
+                  'classificationConfidence', matched.classification_confidence,
+                  'classifiedAt', matched.classified_at,
+                  'relationshipCreatedAt', matched.relationship_created_at
                 )
                 ORDER BY matched.item_ordinal
               )
@@ -389,8 +430,11 @@ export class ReportRepository {
                   category.category_id::text AS category_id,
                   category.category_name,
                   relationship.source,
+                  relationship.classification_provider_result_id,
                   relationship.classification_rank,
-                  relationship.classification_confidence
+                  relationship.classification_confidence,
+                  relationship.classified_at,
+                  relationship.created_at AS relationship_created_at
                 FROM analysis_run_items AS item
                 JOIN entity_paths AS path
                   ON path.entity_path_id = item.entity_path_id

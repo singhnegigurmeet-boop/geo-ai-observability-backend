@@ -143,7 +143,7 @@ export class AnalysisRepository {
           FROM reports AS candidate
           WHERE candidate.analysis_run_id = run.analysis_run_id
           ORDER BY
-            (candidate.report_version = 'multi-provider-v2') DESC,
+            (candidate.report_version = 'multi-provider-geo-report-v3') DESC,
             candidate.revision DESC,
             candidate.report_id DESC
           LIMIT 1

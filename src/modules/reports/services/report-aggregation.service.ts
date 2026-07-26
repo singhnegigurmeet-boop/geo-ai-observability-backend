@@ -30,6 +30,7 @@ import {
   reportIsFinal,
   type ReportLifecycleState
 } from "./report-coverage.service.js";
+import { consolidateDiagnostics } from "./report-consolidation.service.js";
 
 export type ReportAggregationResult =
   | { outcome: "not_ready"; reportId: null }
@@ -41,6 +42,22 @@ export type ReportAggregationResult =
       lifecycleState: string;
       created: boolean;
     };
+
+type ModelPathScore = {
+  entityPathId: string;
+  categoryId: string | null;
+  categoryName: string | null;
+  provider: string;
+  model: string;
+  visibilityScore: number | null;
+  rankingScore: number | null;
+  geoScore: number | null;
+  partial: boolean;
+  availableMetricWeight: number;
+  expectedMetricWeight: number;
+  metricCoverage: number;
+  missingMetricReasons: string[];
+};
 
 export class ReportAggregationService {
   constructor(private readonly reports: ReportRepository) {}
@@ -174,6 +191,10 @@ export function buildMultiProviderReport(
     providerScoreId: record.provider_score_id,
     provider: record.provider,
     model: record.model,
+    modelProfileVersion: record.model_profile_version ?? null,
+    providerInstructionProfile:
+      record.provider_instruction_profile ?? null,
+    structuredOutputMode: record.structured_output_mode ?? null,
     state: record.provider_job_status,
     executionState:
       reconciled.find(
@@ -183,18 +204,22 @@ export function buildMultiProviderReport(
     evidenceStatus: record.result_status ?? "missing",
     score: record.score === null ? null : Number(record.score),
     scoringVersion: record.scoring_version,
-    errorCode: record.error_code,
     evidenceCount:
       record.validated_response &&
       Array.isArray(record.validated_response.evidence)
         ? record.validated_response.evidence.length
         : 0,
     confidence: responseConfidence(record.validated_response),
-    validationErrors: record.validation_errors,
-    scoringFailureCode: record.scoring_failure_code,
+    terminalGapReason:
+      safeGapReason(
+        reconciled.find(
+          (execution) =>
+            execution.providerJobId === record.provider_job_id
+        )?.executionState ?? "pending"
+      ),
     usage: {
-      inputTokens: record.input_tokens ?? 0,
-      outputTokens: record.output_tokens ?? 0,
+      inputTokens: Number(record.input_tokens ?? 0),
+      outputTokens: Number(record.output_tokens ?? 0),
       costMicros: Number(record.cost_micros ?? 0)
     }
   }));
@@ -239,7 +264,12 @@ export function buildMultiProviderReport(
       promptCount: scores.length
     }));
   const modelPaths = buildModelPathScores(reconciled);
-  const categoryScores = buildCategoryScores(modelPaths, reconciled);
+  const categoryScores = buildCategoryScores(
+    modelPaths,
+    reconciled,
+    methodology,
+    classification
+  );
   const overallScores = categoryScores
     .map((category) => category.geoScore)
     .filter((score): score is number => score !== null);
@@ -252,8 +282,12 @@ export function buildMultiProviderReport(
   const confidences = records
     .map((record) => responseConfidence(record.validated_response))
     .filter((confidence): confidence is number => confidence !== null);
-  const diagnosticSections = buildDiagnosticSections(records);
-  const providerModelComparison = buildProviderModelComparison(reconciled);
+  const diagnosticSections = consolidateDiagnostics(records);
+  const providerModelComparison = buildProviderModelComparison(
+    reconciled,
+    modelPaths
+  );
+  const promptOutcomes = buildPromptOutcomes(reconciled);
   const strongestCategory = [...categoryScores]
     .filter((category) => category.geoScore !== null)
     .sort((left, right) => right.geoScore! - left.geoScore!)[0] ?? null;
@@ -289,14 +323,26 @@ export function buildMultiProviderReport(
       promptPolicyVersion: methodology?.prompt_policy_version ?? null,
       selectedProviderModels:
         methodology?.selected_provider_models ?? [],
+      exactModelExecutionProfiles:
+        methodology?.request_payload?.providerModels ??
+        methodology?.selected_provider_models ??
+        [],
+      canonicalPlannerVersion:
+        methodology?.request_payload?.canonicalPlannerVersion ?? null,
+      canonicalRequestHash:
+        methodology?.request_payload?.canonicalRequestHash ?? null,
+      planningEstimate:
+        methodology?.request_payload?.planningEstimate ?? null,
       businessPromptVersions: [
         ...new Set(records.map((record) => record.business_prompt_version))
       ].sort(),
       responseContractVersions: [
         ...new Set(records.map((record) => record.response_contract_version))
       ].sort(),
+      normalPromptProfiles: uniquePromptProfiles(records),
       scoringVersion: SCORING_VERSION,
       reportVersion: MULTI_PROVIDER_REPORT_VERSION,
+      reportRevisionStrategy: "immutable-authoritative-state-v1",
       createdAt: methodology?.created_at ?? null,
       completedAt: methodology?.completed_at ?? null
     },
@@ -309,8 +355,39 @@ export function buildMultiProviderReport(
       strongestCategory,
       weakestCategory,
       majorVisibilityGaps: diagnosticSections.visibility.flatMap(
-        (entry) => entry.visibilityGaps
-      )
+        (entry) => {
+          const gaps = entry.visibilityGaps;
+          return gaps &&
+            typeof gaps === "object" &&
+            !Array.isArray(gaps) &&
+            Array.isArray(gaps.items)
+            ? gaps.items
+            : [];
+        }
+      ),
+      strongestRecurringStrengths:
+        diagnosticSections.visibility.flatMap((entry) => {
+          const strengths = entry.strengths;
+          return strengths &&
+            typeof strengths === "object" &&
+            !Array.isArray(strengths) &&
+            Array.isArray(strengths.items)
+            ? strengths.items
+            : [];
+        }),
+      majorRankingWeakness: diagnosticSections.ranking.some(
+        (entry) => typeof entry.foundRate === "number" && entry.foundRate < 0.5
+      ),
+      majorCompetitivePressure:
+        diagnosticSections.competitors.flatMap((entry) => {
+          const pressure = entry.competitivePressure;
+          return pressure &&
+            typeof pressure === "object" &&
+            !Array.isArray(pressure) &&
+            typeof pressure.average === "number"
+            ? [pressure.average]
+            : [];
+        }).sort((left, right) => right - left)[0] ?? null
     },
     overallDimensions: {
       overallGeoScore: overallScore,
@@ -318,7 +395,16 @@ export function buildMultiProviderReport(
         visibilityScores.length ? mean(visibilityScores) : null,
       averageRankingScore: rankingScores.length ? mean(rankingScores) : null,
       averageConfidence: confidences.length ? mean(confidences) : null,
-      coverage: counts.completionPercentage
+      categoryCoverage:
+        categoryScores.length === 0
+          ? null
+          : round(
+              categoryScores.filter((category) => category.geoScore !== null)
+                .length / categoryScores.length
+            ),
+      scoreBearingCoverage: counts.scoreBearingCoverage,
+      usableEvidenceCoverage: counts.usableEvidenceCoverage,
+      providerAgreement: providerAgreement(modelPaths)
     },
     counts,
     coverage: counts,
@@ -329,6 +415,7 @@ export function buildMultiProviderReport(
     modelPathScores: modelPaths,
     categoryScores,
     categoryBreakdown: categoryScores,
+    promptOutcomes,
     classification: classification
       ? {
           status: classification.classification_status,
@@ -338,7 +425,12 @@ export function buildMultiProviderReport(
           promptVersion: classification.prompt_version,
           responseContractVersion:
             classification.response_contract_version,
+          providerInstructionProfile:
+            classification.provider_instruction_profile ?? null,
+          structuredOutputMode:
+            classification.structured_output_mode ?? null,
           providerResultId: classification.provider_result_id,
+          classifiedAt: classification.completed_at ?? null,
           evidenceStatus: classification.result_status ?? "missing",
           matches:
             classification.validated_response &&
@@ -346,9 +438,24 @@ export function buildMultiProviderReport(
               ? classification.validated_response.matches
               : [],
           usage: {
-            inputTokens: classification.input_tokens ?? 0,
-            outputTokens: classification.output_tokens ?? 0,
-            costMicros: Number(classification.cost_micros ?? 0)
+            inputTokens: Number(classification.input_tokens ?? 0),
+            outputTokens: Number(classification.output_tokens ?? 0),
+            costMicros: Number(classification.cost_micros ?? 0),
+            estimatedInputTokens:
+              classification.estimated_input_tokens === null ||
+              classification.estimated_input_tokens === undefined
+                ? null
+                : Number(classification.estimated_input_tokens),
+            estimatedOutputTokens:
+              classification.estimated_output_tokens === null ||
+              classification.estimated_output_tokens === undefined
+                ? null
+                : Number(classification.estimated_output_tokens),
+            estimatedCostMicros:
+              classification.estimated_cost_micros === null ||
+              classification.estimated_cost_micros === undefined
+                ? null
+                : Number(classification.estimated_cost_micros)
           }
         }
       : null,
@@ -367,22 +474,24 @@ export function buildMultiProviderReport(
         costMicros: total.costMicros + record.usage.costMicros
       }),
       {
-        inputTokens: classification?.input_tokens ?? 0,
-        outputTokens: classification?.output_tokens ?? 0,
+        inputTokens: Number(classification?.input_tokens ?? 0),
+        outputTokens: Number(classification?.output_tokens ?? 0),
         costMicros: Number(classification?.cost_micros ?? 0)
       }
     ),
-    usageAndCost: buildUsageAndCost(records, classification)
+    usageAndCost: buildUsageAndCost(records, classification, methodology)
   } satisfies JsonObject;
 }
 
 function buildCategoryScores(
-  modelPaths: ReturnType<typeof buildModelPathScores>,
-  reconciled: readonly ReconciledProviderExecution[]
+  modelPaths: ModelPathScore[],
+  reconciled: readonly ReconciledProviderExecution[],
+  methodology: ReportMethodologyContext | null,
+  classification: ClassificationReportRecord | null
 ) {
   const groups = new Map<
     string,
-    ReturnType<typeof buildModelPathScores>
+    ModelPathScore[]
   >();
   for (const path of modelPaths) {
     const key = path.categoryId ?? `path:${path.entityPathId}`;
@@ -391,28 +500,67 @@ function buildCategoryScores(
     groups.set(key, group);
   }
   const exactCoverage = categoryCoverage(reconciled);
+  const matched = new Map<string, JsonObject>();
+  for (const category of methodology?.matched_categories ?? []) {
+    matched.set(String(category.categoryId), category);
+  }
   return [...groups.values()].map((group) => {
     const scores = group
       .map((path) => path.geoScore)
       .filter((score): score is number => score !== null);
+    const disagreement = statistics(scores);
+    const categoryId = group[0]!.categoryId;
+    const provenance = categoryId === null ? null : matched.get(categoryId);
+    const categoryExecutions = reconciled.filter(
+      (execution) => execution.expected.categoryId === categoryId
+    );
+    const coverage = calculateExactCoverage(categoryExecutions);
     return {
-      categoryId: group[0]!.categoryId,
+      categoryId,
       categoryName: group[0]!.categoryName,
       geoScore: scores.length ? mean(scores) : null,
       availableModels: scores.length,
       expectedModels: group.length,
       modelCoverage:
         group.length === 0 ? 0 : round((scores.length / group.length) * 100),
+      classificationSource: classificationSource(
+        provenance ?? undefined,
+        classification?.provider_result_id ?? null,
+        methodology?.created_at ?? null
+      ),
+      classificationProviderResultProvenance:
+        provenance?.providerResultId ?? null,
+      classificationRank: provenance?.classificationRank ?? null,
+      classificationConfidence:
+        provenance?.classificationConfidence ?? null,
+      providerModelPathScores: [...group].sort(compareModelPath),
+      modelDisagreement: disagreement,
+      validDiagnosticResultCount: coverage.validDiagnostic,
+      invalidResultCount: coverage.invalid,
+      technicalFailureCount: coverage.technicalFailure,
+      budgetPausedCount: coverage.budgetPaused,
+      cancelledCount: coverage.cancelled,
+      missingBeforeFanOutCount: coverage.missingBeforeFanOut,
+      permanentScoringFailureCount: coverage.permanentScoringFailure,
+      expectedProviderExecutions: coverage.expectedProviderJobs,
+      materializedProviderExecutions: coverage.materializedProviderJobs,
+      usableEvidenceCoverage: coverage.usableEvidenceCoverage,
+      scoreBearingCoverage: coverage.scoreBearingCoverage,
+      promptOutcomes: buildPromptOutcomes(categoryExecutions),
       ...(exactCoverage.find(
         (coverage) => coverage.categoryId === group[0]!.categoryId
       ) ?? {})
     };
-  });
+  }).sort(
+    (left, right) =>
+      (left.categoryName ?? "").localeCompare(right.categoryName ?? "") ||
+      (left.categoryId ?? "").localeCompare(right.categoryId ?? "")
+  );
 }
 
 function buildModelPathScores(
   reconciled: readonly ReconciledProviderExecution[]
-) {
+): ModelPathScore[] {
   const groups = new Map<string, ReconciledProviderExecution[]>();
   for (const execution of reconciled) {
     const key =
@@ -455,7 +603,7 @@ function buildModelPathScores(
         ...(ranking === null ? [missingReason(group, "ranking")] : [])
       ]
     };
-  });
+  }).sort(compareModelPath);
 }
 
 function scoreFor(records: ReportExecutionRecord[], type: PromptType) {
@@ -482,7 +630,8 @@ function missingReason(
 }
 
 function buildProviderModelComparison(
-  reconciled: readonly ReconciledProviderExecution[]
+  reconciled: readonly ReconciledProviderExecution[],
+  modelPaths: ModelPathScore[]
 ) {
   const groups = new Map<string, ReconciledProviderExecution[]>();
   for (const execution of reconciled) {
@@ -500,14 +649,25 @@ function buildProviderModelComparison(
   );
   return [...groups.entries()].map(([key, group]) => {
     const records = reportExecutionRecords(group);
-    const scores = records
-      .map((record) => record.score)
-      .filter((score): score is string => score !== null)
-      .map(Number);
+    const scores = modelPaths
+      .filter(
+        (path) =>
+          path.provider === group[0]!.expected.provider &&
+          path.model === group[0]!.expected.model &&
+          path.geoScore !== null
+      )
+      .map((path) => path.geoScore as number);
     return {
       provider: group[0]!.expected.provider,
       model: group[0]!.expected.model,
       averageGeoScore: scores.length ? mean(scores) : null,
+      modelPathScoreCount: scores.length,
+      partialModelPathScoreCount: modelPaths.filter(
+        (path) =>
+          path.provider === group[0]!.expected.provider &&
+          path.model === group[0]!.expected.model &&
+          path.partial
+      ).length,
       validScoreBearingResults: group.filter(
         (execution) => execution.executionState === "valid_scored"
       ).length,
@@ -534,19 +694,32 @@ function buildProviderModelComparison(
       ...(exact.get(key) ?? {}),
       usage: records.reduce(
         (total, record) => ({
-          inputTokens: total.inputTokens + (record.input_tokens ?? 0),
-          outputTokens: total.outputTokens + (record.output_tokens ?? 0),
-          costMicros: total.costMicros + Number(record.cost_micros ?? 0)
+          inputTokens: total.inputTokens + Number(record.input_tokens ?? 0),
+          outputTokens: total.outputTokens + Number(record.output_tokens ?? 0),
+          costMicros: total.costMicros + Number(record.cost_micros ?? 0),
+          estimatedCostMicros:
+            total.estimatedCostMicros +
+            Number(record.estimated_cost_micros ?? 0)
         }),
-        { inputTokens: 0, outputTokens: 0, costMicros: 0 }
+        {
+          inputTokens: 0,
+          outputTokens: 0,
+          costMicros: 0,
+          estimatedCostMicros: 0
+        }
       )
     };
-  });
+  }).sort(
+    (left, right) =>
+      left.provider.localeCompare(right.provider) ||
+      left.model.localeCompare(right.model)
+  );
 }
 
 function buildUsageAndCost(
   records: ReportExecutionRecord[],
-  classification: ClassificationReportRecord | null
+  classification: ClassificationReportRecord | null,
+  methodology: ReportMethodologyContext | null
 ) {
   const byCategory = new Map<
     string,
@@ -560,31 +733,140 @@ function buildUsageAndCost(
       outputTokens: 0,
       costMicros: 0
     };
-    current.inputTokens += record.input_tokens ?? 0;
-    current.outputTokens += record.output_tokens ?? 0;
+    current.inputTokens += Number(record.input_tokens ?? 0);
+    current.outputTokens += Number(record.output_tokens ?? 0);
     current.costMicros += Number(record.cost_micros ?? 0);
     byCategory.set(key, current);
   }
+  const byProviderModel = usageGroups(
+    records,
+    (record) => `${record.provider}\u0000${record.model}`,
+    (record) => ({ provider: record.provider, model: record.model })
+  );
+  const byPromptType = usageGroups(
+    records,
+    (record) => record.prompt_type,
+    (record) => ({ promptType: record.prompt_type })
+  );
+  const normalActual = usageTotal(records);
+  const classificationActual = {
+    inputTokens: Number(classification?.input_tokens ?? 0),
+    outputTokens: Number(classification?.output_tokens ?? 0),
+    totalTokens:
+      Number(classification?.input_tokens ?? 0) +
+      Number(classification?.output_tokens ?? 0),
+    costMicros: Number(classification?.cost_micros ?? 0)
+  };
+  const actual = addUsage(normalActual, classificationActual);
+  const planningEstimate =
+    methodology?.request_payload?.planningEstimate ?? null;
+  const estimatedCost =
+    planningEstimate &&
+    typeof planningEstimate === "object" &&
+    !Array.isArray(planningEstimate)
+      ? planningEstimate.costEstimateMicros ?? null
+      : null;
   return {
-    normalExecution: records.reduce(
-      (total, record) => ({
-        inputTokens: total.inputTokens + (record.input_tokens ?? 0),
-        outputTokens: total.outputTokens + (record.output_tokens ?? 0),
-        costMicros: total.costMicros + Number(record.cost_micros ?? 0)
-      }),
-      { inputTokens: 0, outputTokens: 0, costMicros: 0 }
+    planningEstimate,
+    estimatedCostRangeMicros: estimatedCost,
+    actual,
+    normalAnalysis: normalActual,
+    classification: classificationActual,
+    byProviderModel,
+    byCategory: [...byCategory.values()].sort((left, right) =>
+      (left.categoryId ?? "").localeCompare(right.categoryId ?? "")
     ),
-    classification: {
-      inputTokens: classification?.input_tokens ?? 0,
-      outputTokens: classification?.output_tokens ?? 0,
-      costMicros: Number(classification?.cost_micros ?? 0)
-    },
-    byCategory: [...byCategory.values()]
+    byPromptType,
+    missingTelemetryCount:
+      records.filter(
+        (record) =>
+          record.input_tokens === null ||
+          record.output_tokens === null ||
+          record.cost_micros === null
+      ).length +
+      (classification &&
+      (classification.input_tokens === null ||
+        classification.output_tokens === null ||
+        classification.cost_micros === null)
+        ? 1
+        : 0),
+    costVarianceMicros:
+      estimatedCost &&
+      typeof estimatedCost === "object" &&
+      !Array.isArray(estimatedCost) &&
+      typeof estimatedCost.minimum === "number" &&
+      typeof estimatedCost.maximum === "number"
+        ? {
+            versusMinimum: actual.costMicros - estimatedCost.minimum,
+            versusMaximum: actual.costMicros - estimatedCost.maximum
+          }
+        : null
+  };
+}
+
+function usageTotal(records: readonly ReportExecutionRecord[]) {
+  return records.reduce(
+    (total, record) => ({
+      inputTokens: total.inputTokens + Number(record.input_tokens ?? 0),
+      outputTokens: total.outputTokens + Number(record.output_tokens ?? 0),
+      totalTokens:
+        total.totalTokens +
+        Number(record.input_tokens ?? 0) +
+        Number(record.output_tokens ?? 0),
+      costMicros: total.costMicros + Number(record.cost_micros ?? 0),
+      estimatedCostMicros:
+        total.estimatedCostMicros +
+        Number(record.estimated_cost_micros ?? 0)
+    }),
+    {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      costMicros: 0,
+      estimatedCostMicros: 0
+    }
+  );
+}
+
+function usageGroups(
+  records: readonly ReportExecutionRecord[],
+  keyFor: (record: ReportExecutionRecord) => string,
+  identityFor: (record: ReportExecutionRecord) => JsonObject
+) {
+  const groups = new Map<string, ReportExecutionRecord[]>();
+  for (const record of records) {
+    const key = keyFor(record);
+    const values = groups.get(key) ?? [];
+    values.push(record);
+    groups.set(key, values);
+  }
+  return [...groups.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, values]) => ({
+      ...identityFor(values[0]!),
+      ...usageTotal(values)
+    }));
+}
+
+function addUsage(
+  left: ReturnType<typeof usageTotal>,
+  right: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    costMicros: number;
+  }
+) {
+  return {
+    inputTokens: left.inputTokens + right.inputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+    totalTokens: left.totalTokens + right.totalTokens,
+    costMicros: left.costMicros + right.costMicros
   };
 }
 
 function providerAgreement(
-  modelPaths: ReturnType<typeof buildModelPathScores>
+  modelPaths: ModelPathScore[]
 ) {
   const scores = modelPaths
     .map((path) => path.geoScore)
@@ -595,116 +877,149 @@ function providerAgreement(
   );
 }
 
-function buildDiagnosticSections(records: ReportExecutionRecord[]) {
-  const visibility: Array<JsonObject> = [];
-  const ranking: Array<JsonObject> = [];
-  const competitors: Array<JsonObject> = [];
-  const price: Array<JsonObject> = [];
-  const prosAndCons: Array<JsonObject> = [];
+function buildPromptOutcomes(
+  reconciled: readonly ReconciledProviderExecution[]
+) {
+  return [...reconciled]
+    .sort(
+      (left, right) =>
+        left.expected.itemOrdinal - right.expected.itemOrdinal ||
+        left.expected.promptOrdinal - right.expected.promptOrdinal ||
+        left.expected.provider.localeCompare(right.expected.provider) ||
+        left.expected.model.localeCompare(right.expected.model)
+    )
+    .map((execution) => ({
+      entityPathId: execution.expected.entityPathId,
+      categoryId: execution.expected.categoryId,
+      provider: execution.expected.provider,
+      model: execution.expected.model,
+      promptType: execution.expected.promptType,
+      requiresScoring: execution.expected.requiresScoring,
+      materializationStage: execution.materializationStage,
+      executionState: execution.executionState,
+      providerResultValidity:
+        execution.actual?.result_status ?? "missing",
+      scoreAvailable: execution.providerScoreId !== null,
+      terminalGapReason: safeGapReason(execution.executionState),
+      budgetPaused: execution.executionState === "budget_paused",
+      cancelled: execution.executionState === "cancelled"
+    }));
+}
+
+function uniquePromptProfiles(records: readonly ReportExecutionRecord[]) {
+  const profiles = new Map<string, JsonObject>();
   for (const record of records) {
-    if (record.result_status !== "valid") continue;
-    const result = responseResult(record.validated_response);
-    if (!result) continue;
-    const identity = {
-      categoryId: record.category_id,
-      categoryName: record.category_name,
-      entityPathId: record.entity_path_id,
+    const key = [
+      record.prompt_type,
+      record.business_prompt_version,
+      record.response_contract_version,
+      record.provider,
+      record.model,
+      record.model_profile_version ?? "",
+      record.provider_instruction_profile ?? "",
+      record.structured_output_mode ?? ""
+    ].join("\u0000");
+    profiles.set(key, {
+      promptType: record.prompt_type,
+      businessPromptVersion: record.business_prompt_version,
+      responseContractVersion: record.response_contract_version,
       provider: record.provider,
-      model: record.model
-    };
-    if (record.prompt_type === "visibility") {
-      visibility.push({
-        ...identity,
-        mentionLikelihood: jsonNumber(result.mention_likelihood),
-        recommendationLikelihood: jsonNumber(
-          result.recommendation_likelihood
-        ),
-        competitiveProminence: jsonNumber(result.competitive_prominence),
-        queryIntents: jsonStringArray(result.query_intents),
-        strengths: jsonStringArray(result.strengths),
-        visibilityGaps: jsonStringArray(result.visibility_gaps),
-        confidence: jsonNumber(result.confidence)
-      });
-    } else if (record.prompt_type === "ranking") {
-      ranking.push({
-        ...identity,
-        requestedTopK: jsonNumber(result.requested_top_k),
-        found: typeof result.found === "boolean" ? result.found : false,
-        rankPosition: jsonNumber(result.rank_position),
-        orderedCandidates: Array.isArray(result.ordered_candidates)
-          ? result.ordered_candidates
-          : [],
-        mentionCount: jsonNumber(result.mention_count),
-        confidence: jsonNumber(result.confidence)
-      });
-    } else if (record.prompt_type === "competitor") {
-      competitors.push({
-        ...identity,
-        directCompetitors: Array.isArray(result.direct_competitors)
-          ? result.direct_competitors
-          : [],
-        indirectCompetitors: Array.isArray(result.indirect_competitors)
-          ? result.indirect_competitors
-          : [],
-        competitivePressure: jsonNumber(result.competitive_pressure),
-        targetDifferentiation:
-          typeof result.target_differentiation === "string"
-            ? result.target_differentiation
-            : "",
-        confidence: jsonNumber(result.confidence)
-      });
-    } else if (record.prompt_type === "price_range") {
-      price.push({
-        ...identity,
-        applicability:
-          typeof result.applicability === "string"
-            ? result.applicability
-            : "unknown",
-        currency:
-          typeof result.currency === "string" ? result.currency : null,
-        minimum: jsonNumber(result.minimum),
-        maximum: jsonNumber(result.maximum),
-        pricingBasis:
-          typeof result.pricing_basis === "string"
-            ? result.pricing_basis
-            : "",
-        uncertainty:
-          typeof result.uncertainty === "string" ? result.uncertainty : "",
-        confidence: jsonNumber(result.confidence)
-      });
-    } else if (record.prompt_type === "pros_cons") {
-      prosAndCons.push({
-        ...identity,
-        pros: jsonStringArray(result.pros),
-        cons: jsonStringArray(result.cons),
-        bestFitFor: jsonStringArray(result.best_fit_for),
-        poorFitFor: jsonStringArray(result.poor_fit_for),
-        comparisonContext:
-          typeof result.comparison_context === "string"
-            ? result.comparison_context
-            : "",
-        confidence: jsonNumber(result.confidence)
-      });
-    }
+      model: record.model,
+      modelProfileVersion: record.model_profile_version ?? null,
+      providerInstructionProfile:
+        record.provider_instruction_profile ?? null,
+      structuredOutputMode: record.structured_output_mode ?? null
+    });
   }
-  return { visibility, ranking, competitors, price, prosAndCons };
+  return [...profiles.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, profile]) => profile);
 }
 
-function responseResult(response: JsonObject | null): JsonObject | null {
-  const result = response?.result;
-  return result && typeof result === "object" && !Array.isArray(result)
-    ? result
-    : null;
+function safeGapReason(state: ReconciledProviderExecution["executionState"]) {
+  if (state === "invalid") return "invalid_evidence";
+  if (state === "technical_failure") return "technical_failure";
+  if (state === "budget_paused") return "budget_paused";
+  if (state === "cancelled") return "cancelled";
+  if (state === "missing_before_fan_out") {
+    return "expected_but_not_materialized";
+  }
+  if (state === "permanent_scoring_failure") {
+    return "permanent_scoring_failure";
+  }
+  if (state === "pending" || state === "valid_score_pending") return "pending";
+  return null;
 }
 
-function jsonNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+function statistics(values: number[]) {
+  if (values.length === 0) {
+    return {
+      minimum: null,
+      maximum: null,
+      range: null,
+      standardDeviation: null
+    };
+  }
+  const average = mean(values);
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  return {
+    minimum,
+    maximum,
+    range: round(maximum - minimum),
+    standardDeviation:
+      values.length < 2
+        ? null
+        : round(
+            Math.sqrt(
+              mean(values.map((value) => (value - average) ** 2))
+            )
+          )
+  };
 }
 
-function jsonStringArray(value: unknown) {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
+function compareModelPath(
+  left: ModelPathScore,
+  right: ModelPathScore
+) {
+  return (
+    (left.categoryName ?? "").localeCompare(right.categoryName ?? "") ||
+    (left.categoryId ?? "").localeCompare(right.categoryId ?? "") ||
+    left.provider.localeCompare(right.provider) ||
+    left.model.localeCompare(right.model) ||
+    left.entityPathId.localeCompare(right.entityPathId)
+  );
+}
+
+function classificationSource(
+  provenance: JsonObject | undefined,
+  currentProviderResultId: string | null,
+  runCreatedAt: string | null
+) {
+  if (!provenance) return null;
+  if (provenance.source === "manual") return "reused_manual";
+  if (provenance.source === "import") return "reused_import";
+  if (provenance.source !== "llm_classification") {
+    return typeof provenance.source === "string"
+      ? provenance.source
+      : null;
+  }
+  if (
+    currentProviderResultId === null ||
+    provenance.providerResultId !== currentProviderResultId
+  ) {
+    return "reused_previous_llm_classification";
+  }
+  const relationshipCreatedAt =
+    typeof provenance.relationshipCreatedAt === "string"
+      ? Date.parse(provenance.relationshipCreatedAt)
+      : Number.NaN;
+  const runCreated = runCreatedAt ? Date.parse(runCreatedAt) : Number.NaN;
+  return Number.isFinite(relationshipCreatedAt) &&
+    Number.isFinite(runCreated) &&
+    relationshipCreatedAt < runCreated
+    ? "concurrently_reused_or_reactivated"
+    : "newly_classified";
 }
 
 function scoreBand(score: number | null) {

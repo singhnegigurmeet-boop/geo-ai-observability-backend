@@ -256,7 +256,7 @@ export class ExecutionStateService {
           ON result.provider_job_id = job.provider_job_id
         LEFT JOIN provider_scores AS score
           ON score.provider_result_id = result.provider_result_id
-         AND score.scoring_version = 'backend-v1'
+         AND score.scoring_version = 'geo-scoring-v2'
         WHERE item.analysis_run_id = $1::bigint
       `,
       [analysisRunId]

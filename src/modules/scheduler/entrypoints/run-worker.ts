@@ -2,7 +2,11 @@ import { env } from "../../../common/config/env.js";
 import { pool } from "../../../common/database/postgres.js";
 import { SchedulerService } from "../services/scheduler.service.js";
 
-const scheduler = new SchedulerService(pool, env.ENABLE_REAL_PROVIDERS);
+const scheduler = new SchedulerService(pool, env.ENABLE_REAL_PROVIDERS, {
+  provider: env.CLASSIFICATION_PROVIDER,
+  model: env.CLASSIFICATION_MODEL,
+  realProvidersEnabled: env.ENABLE_REAL_PROVIDERS
+});
 let stopping = false;
 let timer: NodeJS.Timeout | null = null;
 
