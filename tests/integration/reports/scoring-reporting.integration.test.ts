@@ -260,6 +260,17 @@ describe(
         };
         assert.equal(body.analysisRunId, anonymous.analysisRunId);
         assert.equal(body.report.reportType, "multi_provider_report");
+        const serialized = JSON.stringify(body);
+        for (const internalField of [
+          "raw_response",
+          "validated_response",
+          "validation_errors",
+          "provider_metadata",
+          "request_payload",
+          "error_message"
+        ]) {
+          assert.equal(serialized.includes(internalField), false);
+        }
 
         const crossOwner = await fetch(
           `${server.url}/v1/analysis/runs/${user.analysisRunId}/report`,

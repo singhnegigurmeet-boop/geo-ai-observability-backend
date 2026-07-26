@@ -5,6 +5,7 @@ export type ApiResult<TBody = unknown> = {
 
 export type ApiErrorBody = {
   status: "error";
+  code: string;
   error: string;
   details?: unknown;
 };

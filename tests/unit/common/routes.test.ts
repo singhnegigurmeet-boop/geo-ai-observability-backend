@@ -73,7 +73,20 @@ describe("Production Core shell routes", () => {
     const response = await fetch(`${baseUrl}/openapi.json`);
     const document = (await response.json()) as {
       info: { version: string };
-      paths: Record<string, unknown>;
+      paths: Record<string, {
+        post?: {
+          responses?: Record<
+            string,
+            { content?: { "application/json"?: { schema?: { $ref?: string } } } }
+          >;
+        };
+      }>;
+      components: {
+        schemas: Record<
+          string,
+          { required?: string[]; properties?: Record<string, unknown> }
+        >;
+      };
     };
 
     assert.equal(response.status, 200);
@@ -87,6 +100,29 @@ describe("Production Core shell routes", () => {
       "/v1/analysis/runs/{analysisRunId}/report",
       "/v1/analysis/runs/{analysisRunId}/cancel"
     ]);
+    assert.deepEqual(
+      document.components.schemas.ApiErrorResponse?.required,
+      ["status", "code", "error"]
+    );
+    assert.equal(
+      document.paths["/v1/analysis"]?.post?.responses?.["500"]?.content?.[
+        "application/json"
+      ]?.schema?.$ref,
+      "#/components/schemas/ApiErrorResponse"
+    );
+    for (const internalField of [
+      "raw_response",
+      "validation_errors",
+      "request_payload",
+      "provider_metadata",
+      "stack"
+    ]) {
+      assert.equal(
+        internalField in
+          (document.components.schemas.ApiErrorResponse?.properties ?? {}),
+        false
+      );
+    }
   });
 
   it("GET /docs serves Swagger UI", async () => {

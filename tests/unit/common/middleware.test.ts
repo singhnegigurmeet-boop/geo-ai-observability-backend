@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { NextFunction, Request, Response } from "express";
 import { describe, it } from "node:test";
 import { z } from "zod";
+import { ApplicationError } from "../../../src/common/errors/application-error.js";
 import { errorMiddleware } from "../../../src/common/middleware/error.middleware.js";
 
 type CapturedResponse = {
@@ -14,16 +15,40 @@ describe("error middleware", () => {
     const captured = captureError(z.string().min(1).safeParse("").error);
 
     assert.equal(captured.statusCode, 400);
-    assert.equal((captured.body as { status: string }).status, "error");
+    assert.equal(
+      (captured.body as { status: string; code: string }).status,
+      "error"
+    );
+    assert.equal(
+      (captured.body as { status: string; code: string }).code,
+      "VALIDATION_ERROR"
+    );
   });
 
-  it("returns 500 for unexpected errors", () => {
-    const captured = captureError(new Error("Unexpected test failure"));
+  it("returns stable categories and safe messages for application errors", () => {
+    const captured = captureError(
+      new ApplicationError("CONFLICT", "Safe conflict message")
+    );
+
+    assert.equal(captured.statusCode, 409);
+    assert.deepEqual(captured.body, {
+      status: "error",
+      code: "CONFLICT",
+      error: "Safe conflict message",
+      details: { category: "CONFLICT" }
+    });
+  });
+
+  it("does not expose unexpected internal error details", () => {
+    const captured = captureError(
+      new Error("password=secret; relation internal_table does not exist")
+    );
 
     assert.equal(captured.statusCode, 500);
     assert.deepEqual(captured.body, {
       status: "error",
-      error: "Unexpected test failure"
+      code: "INTERNAL_ERROR",
+      error: "An unexpected internal error occurred."
     });
   });
 });

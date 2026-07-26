@@ -4,6 +4,20 @@ const ownershipSecurity = [
   { bearerAuth: [], workspaceId: [], anonymousSession: [] }
 ] as const;
 
+const MAX_REPORT_EXECUTION_ITEMS = 5_000;
+const MAX_REPORT_CONSOLIDATED_ITEMS = 50;
+
+function publicErrorResponse(description: string) {
+  return {
+    description,
+    content: {
+      "application/json": {
+        schema: { $ref: "#/components/schemas/ApiErrorResponse" }
+      }
+    }
+  } as const;
+}
+
 export const openApiDocument = {
   openapi: "3.0.3",
   info: {
@@ -91,14 +105,14 @@ export const openApiDocument = {
               }
             }
           },
-          "400": { description: "Invalid input" },
-          "401": { description: "Missing or invalid session" },
-          "403": { description: "Workspace or claim access denied" },
-          "404": { description: "Selected hierarchy record not found" },
-          "409": {
-            description:
-              "Idempotency key already used for a different normalized request"
-          }
+          "400": publicErrorResponse("Invalid input"),
+          "401": publicErrorResponse("Missing or invalid session"),
+          "403": publicErrorResponse("Workspace or claim access denied"),
+          "404": publicErrorResponse("Selected hierarchy record not found"),
+          "409": publicErrorResponse(
+            "Idempotency key already used for a different normalized request"
+          ),
+          "500": publicErrorResponse("Unexpected internal error")
         }
       }
     },
@@ -128,9 +142,10 @@ export const openApiDocument = {
               }
             }
           },
-          "400": { description: "Invalid input" },
-          "401": { description: "Missing or invalid session" },
-          "403": { description: "Workspace or claim access denied" }
+          "400": publicErrorResponse("Invalid input"),
+          "401": publicErrorResponse("Missing or invalid session"),
+          "403": publicErrorResponse("Workspace or claim access denied"),
+          "500": publicErrorResponse("Unexpected internal error")
         }
       }
     },
@@ -158,9 +173,10 @@ export const openApiDocument = {
               }
             }
           },
-          "401": { description: "Missing or invalid session" },
-          "403": { description: "Workspace or claim access denied" },
-          "404": { description: "Run not found for this owner" }
+          "401": publicErrorResponse("Missing or invalid session"),
+          "403": publicErrorResponse("Workspace or claim access denied"),
+          "404": publicErrorResponse("Run not found for this owner"),
+          "500": publicErrorResponse("Unexpected internal error")
         }
       }
     },
@@ -190,11 +206,12 @@ export const openApiDocument = {
               }
             }
           },
-          "401": { description: "Missing or invalid session" },
-          "403": { description: "Workspace or claim access denied" },
-          "404": {
-            description: "Run is not owned by this actor or its report is not ready"
-          }
+          "401": publicErrorResponse("Missing or invalid session"),
+          "403": publicErrorResponse("Workspace or claim access denied"),
+          "404": publicErrorResponse(
+            "Run is not owned by this actor or its report is not ready"
+          ),
+          "500": publicErrorResponse("Unexpected internal error")
         }
       }
     },
@@ -215,9 +232,12 @@ export const openApiDocument = {
         ],
         responses: {
           "200": { description: "Analysis cancelled or already cancelled" },
-          "401": { description: "Missing or invalid session" },
-          "404": { description: "Run not found for this owner" },
-          "409": { description: "Provider execution already began or run is terminal" }
+          "401": publicErrorResponse("Missing or invalid session"),
+          "404": publicErrorResponse("Run not found for this owner"),
+          "409": publicErrorResponse(
+            "Provider execution already began or run is terminal"
+          ),
+          "500": publicErrorResponse("Unexpected internal error")
         }
       }
     }
@@ -548,10 +568,21 @@ export const openApiDocument = {
           missingExpectedExecutions: {
             type: "object",
             description:
-              "Bounded deterministic details for exact expected executions missing before provider fan-out."
+              "Bounded deterministic details for exact expected executions missing before provider fan-out.",
+            properties: {
+              totalMissingCount: { type: "integer", minimum: 0 },
+              returnedMissingCount: { type: "integer", minimum: 0 },
+              truncated: { type: "boolean" },
+              executions: {
+                type: "array",
+                maxItems: 500,
+                items: { type: "object" }
+              }
+            }
           },
           providerResults: {
             type: "array",
+            maxItems: MAX_REPORT_EXECUTION_ITEMS,
             description:
               "Coverage metadata and backend scores by logical prompt and provider/model execution. Raw provider bodies are not exposed.",
             items: { type: "object" }
@@ -568,25 +599,48 @@ export const openApiDocument = {
           },
           categoryBreakdown: {
             type: "array",
+            maxItems: MAX_REPORT_EXECUTION_ITEMS,
             items: { type: "object" },
             description:
               "Every expected category/model path, authoritative model-path GEO scores, classification provenance, disagreement, exact coverage, and prompt outcomes."
           },
           providerModelComparison: {
             type: "array",
+            maxItems: MAX_ANALYSIS_PROVIDER_MODELS,
             items: { type: "object" },
             description:
               "Exact model comparison. averageGeoScore averages available 60/40 model-path GEO scores, never raw metrics."
           },
           promptOutcomes: {
             type: "array",
+            maxItems: MAX_REPORT_EXECUTION_ITEMS,
             items: { type: "object" }
           },
-          visibility: { type: "array", items: { type: "object" } },
-          ranking: { type: "array", items: { type: "object" } },
-          competitors: { type: "array", items: { type: "object" } },
-          price: { type: "array", items: { type: "object" } },
-          prosAndCons: { type: "array", items: { type: "object" } }
+          visibility: {
+            type: "array",
+            maxItems: MAX_REPORT_CONSOLIDATED_ITEMS,
+            items: { type: "object" }
+          },
+          ranking: {
+            type: "array",
+            maxItems: MAX_REPORT_CONSOLIDATED_ITEMS,
+            items: { type: "object" }
+          },
+          competitors: {
+            type: "array",
+            maxItems: MAX_REPORT_CONSOLIDATED_ITEMS,
+            items: { type: "object" }
+          },
+          price: {
+            type: "array",
+            maxItems: MAX_REPORT_CONSOLIDATED_ITEMS,
+            items: { type: "object" }
+          },
+          prosAndCons: {
+            type: "array",
+            maxItems: MAX_REPORT_CONSOLIDATED_ITEMS,
+            items: { type: "object" }
+          }
         }
       },
       AnalysisPreviewResponse: {
@@ -617,6 +671,7 @@ export const openApiDocument = {
           },
           frozenCategoryIds: {
             type: "array",
+            maxItems: 50,
             items: { $ref: "#/components/schemas/DatabaseId" }
           },
           frozenRequestedCategoryCount: { type: "integer", minimum: 0 },
@@ -631,6 +686,7 @@ export const openApiDocument = {
           },
           applicablePromptTypes: {
             type: "array",
+            maxItems: 5,
             items: {
               type: "string",
               enum: [
@@ -645,6 +701,7 @@ export const openApiDocument = {
           resolvedModelCount: { type: "integer", minimum: 1 },
           resolvedProviderModels: {
             type: "array",
+            maxItems: MAX_ANALYSIS_PROVIDER_MODELS,
             items: { type: "object" }
           },
           normalProviderJobCountEstimate: {
@@ -662,7 +719,11 @@ export const openApiDocument = {
           costEstimate: { type: "object" },
           normalAnalysisEstimate: { type: "object" },
           classificationEstimate: { type: "object" },
-          byProviderModel: { type: "array", items: { type: "object" } },
+          byProviderModel: {
+            type: "array",
+            maxItems: MAX_ANALYSIS_PROVIDER_MODELS,
+            items: { type: "object" }
+          },
           safetyLimits: { type: "object" },
           canonicalPlannerVersion: { type: "string" },
           canonicalRequestHash: {
@@ -721,6 +782,38 @@ export const openApiDocument = {
       DatabaseId: {
         type: "string",
         pattern: "^[1-9][0-9]*$"
+      },
+      ApiErrorResponse: {
+        type: "object",
+        additionalProperties: false,
+        required: ["status", "code", "error"],
+        properties: {
+          status: { type: "string", enum: ["error"] },
+          code: {
+            type: "string",
+            enum: [
+              "UNAUTHENTICATED",
+              "FORBIDDEN",
+              "NOT_FOUND",
+              "CONFLICT",
+              "VALIDATION_ERROR",
+              "EXPIRED_SESSION",
+              "REVOKED_SESSION",
+              "DISABLED_USER",
+              "INTERNAL_ERROR"
+            ]
+          },
+          error: {
+            type: "string",
+            description:
+              "Safe public message. Internal exceptions and provider/database diagnostics are never returned."
+          },
+          details: {
+            type: "object",
+            description:
+              "Optional bounded validation/category details; never raw provider, SQL, stack, credential, session, or broker data."
+          }
+        }
       }
     }
   }

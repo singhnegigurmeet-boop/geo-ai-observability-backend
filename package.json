@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "description": "Production-oriented GEO and AI observability backend.",
+  "engines": {
+    "node": ">=22",
+    "npm": ">=10"
+  },
   "main": "dist/main.js",
   "scripts": {
     "dev": "tsx watch src/main.ts",

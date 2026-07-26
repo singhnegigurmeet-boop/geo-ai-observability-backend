@@ -88,7 +88,8 @@ An empty database is bootstrapped by one migration:
 The tables cover:
 
 - identity: `users`, `user_sessions`, `anonymous_sessions`
-- workspaces: `workspaces`, `workspace_members`, `workspace_role_requests`
+- workspaces: `workspaces`, `workspace_members`,
+  `workspace_role_change_requests`
 - hierarchy: masters, relationship tables with classification provenance, and
   `entity_paths`
 - analysis: `analysis_runs`, frozen requested categories, classification jobs,
@@ -123,7 +124,8 @@ truth.
 
 Anonymous requests always use `mock/mock-fast` and cannot provide a provider
 set. Logged-in and claimed requests default to `mock/mock-standard`.
-`providerModels` may contain one to four supported pairs for user work.
+`providerModels` may contain up to the registry-derived selectable-model
+maximum (currently six exact pairs) for user work.
 
 The provider-set policy validates ownership of provider/model pairs,
 deduplicates and stably sorts them, serializes them into canonical request
@@ -174,7 +176,8 @@ External email, SMS, and push delivery are not implemented.
 
 ## Local setup
 
-Requirements: Node.js 24+, Docker with Compose, PostgreSQL 16, and RabbitMQ 4.
+Requirements: Node.js 22+, npm 10+, Docker with Compose, PostgreSQL 16, and
+RabbitMQ 4.
 
 ```bash
 npm install
@@ -229,6 +232,13 @@ runs high-contention budgets, scheduler/outbox contention, retry exhaustion,
 process-restart recovery, RabbitMQ outage recovery, and repeated deadlock
 regressions. The full profile is intentionally excluded from `verify` because
 it is slower and disruptive by design; `verify` includes the standard E2E gate.
+
+`DATABASE_SCHEMA.md` is intentionally generated and ignored. Regenerate it
+deterministically from the tracked final baseline migration with:
+
+```bash
+node scripts/generate-database-schema-doc.mjs
+```
 
 ## HTTP API
 

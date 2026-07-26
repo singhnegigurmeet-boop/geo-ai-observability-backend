@@ -5,11 +5,17 @@ export function apiResult<TBody>(statusCode: number, body: TBody): ApiResult<TBo
   return { statusCode, body };
 }
 
-export function apiError(statusCode: number, error: string, details?: unknown): ApiResult<ApiErrorBody> {
+export function apiError(
+  statusCode: number,
+  code: string,
+  error: string,
+  details?: unknown
+): ApiResult<ApiErrorBody> {
   return {
     statusCode,
     body: {
       status: "error",
+      code,
       error,
       ...(details === undefined ? {} : { details })
     }
