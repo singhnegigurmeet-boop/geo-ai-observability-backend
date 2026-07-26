@@ -633,7 +633,7 @@ describe(
         await new ProviderScoreService(pool).process(result);
       }
       assert.equal(await count(pool, "provider_scores"), 2);
-      assert.equal(await count(pool, "reports"), 2);
+      assert.equal(await count(pool, "reports"), 3);
       assert.equal(await runStatus(pool, fixture.analysisRunId), "completed");
     });
   }
@@ -706,14 +706,26 @@ async function seedRun(
       [`budget-${unique}.example`]
     )
   ).rows[0]!.domain_id;
+  const categoryId = (
+    await pool.query<{ category_id: string }>(
+      `INSERT INTO categories (category_name, normalized_name)
+       VALUES ($1, $2) RETURNING category_id`,
+      [`Budget category ${unique}`, `budget-category-${unique}`]
+    )
+  ).rows[0]!.category_id;
+  await pool.query(
+    `INSERT INTO domain_categories (domain_id, category_id)
+     VALUES ($1, $2)`,
+    [domainId, categoryId]
+  );
   const pathId = (
     await pool.query<{ entity_path_id: string }>(
       `
-        INSERT INTO entity_paths (domain_id, path_type)
-        VALUES ($1, 'domain')
+        INSERT INTO entity_paths (domain_id, category_id, path_type)
+        VALUES ($1, $2, 'category')
         RETURNING entity_path_id
       `,
-      [domainId]
+      [domainId, categoryId]
     )
   ).rows[0]!.entity_path_id;
   const analysisRunId = (
@@ -795,9 +807,14 @@ async function seedRun(
         id: domainId,
         name: `budget-${unique}.example`
       },
-      canonicalPath: `budget-${unique}.example`,
-      startingLevel: "domain",
-      targetLevel: "domain"
+      category: {
+        id: categoryId,
+        name: `Budget category ${unique}`
+      },
+      canonicalPath:
+        `budget-${unique}.example > Budget category ${unique}`,
+      startingLevel: "category",
+      targetLevel: "category"
     };
     const promptJobId = (
       await pool.query<{ prompt_job_id: string }>(

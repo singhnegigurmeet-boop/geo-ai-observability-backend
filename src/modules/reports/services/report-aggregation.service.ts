@@ -1,4 +1,5 @@
 import type {
+  AnalysisExecutionStatus,
   JsonObject,
   PromptType,
   ReportStatus
@@ -13,6 +14,22 @@ import {
   type ReportMethodologyContext,
   type ReportExecutionRecord
 } from "../repositories/report.repository.js";
+import { buildExpectedProviderExecutionPlan } from "./expected-execution-plan.service.js";
+import {
+  reconcileExpectedProviderExecutions,
+  reportExecutionRecords,
+  type ReconciledProviderExecution
+} from "./execution-reconciliation.service.js";
+import {
+  calculateExactCoverage,
+  categoryCoverage,
+  determineReportLifecycle,
+  isTerminalRun,
+  missingExpectedExecutionDetails,
+  providerModelCoverage,
+  reportIsFinal,
+  type ReportLifecycleState
+} from "./report-coverage.service.js";
 
 export type ReportAggregationResult =
   | { outcome: "not_ready"; reportId: null }
@@ -31,31 +48,72 @@ export class ReportAggregationService {
   async createIfReady(analysisRunId: string): Promise<ReportAggregationResult> {
     const run = await this.reports.lockRun(analysisRunId);
     if (!run) throw new Error(`Analysis run ${analysisRunId} does not exist`);
-    const records = await this.reports.executionRecords(
+    const items = await this.reports.expectedPlanItems(analysisRunId);
+    const providerModels =
+      await this.reports.expectedPlanProviderModels(analysisRunId);
+    const materialized = await this.reports.materializationRecords(
       analysisRunId,
       SCORING_VERSION
     );
-    const expected = await this.reports.expectedProviderExecutionCount(
-      analysisRunId
-    );
+    const expected = buildExpectedProviderExecutionPlan({
+      run,
+      items,
+      providerModels
+    });
+    const reconciled = reconcileExpectedProviderExecutions({
+      expected,
+      materialized,
+      runStatus: run.status
+    });
     const classification = await this.reports.classificationRecord(
       analysisRunId
     );
-    const methodology = await this.reports.methodologyContext(analysisRunId);
-    if (records.length === 0 && expected > 0 && !isTerminalRun(run.status)) {
+    let methodology = await this.reports.methodologyContext(analysisRunId);
+    const businessEmptyReason = resolveBusinessEmptyReason(
+      classification,
+      items.length,
+      expected.length,
+      run.status
+    );
+    const coverage = calculateExactCoverage(reconciled);
+    if (
+      coverage.validScored + coverage.validDiagnostic === 0 &&
+      coverage.pending > 0
+    ) {
       return { outcome: "not_ready", reportId: null };
+    }
+    if (
+      expected.length === 0 &&
+      businessEmptyReason === null &&
+      !isTerminalRun(run.status)
+    ) {
+      return { outcome: "not_ready", reportId: null };
+    }
+    const lifecycleState = determineReportLifecycle({
+      runStatus: run.status,
+      coverage,
+      businessEmptyReason
+    });
+    let effectiveRunStatus = run.status;
+    if (
+      !isTerminalRun(run.status) &&
+      coverage.pending === 0 &&
+      coverage.budgetPaused === 0 &&
+      lifecycleState !== "partial" &&
+      lifecycleState !== "budget_paused_partial"
+    ) {
+      effectiveRunStatus = finalRunStatus(lifecycleState, coverage);
+      await this.reports.markRunFinal(analysisRunId, effectiveRunStatus);
+      methodology = await this.reports.methodologyContext(analysisRunId);
     }
     const data = buildMultiProviderReport(
       analysisRunId,
-      records,
-      run.status,
-      expected,
+      reconciled,
+      effectiveRunStatus,
       classification,
-      methodology
+      methodology,
+      businessEmptyReason
     );
-    if (data.counts.scored === 0 && data.counts.nonterminal > 0) {
-      return { outcome: "not_ready", reportId: null };
-    }
     const reportStatus: ReportStatus =
       data.lifecycleState === "partial" ||
       data.lifecycleState === "budget_paused_partial" ||
@@ -65,21 +123,6 @@ export class ReportAggregationService {
             data.lifecycleState === "cancelled_empty"
           ? "failed"
           : "completed";
-    if (data.counts.nonterminal === 0 && data.counts.pausedBudget === 0) {
-      const finalRunStatus =
-        data.counts.scored > 0
-          ? data.counts.failed + data.counts.invalid + data.counts.cancelled > 0
-            ? "partial_success"
-            : "completed"
-          : data.counts.cancelled === data.counts.expected
-            ? "cancelled"
-            : "failed";
-      await this.reports.markRunFinal(analysisRunId, finalRunStatus);
-      const finalizedMethodology =
-        await this.reports.methodologyContext(analysisRunId);
-      data.methodology.completedAt =
-        finalizedMethodology?.completed_at ?? data.methodology.completedAt;
-    }
     const report = await this.reports.createRevision({
       analysisRunId,
       reportVersion: MULTI_PROVIDER_REPORT_VERSION,
@@ -100,66 +143,22 @@ export class ReportAggregationService {
 
 export function buildMultiProviderReport(
   analysisRunId: string,
-  records: ReportExecutionRecord[],
-  runStatus: string,
-  expectedCoverage = records.length,
+  reconciled: ReconciledProviderExecution[],
+  runStatus: AnalysisExecutionStatus,
   classification: ClassificationReportRecord | null = null,
-  methodology: ReportMethodologyContext | null = null
+  methodology: ReportMethodologyContext | null = null,
+  businessEmptyReason:
+    | "no_matching_category"
+    | "no_applicable_analysis_item"
+    | null = null
 ) {
-  const missingMaterialization = Math.max(
-    0,
-    expectedCoverage - records.length
-  );
-  const nonterminal = records.filter(
-    (record) =>
-      record.provider_job_status === "pending" ||
-      record.provider_job_status === "queued" ||
-      record.provider_job_status === "processing" ||
-      (isScoreBearing(record.prompt_type) &&
-        record.result_status === "valid" &&
-        record.score === null &&
-        record.scoring_failure_code === null)
-  ).length + (isTerminalRun(runStatus) ? 0 : missingMaterialization);
-  const scored = records.filter((record) => record.score !== null).length;
-  const invalid = records.filter(
-    (record) => record.result_status === "invalid"
-  ).length;
-  const failed = records.filter(
-    (record) =>
-      record.provider_job_status === "failed" &&
-      record.result_status !== "invalid"
-  ).length +
-    records.filter((record) => record.scoring_failure_code !== null).length;
-  const pausedBudget = records.filter(
-    (record) => record.provider_job_status === "paused_budget"
-  ).length;
-  const cancelled = records.filter(
-    (record) => record.provider_job_status === "cancelled"
-  ).length;
-  const validDiagnostic = records.filter(
-    (record) =>
-      record.result_status === "valid" &&
-      !isScoreBearing(record.prompt_type)
-  ).length;
-  const permanentScoringFailure = records.filter(
-    (record) => record.scoring_failure_code !== null
-  ).length;
-  const lifecycleState =
-    pausedBudget > 0
-      ? scored > 0
-        ? "budget_paused_partial"
-        : "failed_empty"
-      : runStatus === "cancelled" || cancelled === records.length
-        ? scored > 0
-          ? "cancelled_partial"
-          : "cancelled_empty"
-        : nonterminal > 0
-          ? "partial"
-          : scored === 0
-            ? "failed_empty"
-            : failed + invalid + cancelled > 0
-              ? "completed_with_gaps"
-              : "completed";
+  const records = reportExecutionRecords(reconciled);
+  const counts = calculateExactCoverage(reconciled);
+  const lifecycleState = determineReportLifecycle({
+    runStatus,
+    coverage: counts,
+    businessEmptyReason
+  });
 
   const providerResults = records.map((record) => ({
     promptJobId: record.prompt_job_id,
@@ -171,9 +170,16 @@ export function buildMultiProviderReport(
     categoryId: record.category_id,
     categoryName: record.category_name,
     providerJobId: record.provider_job_id,
+    providerResultId: record.provider_result_id,
+    providerScoreId: record.provider_score_id,
     provider: record.provider,
     model: record.model,
     state: record.provider_job_status,
+    executionState:
+      reconciled.find(
+        (execution) =>
+          execution.providerJobId === record.provider_job_id
+      )?.executionState ?? "pending",
     evidenceStatus: record.result_status ?? "missing",
     score: record.score === null ? null : Number(record.score),
     scoringVersion: record.scoring_version,
@@ -210,7 +216,12 @@ export function buildMultiProviderReport(
       responseContractVersion: group[0]!.response_contract_version,
       score: validScores.length ? mean(validScores) : null,
       scoredProviders: validScores.length,
-      expectedProviders: group.length
+      expectedProviders: reconciled.filter(
+        (execution) =>
+          execution.expected.analysisRunItemId ===
+            group[0]!.analysis_run_item_id &&
+          execution.expected.promptType === group[0]!.prompt_type
+      ).length
     };
   });
   const byType = new Map<PromptType, number[]>();
@@ -227,8 +238,8 @@ export function buildMultiProviderReport(
       score: mean(scores),
       promptCount: scores.length
     }));
-  const modelPaths = buildModelPathScores(records);
-  const categoryScores = buildCategoryScores(modelPaths);
+  const modelPaths = buildModelPathScores(reconciled);
+  const categoryScores = buildCategoryScores(modelPaths, reconciled);
   const overallScores = categoryScores
     .map((category) => category.geoScore)
     .filter((score): score is number => score !== null);
@@ -241,26 +252,8 @@ export function buildMultiProviderReport(
   const confidences = records
     .map((record) => responseConfidence(record.validated_response))
     .filter((confidence): confidence is number => confidence !== null);
-  const counts = {
-    expected: expectedCoverage,
-    materialized: records.length,
-    missingMaterialization,
-    nonterminal,
-    scored,
-    invalid,
-    failed,
-    validDiagnostic,
-    permanentScoringFailure,
-    pausedBudget,
-    cancelled,
-    completionPercentage:
-      expectedCoverage === 0
-        ? 100
-        : Math.round(((expectedCoverage - nonterminal) / expectedCoverage) * 10_000) /
-          100
-  };
   const diagnosticSections = buildDiagnosticSections(records);
-  const providerModelComparison = buildProviderModelComparison(records);
+  const providerModelComparison = buildProviderModelComparison(reconciled);
   const strongestCategory = [...categoryScores]
     .filter((category) => category.geoScore !== null)
     .sort((left, right) => right.geoScore! - left.geoScore!)[0] ?? null;
@@ -273,7 +266,9 @@ export function buildMultiProviderReport(
     reportType: "multi_provider_report",
     reportVersion: MULTI_PROVIDER_REPORT_VERSION,
     lifecycleState,
-    final: nonterminal === 0 && pausedBudget === 0,
+    emptyReason:
+      lifecycleState === "completed_empty" ? businessEmptyReason : null,
+    final: reportIsFinal({ runStatus, lifecycleState, coverage: counts }),
     resumePossible: false,
     summary: explanation(lifecycleState, counts),
     methodology: {
@@ -327,6 +322,9 @@ export function buildMultiProviderReport(
     },
     counts,
     coverage: counts,
+    missingExpectedExecutions:
+      missingExpectedExecutionDetails(reconciled),
+    categoryCoverage: categoryCoverage(reconciled),
     promptScores,
     modelPathScores: modelPaths,
     categoryScores,
@@ -379,7 +377,8 @@ export function buildMultiProviderReport(
 }
 
 function buildCategoryScores(
-  modelPaths: ReturnType<typeof buildModelPathScores>
+  modelPaths: ReturnType<typeof buildModelPathScores>,
+  reconciled: readonly ReconciledProviderExecution[]
 ) {
   const groups = new Map<
     string,
@@ -391,6 +390,7 @@ function buildCategoryScores(
     group.push(path);
     groups.set(key, group);
   }
+  const exactCoverage = categoryCoverage(reconciled);
   return [...groups.values()].map((group) => {
     const scores = group
       .map((path) => path.geoScore)
@@ -402,22 +402,30 @@ function buildCategoryScores(
       availableModels: scores.length,
       expectedModels: group.length,
       modelCoverage:
-        group.length === 0 ? 0 : round((scores.length / group.length) * 100)
+        group.length === 0 ? 0 : round((scores.length / group.length) * 100),
+      ...(exactCoverage.find(
+        (coverage) => coverage.categoryId === group[0]!.categoryId
+      ) ?? {})
     };
   });
 }
 
-function buildModelPathScores(records: ReportExecutionRecord[]) {
-  const groups = new Map<string, ReportExecutionRecord[]>();
-  for (const record of records) {
-    const key = `${record.entity_path_id}\u0000${record.provider}\u0000${record.model}`;
+function buildModelPathScores(
+  reconciled: readonly ReconciledProviderExecution[]
+) {
+  const groups = new Map<string, ReconciledProviderExecution[]>();
+  for (const execution of reconciled) {
+    const key =
+      `${execution.expected.entityPathId}\u0000` +
+      `${execution.expected.provider}\u0000${execution.expected.model}`;
     const group = groups.get(key) ?? [];
-    group.push(record);
+    group.push(execution);
     groups.set(key, group);
   }
   return [...groups.values()].map((group) => {
-    const visibility = scoreFor(group, "visibility");
-    const ranking = scoreFor(group, "ranking");
+    const records = reportExecutionRecords(group);
+    const visibility = scoreFor(records, "visibility");
+    const ranking = scoreFor(records, "ranking");
     const availableWeight =
       (visibility === null ? 0 : 0.6) + (ranking === null ? 0 : 0.4);
     const geoScore =
@@ -428,11 +436,11 @@ function buildModelPathScores(records: ReportExecutionRecord[]) {
               availableWeight
           );
     return {
-      entityPathId: group[0]!.entity_path_id,
-      categoryId: group[0]!.category_id,
-      categoryName: group[0]!.category_name,
-      provider: group[0]!.provider,
-      model: group[0]!.model,
+      entityPathId: group[0]!.expected.entityPathId,
+      categoryId: group[0]!.expected.categoryId,
+      categoryName: group[0]!.expected.categoryName,
+      provider: group[0]!.expected.provider,
+      model: group[0]!.expected.model,
       visibilityScore: visibility,
       rankingScore: ranking,
       geoScore,
@@ -441,7 +449,9 @@ function buildModelPathScores(records: ReportExecutionRecord[]) {
       expectedMetricWeight: 1,
       metricCoverage: round(availableWeight * 100),
       missingMetricReasons: [
-        ...(visibility === null ? [missingReason(group, "visibility")] : []),
+        ...(visibility === null
+          ? [missingReason(group, "visibility")]
+          : []),
         ...(ranking === null ? [missingReason(group, "ranking")] : [])
       ]
     };
@@ -455,64 +465,74 @@ function scoreFor(records: ReportExecutionRecord[], type: PromptType) {
     : Number(record.score);
 }
 
-function missingReason(records: ReportExecutionRecord[], type: PromptType) {
-  const record = records.find((candidate) => candidate.prompt_type === type);
-  if (!record) return `${type}:not_materialized`;
-  if (record.result_status === "invalid") return `${type}:invalid`;
-  if (record.scoring_failure_code) {
-    return `${type}:scoring_failed:${record.scoring_failure_code}`;
+function missingReason(
+  executions: readonly ReconciledProviderExecution[],
+  type: PromptType
+) {
+  const execution = executions.find(
+    (candidate) => candidate.expected.promptType === type
+  );
+  if (!execution) return `${type}:not_expected`;
+  if (execution.executionState === "permanent_scoring_failure") {
+    return `${type}:scoring_failed:${
+      execution.actual?.scoring_failure_code ?? "permanent"
+    }`;
   }
-  return `${type}:${record.provider_job_status}`;
+  return `${type}:${execution.executionState}`;
 }
 
-function buildProviderModelComparison(records: ReportExecutionRecord[]) {
-  const groups = new Map<string, ReportExecutionRecord[]>();
-  for (const record of records) {
-    const key = `${record.provider}\u0000${record.model}`;
+function buildProviderModelComparison(
+  reconciled: readonly ReconciledProviderExecution[]
+) {
+  const groups = new Map<string, ReconciledProviderExecution[]>();
+  for (const execution of reconciled) {
+    const key =
+      `${execution.expected.provider}\u0000${execution.expected.model}`;
     const group = groups.get(key) ?? [];
-    group.push(record);
+    group.push(execution);
     groups.set(key, group);
   }
-  return [...groups.values()].map((group) => {
-    const scores = group
+  const exact = new Map(
+    providerModelCoverage(reconciled).map((coverage) => [
+      `${coverage.provider}\u0000${coverage.model}`,
+      coverage
+    ])
+  );
+  return [...groups.entries()].map(([key, group]) => {
+    const records = reportExecutionRecords(group);
+    const scores = records
       .map((record) => record.score)
       .filter((score): score is string => score !== null)
       .map(Number);
     return {
-      provider: group[0]!.provider,
-      model: group[0]!.model,
+      provider: group[0]!.expected.provider,
+      model: group[0]!.expected.model,
       averageGeoScore: scores.length ? mean(scores) : null,
       validScoreBearingResults: group.filter(
-        (record) =>
-          record.result_status === "valid" &&
-          isScoreBearing(record.prompt_type)
+        (execution) => execution.executionState === "valid_scored"
       ).length,
       validDiagnosticResults: group.filter(
-        (record) =>
-          record.result_status === "valid" &&
-          !isScoreBearing(record.prompt_type)
+        (execution) => execution.executionState === "valid_diagnostic"
       ).length,
       invalidResults: group.filter(
-        (record) => record.result_status === "invalid"
+        (execution) => execution.executionState === "invalid"
       ).length,
       technicalFailures: group.filter(
-        (record) =>
-          record.provider_job_status === "failed" &&
-          record.result_status !== "invalid"
+        (execution) => execution.executionState === "technical_failure"
       ).length,
       budgetPausedJobs: group.filter(
-        (record) => record.provider_job_status === "paused_budget"
+        (execution) => execution.executionState === "budget_paused"
       ).length,
       cancelledJobs: group.filter(
-        (record) => record.provider_job_status === "cancelled"
+        (execution) => execution.executionState === "cancelled"
       ).length,
       pendingJobs: group.filter(
-        (record) =>
-          record.provider_job_status === "pending" ||
-          record.provider_job_status === "queued" ||
-          record.provider_job_status === "processing"
+        (execution) =>
+          execution.executionState === "pending" ||
+          execution.executionState === "valid_score_pending"
       ).length,
-      usage: group.reduce(
+      ...(exact.get(key) ?? {}),
+      usage: records.reduce(
         (total, record) => ({
           inputTokens: total.inputTokens + (record.input_tokens ?? 0),
           outputTokens: total.outputTokens + (record.output_tokens ?? 0),
@@ -705,19 +725,6 @@ function responseConfidence(response: JsonObject | null) {
     : null;
 }
 
-function isScoreBearing(type: PromptType) {
-  return type === "visibility" || type === "ranking";
-}
-
-function isTerminalRun(status: string) {
-  return (
-    status === "completed" ||
-    status === "partial_success" ||
-    status === "failed" ||
-    status === "cancelled"
-  );
-}
-
 function round(value: number) {
   return Math.round(value * 10_000) / 10_000;
 }
@@ -757,4 +764,36 @@ function mean(values: number[]) {
         10_000
     ) / 10_000
   );
+}
+
+function resolveBusinessEmptyReason(
+  classification: ClassificationReportRecord | null,
+  itemCount: number,
+  expectedCount: number,
+  runStatus: AnalysisExecutionStatus
+): "no_matching_category" | "no_applicable_analysis_item" | null {
+  if (expectedCount !== 0) return null;
+  if (classification?.classification_status === "completed_empty") {
+    return "no_matching_category";
+  }
+  if (
+    itemCount === 0 &&
+    (runStatus === "completed" || runStatus === "partial_success")
+  ) {
+    return "no_applicable_analysis_item";
+  }
+  return null;
+}
+
+function finalRunStatus(
+  lifecycleState: ReportLifecycleState,
+  coverage: ReturnType<typeof calculateExactCoverage>
+): "completed" | "partial_success" | "failed" | "cancelled" {
+  if (lifecycleState === "completed") return "completed";
+  if (lifecycleState === "completed_empty") return "completed";
+  if (lifecycleState === "failed_empty") return "failed";
+  if (lifecycleState.startsWith("cancelled")) return "cancelled";
+  return coverage.validScored + coverage.validDiagnostic > 0
+    ? "partial_success"
+    : "failed";
 }

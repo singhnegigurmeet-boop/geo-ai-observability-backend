@@ -236,8 +236,7 @@ describe("GEO V6 final end-to-end runtime", {
     await driveUntil(
       dispatcher,
       async () =>
-        (await runStatus(pool, created.body.analysisRunId)) ===
-          "partial_success" &&
+        (await runStatus(pool, created.body.analysisRunId)) === "failed" &&
         (await failedProviderJobs(pool, created.body.analysisRunId)) === 3,
       "terminal gap-aware failure"
     );

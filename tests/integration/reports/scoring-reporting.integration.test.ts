@@ -22,6 +22,8 @@ import type { ProviderResultCreatedPayload } from "../../../src/modules/scoring/
 import type { PromptType } from "../../../src/common/types/database.types.js";
 import { promptTypePolicy } from "../../../src/modules/prompts/policies/prompt-policy.registry.js";
 import { providerModelProfile } from "../../../src/modules/providers/registry/provider-model.registry.js";
+import { ReportAggregationService } from "../../../src/modules/reports/services/report-aggregation.service.js";
+import { ReportRepository } from "../../../src/modules/reports/repositories/report.repository.js";
 
 const enabled = process.env.RUN_SCORING_REPORTING_INTEGRATION_TESTS === "true";
 const lightPrompts: PromptType[] = ["visibility", "competitor", "ranking"];
@@ -357,6 +359,102 @@ describe(
       );
       assert.deepEqual(providers.rows, [{ provider: "mock" }]);
     });
+
+    it("reconciles 2 category items × 3 prompts × 2 models as 12 complete executions", async () => {
+      const fixture = await seedExactCoverageRun(pool);
+      const outcome = await aggregateExactCoverage(
+        pool,
+        fixture.analysisRunId
+      );
+      assert.equal(outcome.lifecycleState, "completed");
+      const report = await exactCoverageReport(pool, fixture.analysisRunId);
+      assert.equal(report.coverage.expectedProviderJobs, 12);
+      assert.equal(report.coverage.materializedProviderJobs, 12);
+      assert.equal(report.coverage.validScored, 8);
+      assert.equal(report.coverage.validDiagnostic, 4);
+      assert.equal(report.final, true);
+    });
+
+    it("keeps one terminal missing-before-fan-out tuple visible and final", async () => {
+      const fixture = await seedExactCoverageRun(pool, {
+        omit: {
+          itemIndex: 1,
+          promptType: "ranking",
+          model: "mock-quality"
+        }
+      });
+      const first = await aggregateExactCoverage(pool, fixture.analysisRunId);
+      assert.equal(first.lifecycleState, "completed_with_gaps");
+      const second = await aggregateExactCoverage(pool, fixture.analysisRunId);
+      assert.equal(second.created, false);
+      const report = await exactCoverageReport(pool, fixture.analysisRunId);
+      assert.equal(report.coverage.expectedProviderJobs, 12);
+      assert.equal(report.coverage.materializedProviderJobs, 11);
+      assert.equal(report.coverage.missingBeforeFanOut, 1);
+      assert.equal(report.final, true);
+      assert.deepEqual(report.missingExpectedExecutions.executions, [
+        {
+          analysisRunItemId: fixture.itemIds[1],
+          entityPathId: fixture.pathIds[1],
+          categoryId: fixture.categoryIds[1],
+          promptType: "ranking",
+          provider: "mock",
+          model: "mock-quality",
+          missingStage: "provider_job",
+          reason: "expected_but_not_materialized"
+        }
+      ]);
+      assert.equal(await reportCount(pool, fixture.analysisRunId), 1);
+    });
+
+    it("retains a selected model with no materialized provider jobs", async () => {
+      const fixture = await seedExactCoverageRun(pool, {
+        onlyModel: "mock-standard"
+      });
+      await aggregateExactCoverage(pool, fixture.analysisRunId);
+      const report = await exactCoverageReport(pool, fixture.analysisRunId);
+      const missingModel = report.providerModelComparison.find(
+        (entry) => entry.model === "mock-quality"
+      );
+      assert.ok(missingModel);
+      assert.equal(missingModel.expectedExecutions, 6);
+      assert.equal(missingModel.materializedExecutions, 0);
+      assert.equal(missingModel.missingBeforeFanOut, 6);
+    });
+
+    it("treats valid competitor diagnostics as terminal without scores", async () => {
+      const fixture = await seedExactCoverageRun(pool);
+      await aggregateExactCoverage(pool, fixture.analysisRunId);
+      const report = await exactCoverageReport(pool, fixture.analysisRunId);
+      assert.equal(report.coverage.validDiagnostic, 4);
+      assert.equal(report.coverage.pending, 0);
+      assert.equal(report.lifecycleState, "completed");
+    });
+
+    it("classifies failed expected work with zero provider jobs as failed_empty", async () => {
+      const fixture = await seedExactCoverageRun(pool, {
+        zeroProviderJobs: true,
+        runStatus: "failed"
+      });
+      const outcome = await aggregateExactCoverage(
+        pool,
+        fixture.analysisRunId
+      );
+      assert.equal(outcome.lifecycleState, "failed_empty");
+      const report = await exactCoverageReport(pool, fixture.analysisRunId);
+      assert.equal(report.coverage.expectedProviderJobs, 12);
+      assert.equal(report.coverage.materializedProviderJobs, 0);
+      assert.equal(report.lifecycleState, "failed_empty");
+    });
+
+    it("preserves no_matching_category as completed_empty with zero expected work", async () => {
+      const analysisRunId = await seedNoMatchingCategoryRun(pool);
+      const outcome = await aggregateExactCoverage(pool, analysisRunId);
+      assert.equal(outcome.lifecycleState, "completed_empty");
+      const report = await exactCoverageReport(pool, analysisRunId);
+      assert.equal(report.coverage.expectedProviderJobs, 0);
+      assert.equal(report.lifecycleState, "completed_empty");
+    });
   }
 );
 
@@ -433,19 +531,63 @@ async function seedRun(
       [`Reporting category ${unique}`, `reporting-${unique}`]
     )
   ).rows[0]!.category_id;
-  await pool.query(
-    `INSERT INTO domain_categories (domain_id, category_id)
-     VALUES ($1, $2)`,
-    [domainId, categoryId]
+  const domainCategoryId = (
+    await pool.query<{ domain_category_id: string }>(
+      `INSERT INTO domain_categories (domain_id, category_id)
+       VALUES ($1, $2) RETURNING domain_category_id`,
+      [domainId, categoryId]
+    )
+  ).rows[0]!.domain_category_id;
+  const deepPath = promptTypes.some(
+    (promptType) =>
+      promptType === "price_range" || promptType === "pros_cons"
   );
+  let brandId: string | null = null;
+  let productId: string | null = null;
+  if (deepPath) {
+    brandId = (
+      await pool.query<{ brand_id: string }>(
+        `INSERT INTO brands (brand_name, normalized_name)
+         VALUES ($1, $2) RETURNING brand_id`,
+        [`Reporting brand ${unique}`, `reporting-brand-${unique}`]
+      )
+    ).rows[0]!.brand_id;
+    const categoryBrandId = (
+      await pool.query<{ category_brand_id: string }>(
+        `INSERT INTO category_brands (domain_category_id, brand_id)
+         VALUES ($1, $2) RETURNING category_brand_id`,
+        [domainCategoryId, brandId]
+      )
+    ).rows[0]!.category_brand_id;
+    productId = (
+      await pool.query<{ product_id: string }>(
+        `INSERT INTO products (product_name, normalized_name)
+         VALUES ($1, $2) RETURNING product_id`,
+        [`Reporting product ${unique}`, `reporting-product-${unique}`]
+      )
+    ).rows[0]!.product_id;
+    await pool.query(
+      `INSERT INTO brand_products (category_brand_id, product_id)
+       VALUES ($1, $2)`,
+      [categoryBrandId, productId]
+    );
+  }
   const pathId = (
     await pool.query<{ entity_path_id: string }>(
       `
-        INSERT INTO entity_paths (domain_id, category_id, path_type)
-        VALUES ($1, $2, 'category')
+        INSERT INTO entity_paths (
+          domain_id, category_id, brand_id, product_id, path_type
+        )
+        VALUES (
+          $1, $2, $3, $4,
+          CASE WHEN $4::bigint IS NULL
+            THEN 'category'::entity_path_type
+            ELSE 'product'::entity_path_type
+          END
+        )
         RETURNING entity_path_id
       `,
-      [domainId, categoryId]
+      [domainId, categoryId, brandId, productId]
     )
   ).rows[0]!.entity_path_id;
   const analysisRunId = (
@@ -653,6 +795,357 @@ async function seedRun(
     workspaceId,
     results
   };
+}
+
+async function seedExactCoverageRun(
+  pool: pg.Pool,
+  options: {
+    omit?: {
+      itemIndex: number;
+      promptType: PromptType;
+      model: string;
+    };
+    onlyModel?: string;
+    zeroProviderJobs?: boolean;
+    runStatus?: "completed" | "failed";
+  } = {}
+) {
+  const unique = crypto.randomUUID();
+  const anonymousSessionId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO anonymous_sessions (token_hash, expires_at)
+       VALUES ($1, now() + interval '1 day')
+       RETURNING anonymous_session_id AS id`,
+      [`exact-coverage-token:${unique}`]
+    )
+  ).rows[0]!.id;
+  const domainId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO domains (normalized_domain)
+       VALUES ($1) RETURNING domain_id AS id`,
+      [`exact-coverage-${unique}.example`]
+    )
+  ).rows[0]!.id;
+  const categoryIds: string[] = [];
+  const pathIds: string[] = [];
+  for (const index of [0, 1]) {
+    const categoryId = (
+      await pool.query<{ id: string }>(
+        `INSERT INTO categories (category_name, normalized_name)
+         VALUES ($1, $2) RETURNING category_id AS id`,
+        [`Exact category ${index}`, `exact-${index}-${unique}`]
+      )
+    ).rows[0]!.id;
+    await pool.query(
+      `INSERT INTO domain_categories (domain_id, category_id)
+       VALUES ($1, $2)`,
+      [domainId, categoryId]
+    );
+    const pathId = (
+      await pool.query<{ id: string }>(
+        `INSERT INTO entity_paths (domain_id, category_id, path_type)
+         VALUES ($1, $2, 'category') RETURNING entity_path_id AS id`,
+        [domainId, categoryId]
+      )
+    ).rows[0]!.id;
+    categoryIds.push(categoryId);
+    pathIds.push(pathId);
+  }
+  const runStatus = options.runStatus ?? "completed";
+  const analysisRunId = (
+    await pool.query<{ id: string }>(
+      `
+        INSERT INTO analysis_runs (
+          idempotency_key, anonymous_session_id, starting_entity_path_id,
+          category_selection_mode, prompt_depth, prompt_policy_version,
+          status, request_payload, started_at, completed_at
+        )
+        VALUES (
+          $1, $2, $3, 'selected', 'medium', 'geo-prompt-policy-v1',
+          $4, jsonb_build_object('domain', $5::text), now(), now()
+        )
+        RETURNING analysis_run_id AS id
+      `,
+      [
+        `exact-coverage-run:${unique}`,
+        anonymousSessionId,
+        pathIds[0],
+        runStatus,
+        `exact-coverage-${unique}.example`
+      ]
+    )
+  ).rows[0]!.id;
+  const frozenModels = ["mock-standard", "mock-quality"] as const;
+  for (const [ordinal, model] of frozenModels.entries()) {
+    const profile = providerModelProfile("mock", model);
+    assert.ok(profile);
+    await pool.query(
+      `INSERT INTO analysis_run_provider_models (
+         analysis_run_id, provider, model, model_profile_version, ordinal
+       ) VALUES ($1, 'mock', $2, $3, $4)`,
+      [analysisRunId, model, profile.modelProfileVersion, ordinal]
+    );
+  }
+  const itemIds: string[] = [];
+  for (const [itemIndex, pathId] of pathIds.entries()) {
+    const itemId = (
+      await pool.query<{ id: string }>(
+        `INSERT INTO analysis_run_items (
+           idempotency_key, analysis_run_id, entity_path_id, item_ordinal,
+           status, started_at, completed_at
+         ) VALUES ($1, $2, $3, $4, 'completed', now(), now())
+         RETURNING analysis_run_item_id AS id`,
+        [
+          `exact-coverage-item:${unique}:${itemIndex}`,
+          analysisRunId,
+          pathId,
+          itemIndex
+        ]
+      )
+    ).rows[0]!.id;
+    itemIds.push(itemId);
+    const llmRunId = (
+      await pool.query<{ id: string }>(
+        `INSERT INTO llm_runs (
+           idempotency_key, analysis_run_item_id, status,
+           started_at, completed_at
+         ) VALUES ($1, $2, 'completed', now(), now())
+         RETURNING llm_run_id AS id`,
+        [`exact-coverage-llm:${unique}:${itemIndex}`, itemId]
+      )
+    ).rows[0]!.id;
+    for (const promptType of lightPrompts) {
+      const policy = promptTypePolicy(promptType);
+      const promptJobId = (
+        await pool.query<{ id: string }>(
+          `INSERT INTO prompt_jobs (
+             idempotency_key, llm_run_id, prompt_type, prompt_depth,
+             business_prompt_version, response_contract_version,
+             status, prompt_text, started_at, completed_at
+           ) VALUES (
+             $1, $2, $3, 'medium', $4, $5,
+             'succeeded', $6, now(), now()
+           ) RETURNING prompt_job_id AS id`,
+          [
+            `exact-coverage-prompt:${unique}:${itemIndex}:${promptType}`,
+            llmRunId,
+            promptType,
+            policy.businessPromptVersion,
+            policy.responseContractVersion,
+            `Exact ${promptType} prompt`
+          ]
+        )
+      ).rows[0]!.id;
+      for (const model of frozenModels) {
+        const omitted =
+          options.zeroProviderJobs === true ||
+          (options.onlyModel !== undefined && options.onlyModel !== model) ||
+          (options.omit?.itemIndex === itemIndex &&
+            options.omit.promptType === promptType &&
+            options.omit.model === model);
+        if (omitted) continue;
+        const profile = providerModelProfile("mock", model);
+        assert.ok(profile);
+        const providerJobId = (
+          await pool.query<{ id: string }>(
+            `INSERT INTO provider_jobs (
+               idempotency_key, job_kind, prompt_job_id, provider, model,
+               response_contract_version, provider_instruction_profile,
+               model_profile_version, structured_output_mode, status,
+               started_at, completed_at
+             ) VALUES (
+               $1, 'normal_prompt', $2, 'mock', $3, $4,
+               'mock-json-schema-v1', $5, 'json_schema',
+               'succeeded', now(), now()
+             ) RETURNING provider_job_id AS id`,
+            [
+              `exact-coverage-provider:${unique}:${itemIndex}:${promptType}:${model}`,
+              promptJobId,
+              model,
+              policy.responseContractVersion,
+              profile.modelProfileVersion
+            ]
+          )
+        ).rows[0]!.id;
+        const response = {
+          prompt_type: promptType,
+          contract_version: policy.responseContractVersion,
+          result: { confidence: 0.75 },
+          evidence: [],
+          summary: "Exact coverage evidence"
+        };
+        const rawResponse = JSON.stringify(response);
+        const providerResultId = (
+          await pool.query<{ id: string }>(
+            `INSERT INTO provider_results (
+               idempotency_key, provider_job_id, provider, status,
+               response_contract_version, model_version, raw_response,
+               raw_response_original_bytes, validated_response,
+               validation_errors, context_validation_status,
+               latency_ms, received_at
+             ) VALUES (
+               $1, $2, 'mock', 'valid', $3, $4, $5,
+               octet_length($5), $6, '[]'::jsonb, 'valid', 0, now()
+             ) RETURNING provider_result_id AS id`,
+            [
+              `exact-coverage-result:${unique}:${itemIndex}:${promptType}:${model}`,
+              providerJobId,
+              policy.responseContractVersion,
+              model,
+              rawResponse,
+              response
+            ]
+          )
+        ).rows[0]!.id;
+        if (policy.requiresScoring) {
+          await pool.query(
+            `INSERT INTO provider_scores (
+               idempotency_key, provider_result_id, metric_type,
+               scoring_version, score, score_components
+             ) VALUES ($1, $2, $3, 'geo-backend-v1', 80, '{}'::jsonb)`,
+            [
+              `exact-coverage-score:${unique}:${itemIndex}:${promptType}:${model}`,
+              providerResultId,
+              promptType
+            ]
+          );
+        }
+      }
+    }
+  }
+  return {
+    analysisRunId,
+    itemIds,
+    pathIds,
+    categoryIds
+  };
+}
+
+async function seedNoMatchingCategoryRun(pool: pg.Pool) {
+  const unique = crypto.randomUUID();
+  const sessionId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO anonymous_sessions (token_hash, expires_at)
+       VALUES ($1, now() + interval '1 day')
+       RETURNING anonymous_session_id AS id`,
+      [`empty-token:${unique}`]
+    )
+  ).rows[0]!.id;
+  const domainId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO domains (normalized_domain)
+       VALUES ($1) RETURNING domain_id AS id`,
+      [`empty-${unique}.example`]
+    )
+  ).rows[0]!.id;
+  const pathId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO entity_paths (domain_id, path_type)
+       VALUES ($1, 'domain') RETURNING entity_path_id AS id`,
+      [domainId]
+    )
+  ).rows[0]!.id;
+  const analysisRunId = (
+    await pool.query<{ id: string }>(
+      `INSERT INTO analysis_runs (
+         idempotency_key, anonymous_session_id, starting_entity_path_id,
+         category_selection_mode, prompt_depth, prompt_policy_version,
+         status, request_payload, started_at, completed_at
+       ) VALUES (
+         $1, $2, $3, 'all', 'weak', 'geo-prompt-policy-v1',
+         'completed', '{}'::jsonb, now(), now()
+       ) RETURNING analysis_run_id AS id`,
+      [`empty-run:${unique}`, sessionId, pathId]
+    )
+  ).rows[0]!.id;
+  await pool.query(
+    `INSERT INTO domain_category_classification_jobs (
+       idempotency_key, analysis_run_id, domain_id, candidate_set_hash,
+       status, classifier_provider, classifier_model, model_profile_version,
+       prompt_version, response_contract_version,
+       provider_instruction_profile, structured_output_mode, input_payload,
+       rendered_prompt, candidate_count, started_at, completed_at
+     ) VALUES (
+       $1, $2, $3, $4, 'completed_empty', 'mock', 'mock-fast',
+       'mock-profile-v1', 'classification-v1',
+       'classification-response-v1', 'mock-json-schema-v1',
+       'json_schema', '{}'::jsonb, 'Rendered classification', 1,
+       now(), now()
+     )`,
+    [
+      `empty-classification:${unique}`,
+      analysisRunId,
+      domainId,
+      "0".repeat(64)
+    ]
+  );
+  return analysisRunId;
+}
+
+async function aggregateExactCoverage(
+  pool: pg.Pool,
+  analysisRunId: string
+) {
+  const outcome = await new ReportAggregationService(
+    new ReportRepository(pool)
+  ).createIfReady(analysisRunId);
+  assert.equal(outcome.outcome, "snapshot");
+  return outcome;
+}
+
+async function exactCoverageReport(pool: pg.Pool, analysisRunId: string) {
+  return (
+    await pool.query<{
+      report_data: {
+        lifecycleState: string;
+        final: boolean;
+        coverage: {
+          expectedProviderJobs: number;
+          materializedProviderJobs: number;
+          validScored: number;
+          validDiagnostic: number;
+          missingBeforeFanOut: number;
+          pending: number;
+        };
+        missingExpectedExecutions: {
+          executions: Array<{
+            analysisRunItemId: string;
+            entityPathId: string;
+            categoryId: string | null;
+            promptType: string;
+            provider: string;
+            model: string;
+            missingStage: string;
+            reason: string;
+          }>;
+        };
+        providerModelComparison: Array<{
+          model: string;
+          expectedExecutions: number;
+          materializedExecutions: number;
+          missingBeforeFanOut: number;
+        }>;
+      };
+    }>(
+      `SELECT report_data
+       FROM reports
+       WHERE analysis_run_id = $1
+       ORDER BY revision DESC
+       LIMIT 1`,
+      [analysisRunId]
+    )
+  ).rows[0]!.report_data;
+}
+
+async function reportCount(pool: pg.Pool, analysisRunId: string) {
+  return Number(
+    (
+      await pool.query<{ count: string }>(
+        "SELECT count(*) FROM reports WHERE analysis_run_id = $1",
+        [analysisRunId]
+      )
+    ).rows[0]!.count
+  );
 }
 
 async function count(pool: pg.Pool, table: string) {

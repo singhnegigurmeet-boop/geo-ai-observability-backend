@@ -144,7 +144,8 @@ describe("Real provider execution integration", { skip: !enabled, concurrency: 1
       pool,
       "openai",
       "gpt-4o-mini",
-      ["visibility"]
+      ["visibility"],
+      true
     );
     const adapter = new FakeAdapter("openai", "gpt-4o-mini");
     adapter.error = new ProviderExecutionError(
@@ -189,12 +190,7 @@ describe("Real provider execution integration", { skip: !enabled, concurrency: 1
       }
     ]);
     assert.equal(await count(pool, "provider_scores"), 0);
-    const report = await pool.query<{ lifecycle_state: string }>(
-      `SELECT report_data->>'lifecycleState' AS lifecycle_state
-       FROM reports WHERE analysis_run_id = $1`,
-      [fixture.analysisRunId]
-    );
-    assert.deepEqual(report.rows, [{ lifecycle_state: "failed_empty" }]);
+    assert.equal(await count(pool, "reports"), 0);
   });
 
   it("persists a frozen-context mismatch as terminal invalid evidence without scoring", async () => {
@@ -466,7 +462,7 @@ describe("Real provider execution integration", { skip: !enabled, concurrency: 1
       "ranking",
       "price_range",
       "pros_cons"
-    ]);
+    ], true);
     const service = new ProviderExecutionService(
       pool,
       new ProviderAdapterRegistry([
@@ -602,7 +598,8 @@ async function seedRun(
   pool: pg.Pool,
   provider: Exclude<ProviderName, "mock">,
   model: string,
-  promptTypes: PromptType[]
+  promptTypes: PromptType[],
+  policyValidPath = false
 ) {
   const unique = crypto.randomUUID();
   const userId = (
@@ -627,10 +624,72 @@ async function seedRun(
       [`provider-execution-${unique}.example`]
     )
   ).rows[0]!.domain_id;
+  let categoryId: string | null = null;
+  let brandId: string | null = null;
+  let productId: string | null = null;
+  const deepPath =
+    policyValidPath &&
+    promptTypes.some(
+      (promptType) =>
+        promptType === "price_range" || promptType === "pros_cons"
+    );
+  if (policyValidPath) {
+    categoryId = (
+      await pool.query<{ id: string }>(
+        `INSERT INTO categories (category_name, normalized_name)
+         VALUES ($1, $2) RETURNING category_id AS id`,
+        [`Provider category ${unique}`, `provider-category-${unique}`]
+      )
+    ).rows[0]!.id;
+    const domainCategoryId = (
+      await pool.query<{ id: string }>(
+        `INSERT INTO domain_categories (domain_id, category_id)
+         VALUES ($1, $2) RETURNING domain_category_id AS id`,
+        [domainId, categoryId]
+      )
+    ).rows[0]!.id;
+    if (deepPath) {
+      brandId = (
+        await pool.query<{ id: string }>(
+          `INSERT INTO brands (brand_name, normalized_name)
+           VALUES ($1, $2) RETURNING brand_id AS id`,
+          [`Provider brand ${unique}`, `provider-brand-${unique}`]
+        )
+      ).rows[0]!.id;
+      const categoryBrandId = (
+        await pool.query<{ id: string }>(
+          `INSERT INTO category_brands (domain_category_id, brand_id)
+           VALUES ($1, $2) RETURNING category_brand_id AS id`,
+          [domainCategoryId, brandId]
+        )
+      ).rows[0]!.id;
+      productId = (
+        await pool.query<{ id: string }>(
+          `INSERT INTO products (product_name, normalized_name)
+           VALUES ($1, $2) RETURNING product_id AS id`,
+          [`Provider product ${unique}`, `provider-product-${unique}`]
+        )
+      ).rows[0]!.id;
+      await pool.query(
+        `INSERT INTO brand_products (category_brand_id, product_id)
+         VALUES ($1, $2)`,
+        [categoryBrandId, productId]
+      );
+    }
+  }
   const pathId = (
     await pool.query<{ entity_path_id: string }>(
-      "INSERT INTO entity_paths (domain_id, path_type) VALUES ($1, 'domain') RETURNING entity_path_id",
-      [domainId]
+      `INSERT INTO entity_paths (
+         domain_id, category_id, brand_id, product_id, path_type
+       ) VALUES (
+         $1, $2, $3, $4,
+         CASE
+           WHEN $4::bigint IS NOT NULL THEN 'product'::entity_path_type
+           WHEN $2::bigint IS NOT NULL THEN 'category'::entity_path_type
+           ELSE 'domain'::entity_path_type
+         END
+       ) RETURNING entity_path_id`,
+      [domainId, categoryId, brandId, productId]
     )
   ).rows[0]!.entity_path_id;
   const analysisRunId = (
@@ -697,9 +756,43 @@ async function seedRun(
         id: domainId,
         name: `provider-execution-${unique}.example`
       },
-      canonicalPath: `provider-execution-${unique}.example`,
-      startingLevel: "domain",
-      targetLevel: "domain"
+      ...(categoryId
+        ? {
+            category: {
+              id: categoryId,
+              name: `Provider category ${unique}`
+            }
+          }
+        : {}),
+      ...(brandId
+        ? {
+            brand: { id: brandId, name: `Provider brand ${unique}` }
+          }
+        : {}),
+      ...(productId
+        ? {
+            product: {
+              id: productId,
+              name: `Provider product ${unique}`
+            }
+          }
+        : {}),
+      canonicalPath: [
+        `provider-execution-${unique}.example`,
+        ...(categoryId ? [`Provider category ${unique}`] : []),
+        ...(brandId ? [`Provider brand ${unique}`] : []),
+        ...(productId ? [`Provider product ${unique}`] : [])
+      ].join(" > "),
+      startingLevel: productId
+        ? ("product" as const)
+        : categoryId
+          ? ("category" as const)
+          : ("domain" as const),
+      targetLevel: productId
+        ? ("product" as const)
+        : categoryId
+          ? ("category" as const)
+          : ("domain" as const)
     };
     const promptJobId = (
       await pool.query<{ prompt_job_id: string }>(

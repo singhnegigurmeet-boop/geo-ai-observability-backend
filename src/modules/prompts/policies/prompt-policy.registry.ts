@@ -93,6 +93,16 @@ export function applicablePromptTypes(
   return targetLevel === "category" ? CATEGORY_PROMPTS : DEEP_PROMPTS;
 }
 
+export function applicablePromptTypesForPolicy(
+  promptPolicyVersion: string,
+  targetLevel: EntityPathType
+): readonly PromptType[] {
+  if (promptPolicyVersion !== PROMPT_POLICY_VERSION) {
+    throw new UnsupportedPromptPolicyVersionError(promptPolicyVersion);
+  }
+  return applicablePromptTypes(targetLevel);
+}
+
 export function promptTypePolicy(promptType: PromptType) {
   return PROMPT_TYPE_POLICY[promptType];
 }
@@ -131,3 +141,11 @@ export class InvalidPromptDepthError extends Error {
   }
 }
 
+export class UnsupportedPromptPolicyVersionError extends Error {
+  readonly code = "UNSUPPORTED_PROMPT_POLICY_VERSION";
+
+  constructor(readonly promptPolicyVersion: string) {
+    super(`Unsupported frozen prompt policy version: ${promptPolicyVersion}`);
+    this.name = "UnsupportedPromptPolicyVersionError";
+  }
+}

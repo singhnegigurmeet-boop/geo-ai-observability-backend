@@ -485,7 +485,54 @@ export const openApiDocument = {
           counts: {
             type: "object",
             description:
-              "Separate counts for expected, nonterminal, scored, invalid, failed, budget-paused, and cancelled provider executions."
+              "Exact expected-versus-materialized coverage derived from frozen analysis items, prompt policy, and provider/model selection.",
+            properties: {
+              expectedProviderJobs: { type: "integer", minimum: 0 },
+              materializedProviderJobs: { type: "integer", minimum: 0 },
+              validScored: { type: "integer", minimum: 0 },
+              validDiagnostic: { type: "integer", minimum: 0 },
+              invalid: { type: "integer", minimum: 0 },
+              technicalFailure: { type: "integer", minimum: 0 },
+              budgetPaused: { type: "integer", minimum: 0 },
+              cancelled: { type: "integer", minimum: 0 },
+              missingBeforeFanOut: { type: "integer", minimum: 0 },
+              permanentScoringFailure: { type: "integer", minimum: 0 },
+              pending: { type: "integer", minimum: 0 },
+              materializationCoverage: {
+                type: "number",
+                minimum: 0,
+                maximum: 1,
+                nullable: true
+              },
+              terminalCoverage: {
+                type: "number",
+                minimum: 0,
+                maximum: 1,
+                nullable: true
+              },
+              usableEvidenceCoverage: {
+                type: "number",
+                minimum: 0,
+                maximum: 1,
+                nullable: true
+              },
+              scoreBearingCoverage: {
+                type: "number",
+                minimum: 0,
+                maximum: 1,
+                nullable: true
+              }
+            }
+          },
+          coverage: {
+            type: "object",
+            description:
+              "Alias of counts retained for report-contract compatibility."
+          },
+          missingExpectedExecutions: {
+            type: "object",
+            description:
+              "Bounded deterministic details for exact expected executions missing before provider fan-out."
           },
           providerResults: {
             type: "array",

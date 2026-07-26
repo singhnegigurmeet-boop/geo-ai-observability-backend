@@ -69,6 +69,34 @@ export class ReportOutcomeService {
       this.reports.methodologyContext(input.analysisRunId),
       this.reports.classificationRecord(input.analysisRunId)
     ]);
+    const counts = {
+      expectedProviderJobs: 0,
+      materializedProviderJobs: 0,
+      validScored: 0,
+      validDiagnostic: 0,
+      invalid: 0,
+      technicalFailure: 0,
+      budgetPaused: 0,
+      cancelled: 0,
+      missingBeforeFanOut: 0,
+      permanentScoringFailure: 0,
+      pending: 0,
+      validScorePending: 0,
+      expectedScoreBearingExecutions: 0,
+      terminalExpectedExecutions: 0,
+      materializationCoverage: null,
+      terminalCoverage: null,
+      usableEvidenceCoverage: null,
+      scoreBearingCoverage: null,
+      expected: 0,
+      materialized: 0,
+      missingMaterialization: 0,
+      nonterminal: 0,
+      scored: 0,
+      failed: 0,
+      pausedBudget: 0,
+      completionPercentage: 100
+    };
     const reportData = {
       analysisRunId: input.analysisRunId,
       reportType: "multi_provider_report",
@@ -104,20 +132,15 @@ export class ReportOutcomeService {
         completedAt: methodology?.completed_at ?? null
       },
       ...(input.details ?? {}),
-      counts: {
-        expected: 0,
-        materialized: 0,
-        missingMaterialization: 0,
-        nonterminal: 0,
-        scored: 0,
-        validDiagnostic: 0,
-        invalid: 0,
-        failed: 0,
-        permanentScoringFailure: 0,
-        pausedBudget: 0,
-        cancelled: 0,
-        completionPercentage: 100
+      counts,
+      coverage: counts,
+      missingExpectedExecutions: {
+        totalMissingCount: 0,
+        returnedMissingCount: 0,
+        truncated: false,
+        executions: []
       },
+      categoryCoverage: [],
       providerResults: [],
       promptScores: [],
       modelPathScores: [],

@@ -1,6 +1,9 @@
 import type { DatabaseExecutor } from "../../../common/database/database-executor.js";
 import { isDeepStrictEqual } from "node:util";
 import type {
+  AnalysisExecutionStatus,
+  ContextValidationStatus,
+  EntityPathType,
   JobStatus,
   JsonObject,
   PromptDepth,
@@ -10,8 +13,15 @@ import type {
   ReportRow,
   ReportStatus
 } from "../../../common/types/database.types.js";
+import type {
+  ExpectedPlanItem,
+  ExpectedPlanProviderModel,
+  ExpectedPlanRun
+} from "../services/expected-execution-plan.service.js";
 
 export type ReportExecutionRecord = {
+  analysis_run_item_id: string;
+  item_ordinal: number;
   prompt_job_id: string;
   prompt_type: PromptType;
   prompt_depth: PromptDepth;
@@ -21,13 +31,54 @@ export type ReportExecutionRecord = {
   category_id: string | null;
   category_name: string | null;
   provider_job_id: string;
+  provider_result_id: string | null;
+  provider_score_id: string | null;
   provider: ProviderName;
   model: string;
   provider_job_status: JobStatus;
   error_code: string | null;
   result_status: ProviderResultStatus | null;
+  context_validation_status: ContextValidationStatus | null;
   validated_response: JsonObject | null;
   validation_errors: JsonObject[];
+  metric_type: "visibility" | "ranking" | "competitive_pressure" | null;
+  scoring_version: string | null;
+  score: string | null;
+  score_components: JsonObject | null;
+  scoring_failure_code: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_micros: string | null;
+};
+
+export type ReportMaterializationRecord = {
+  analysis_run_item_id: string;
+  item_ordinal: number;
+  item_status: AnalysisExecutionStatus;
+  entity_path_id: string;
+  category_id: string | null;
+  category_name: string | null;
+  llm_run_id: string | null;
+  llm_run_status: AnalysisExecutionStatus | null;
+  llm_error_code: string | null;
+  prompt_job_id: string | null;
+  prompt_type: PromptType | null;
+  prompt_depth: PromptDepth | null;
+  business_prompt_version: string | null;
+  response_contract_version: string | null;
+  prompt_job_status: JobStatus | null;
+  prompt_error_code: string | null;
+  provider_job_id: string | null;
+  provider: ProviderName | null;
+  model: string | null;
+  provider_job_status: JobStatus | null;
+  provider_error_code: string | null;
+  provider_result_id: string | null;
+  result_status: ProviderResultStatus | null;
+  context_validation_status: ContextValidationStatus | null;
+  validated_response: JsonObject | null;
+  validation_errors: JsonObject[];
+  provider_score_id: string | null;
   metric_type: "visibility" | "ranking" | "competitive_pressure" | null;
   scoring_version: string | null;
   score: string | null;
@@ -69,38 +120,135 @@ export class ReportRepository {
   constructor(private readonly database: DatabaseExecutor) {}
 
   async lockRun(analysisRunId: string) {
-    const result = await this.database.query<{ status: string }>(
+    const result = await this.database.query<{
+      analysis_run_id: string;
+      status: AnalysisExecutionStatus;
+      prompt_depth: PromptDepth;
+      prompt_policy_version: string;
+    }>(
       `
-        SELECT status
+        SELECT analysis_run_id, status, prompt_depth, prompt_policy_version
         FROM analysis_runs
         WHERE analysis_run_id = $1
         FOR UPDATE
       `,
       [analysisRunId]
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0];
+    return row
+      ? ({
+          analysisRunId: row.analysis_run_id,
+          status: row.status,
+          promptDepth: row.prompt_depth,
+          promptPolicyVersion: row.prompt_policy_version
+        } satisfies ExpectedPlanRun)
+      : null;
   }
 
-  async executionRecords(analysisRunId: string, scoringVersion: string) {
-    const result = await this.database.query<ReportExecutionRecord>(
+  async expectedPlanItems(analysisRunId: string) {
+    const result = await this.database.query<{
+      analysis_run_item_id: string;
+      entity_path_id: string;
+      path_type: EntityPathType;
+      category_id: string | null;
+      category_name: string | null;
+      item_ordinal: number;
+      status: AnalysisExecutionStatus;
+    }>(
       `
         SELECT
+          item.analysis_run_item_id,
+          item.entity_path_id,
+          path.path_type,
+          path.category_id,
+          category.category_name,
+          item.item_ordinal,
+          item.status
+        FROM analysis_run_items AS item
+        JOIN entity_paths AS path
+          ON path.entity_path_id = item.entity_path_id
+        LEFT JOIN categories AS category
+          ON category.category_id = path.category_id
+        WHERE item.analysis_run_id = $1
+        ORDER BY item.item_ordinal, item.analysis_run_item_id
+      `,
+      [analysisRunId]
+    );
+    return result.rows.map(
+      (row) =>
+        ({
+          analysisRunItemId: row.analysis_run_item_id,
+          entityPathId: row.entity_path_id,
+          targetLevel: row.path_type,
+          categoryId: row.category_id,
+          categoryName: row.category_name,
+          itemOrdinal: row.item_ordinal,
+          status: row.status
+        }) satisfies ExpectedPlanItem
+    );
+  }
+
+  async expectedPlanProviderModels(analysisRunId: string) {
+    const result = await this.database.query<{
+      provider: ProviderName;
+      model: string;
+      model_profile_version: string;
+      ordinal: number;
+    }>(
+      `
+        SELECT provider, model, model_profile_version, ordinal
+        FROM analysis_run_provider_models
+        WHERE analysis_run_id = $1
+        ORDER BY ordinal, provider, model
+      `,
+      [analysisRunId]
+    );
+    return result.rows.map(
+      (row) =>
+        ({
+          provider: row.provider,
+          model: row.model,
+          modelProfileVersion: row.model_profile_version,
+          ordinal: row.ordinal
+        }) satisfies ExpectedPlanProviderModel
+    );
+  }
+
+  async materializationRecords(
+    analysisRunId: string,
+    scoringVersion: string
+  ) {
+    const result = await this.database.query<ReportMaterializationRecord>(
+      `
+        SELECT
+          item.analysis_run_item_id,
+          item.item_ordinal,
+          item.status AS item_status,
+          item.entity_path_id,
+          path.category_id,
+          category.category_name,
+          llm.llm_run_id,
+          llm.status AS llm_run_status,
+          llm.error_code AS llm_error_code,
           prompt.prompt_job_id,
           prompt.prompt_type,
           prompt.prompt_depth,
           prompt.business_prompt_version,
           prompt.response_contract_version,
-          item.entity_path_id,
-          path.category_id,
-          category.category_name,
+          prompt.status AS prompt_job_status,
+          prompt.error_code AS prompt_error_code,
           job.provider_job_id,
           job.provider,
           job.model,
           job.status AS provider_job_status,
-          job.error_code,
+          job.error_code AS provider_error_code,
+          result.provider_result_id,
           result.status AS result_status,
+          result.context_validation_status,
           result.validated_response,
-          result.validation_errors,
+          COALESCE(result.validation_errors, '[]'::jsonb)
+            AS validation_errors,
+          score.provider_score_id,
           score.metric_type,
           score.scoring_version,
           score.score,
@@ -110,13 +258,17 @@ export class ReportRepository {
           usage.output_tokens,
           usage.cost_micros
         FROM analysis_run_items AS item
-        JOIN llm_runs AS llm
-          ON llm.analysis_run_item_id = item.analysis_run_item_id
-        JOIN prompt_jobs AS prompt ON prompt.llm_run_id = llm.llm_run_id
-        JOIN entity_paths AS path ON path.entity_path_id = item.entity_path_id
+        JOIN entity_paths AS path
+          ON path.entity_path_id = item.entity_path_id
         LEFT JOIN categories AS category
           ON category.category_id = path.category_id
-        JOIN provider_jobs AS job ON job.prompt_job_id = prompt.prompt_job_id
+        LEFT JOIN llm_runs AS llm
+          ON llm.analysis_run_item_id = item.analysis_run_item_id
+        LEFT JOIN prompt_jobs AS prompt
+          ON prompt.llm_run_id = llm.llm_run_id
+        LEFT JOIN provider_jobs AS job
+          ON job.prompt_job_id = prompt.prompt_job_id
+         AND job.job_kind = 'normal_prompt'
         LEFT JOIN provider_results AS result
           ON result.provider_job_id = job.provider_job_id
         LEFT JOIN provider_scores AS score
@@ -134,46 +286,23 @@ export class ReportRepository {
               failure.attempt_number >= 3
               OR failure.error_details @> '{"permanent":true}'::jsonb
             )
-          ORDER BY failure.attempt_number DESC, failure.failure_record_id DESC
+          ORDER BY
+            failure.attempt_number DESC,
+            failure.failure_record_id DESC
           LIMIT 1
         ) AS scoring_failure ON true
         WHERE item.analysis_run_id = $1
         ORDER BY
-          prompt.prompt_job_id,
-          job.provider,
-          job.model,
-          job.provider_job_id
+          item.item_ordinal,
+          item.analysis_run_item_id,
+          prompt.prompt_job_id NULLS FIRST,
+          job.provider NULLS FIRST,
+          job.model NULLS FIRST,
+          job.provider_job_id NULLS FIRST
       `,
       [analysisRunId, scoringVersion]
     );
     return result.rows;
-  }
-
-  async expectedProviderExecutionCount(analysisRunId: string) {
-    const result = await this.database.query<{ expected_count: string }>(
-      `
-        SELECT COALESCE(
-          SUM(
-            CASE
-              WHEN path.path_type = 'domain' THEN 0
-              WHEN path.path_type = 'category' THEN 3
-              ELSE 5
-            END * model_count.count
-          ),
-          0
-        )::bigint AS expected_count
-        FROM analysis_run_items AS item
-        JOIN entity_paths AS path ON path.entity_path_id = item.entity_path_id
-        CROSS JOIN LATERAL (
-          SELECT count(*)::integer AS count
-          FROM analysis_run_provider_models AS model
-          WHERE model.analysis_run_id = item.analysis_run_id
-        ) AS model_count
-        WHERE item.analysis_run_id = $1
-      `,
-      [analysisRunId]
-    );
-    return Number(result.rows[0]?.expected_count ?? 0);
   }
 
   async classificationRecord(analysisRunId: string) {
