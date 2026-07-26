@@ -13,54 +13,53 @@ const promptTypes: PromptType[] = [
 ];
 
 describe("Prompt renderer", () => {
-  it("renders every v1 prompt deterministically from canonical DB context", () => {
+  it("renders every V6 prompt deterministically from canonical DB context", () => {
     const renderer = new PromptRendererService();
     for (const promptType of promptTypes) {
-      const context = renderingContext(promptType, "user");
+      const context = renderingContext(promptType, "medium");
       const first = renderer.render(context);
       assert.equal(renderer.render(context), first);
       assert.ok(first.trim().length > 0);
-      assert.match(first, /domain=example\.com/);
-      assert.match(first, /category=Software/);
-      assert.match(first, /brand=Example Brand/);
+      assert.match(first, /website domain: example\.com/);
+      assert.match(first, /example\.com > Software > Example Brand/);
+      assert.match(first, /exact target: Example Brand/);
       assert.doesNotMatch(first, /RAW-USER-INPUT/);
     }
   });
 
-  it("preserves actor-aware rendering and rejects unknown versions", () => {
+  it("applies explicit depth limits without changing the response contract", () => {
     const renderer = new PromptRendererService();
-    const anonymous = renderer.render(
-      renderingContext("visibility", "anonymous")
-    );
-    const user = renderer.render(renderingContext("visibility", "user"));
-    assert.notEqual(anonymous, user);
-    assert.ok(anonymous.length < user.length);
-    assert.match(anonymous, /actor_policy=anonymous/);
-    assert.match(user, /actor_policy=user/);
-    assert.throws(
-      () =>
-        renderer.render({
-          ...renderingContext("visibility", "user"),
-          promptVersion: "v2" as "v1" | "v1_light"
-        }),
-      /Unsupported prompt template/
-    );
+    const weak = renderer.render(renderingContext("visibility", "weak"));
+    const high = renderer.render(renderingContext("visibility", "high"));
+    assert.notEqual(weak, high);
+    assert.match(weak, /prompt depth: weak/);
+    assert.match(high, /cross-check contradictions/);
+    assert.match(weak, /visibility-response-v1/);
+    assert.match(high, /visibility-response-v1/);
   });
 });
 
 function renderingContext(
   promptType: PromptType,
-  actorType: "anonymous" | "user"
+  promptDepth: "weak" | "medium" | "high"
 ): PromptRenderingContext {
   return {
     promptType,
-    promptVersion: actorType === "anonymous" ? "v1_light" : "v1",
-    actorType,
-    normalizedDomain: "example.com",
-    pathType: "brand",
-    categoryName: "Software",
-    brandName: "Example Brand",
-    productName: null,
-    useContextName: null
+    promptDepth,
+    businessPromptVersion: `${promptType}-v1`,
+    responseContractVersion:
+      promptType === "price_range"
+        ? "price-range-response-v1"
+        : promptType === "pros_cons"
+          ? "pros-cons-response-v1"
+          : `${promptType}-response-v1`,
+    entityPathContext: {
+      domain: { id: "1", name: "example.com" },
+      category: { id: "2", name: "Software" },
+      brand: { id: "3", name: "Example Brand" },
+      startingLevel: "domain",
+      targetLevel: "brand",
+      canonicalPath: "example.com > Software > Example Brand"
+    }
   };
 }

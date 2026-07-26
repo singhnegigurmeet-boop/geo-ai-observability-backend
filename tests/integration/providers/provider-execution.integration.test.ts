@@ -6,13 +6,15 @@ import { ProviderAdapterRegistry } from "../../../src/modules/providers/adapters
 import type {
   ProviderAdapter,
   ProviderExecutionRequest,
-  ProviderExecutionResult
+  ProviderGeneratedOutput
 } from "../../../src/modules/providers/types/provider-adapter.types.js";
 import { ProviderExecutionError } from "../../../src/modules/providers/errors/provider-execution.error.js";
 import { ProviderExecutionService } from "../../../src/modules/providers/services/provider-execution.service.js";
 import type { ProviderJobCreatedPayload } from "../../../src/modules/providers/messages/provider-worker.messages.js";
 import { ProviderScoreService } from "../../../src/modules/scoring/services/provider-score.service.js";
 import type { PromptType, ProviderName } from "../../../src/common/types/database.types.js";
+import { promptTypePolicy } from "../../../src/modules/prompts/policies/prompt-policy.registry.js";
+import { providerModelProfile } from "../../../src/modules/providers/registry/provider-model.registry.js";
 import {
   createIntegrationPool,
   resetTestSchema,
@@ -174,8 +176,14 @@ describe("Real provider execution integration", { skip: !enabled, concurrency: 1
       {
         status: "invalid",
         raw_response: '{"unexpected":"retained safely"}',
-        validation_errors: ["evidence must be an array"],
-        job_status: "failed"
+        validation_errors: [
+          {
+            layer: "provider_transport",
+            code: "GENERATED_CONTENT_MISSING",
+            message: "evidence must be an array"
+          }
+        ],
+        job_status: "succeeded"
       }
     ]);
     assert.equal(await count(pool, "provider_scores"), 0);
@@ -207,19 +215,17 @@ describe("Real provider execution integration", { skip: !enabled, concurrency: 1
       const execution = await service.execute(job.payload);
       assert.equal(execution.outcome, "completed");
       if (execution.outcome !== "completed") continue;
-      const scored = await new ProviderScoreService(pool).process({
-        providerResultId: execution.providerResultId,
-        providerJobId: job.providerJobId,
-        promptJobId: job.promptJobId,
-        analysisRunId: fixture.analysisRunId
-      });
-      reportId = scored.reportId ?? reportId;
+      if (job.promptType === "visibility" || job.promptType === "ranking") {
+        const scored = await new ProviderScoreService(pool).process({
+          providerResultId: execution.providerResultId
+        });
+        reportId = scored.reportId ?? reportId;
+      }
       assert.equal((await service.execute(job.payload)).outcome, "noop");
     }
     assert.ok(reportId);
     assert.equal(await count(pool, "provider_results"), 5);
-    assert.equal(await count(pool, "provider_scores"), 5);
-    assert.equal(await count(pool, "reports"), 5);
+    assert.equal(await count(pool, "provider_scores"), 2);
     assert.equal(await count(pool, "token_usage"), 10);
   });
 });
@@ -238,21 +244,12 @@ class FakeAdapter implements ProviderAdapter {
     return model === this.model;
   }
 
-  async execute(request: ProviderExecutionRequest): Promise<ProviderExecutionResult> {
+  async execute(request: ProviderExecutionRequest): Promise<ProviderGeneratedOutput> {
     this.calls += 1;
     if (this.error) throw this.error;
     return {
-      rawResponse: {
-        id: `${this.provider}-request:${request.providerJobId}`,
-        text: "Provider evidence"
-      },
-      parsedEvidence: {
-        provider: this.provider,
-        model: this.model,
-        evidence: [
-          { claim: "Provider evidence", source: `${this.provider}-provider`, confidence: 0.6 }
-        ]
-      },
+      generatedContent: JSON.stringify(fakeResponse(request)),
+      sanitizedProviderMetadata: { fixture: true },
       inputTokens: this.omitUsage ? null : 20,
       outputTokens: this.omitUsage ? null : 10,
       totalTokens: this.omitUsage ? null : 30,
@@ -262,6 +259,79 @@ class FakeAdapter implements ProviderAdapter {
       latencyMs: 5
     };
   }
+}
+
+function fakeResponse(request: ProviderExecutionRequest) {
+  const common = {
+    prompt_type: request.promptType,
+    contract_version: request.responseContractVersion,
+    evidence: [
+      {
+        claim: "Provider evidence",
+        source: `${request.provider}-provider`,
+        confidence: 0.6
+      }
+    ],
+    summary: "Provider evidence"
+  };
+  if (request.promptType === "domain_category_classification") {
+    return { ...common, matches: [] };
+  }
+  const result =
+    request.promptType === "visibility"
+      ? {
+          target_mentioned: true,
+          mention_likelihood: 0.6,
+          recommendation_likelihood: 0.6,
+          competitive_prominence: 0.6,
+          query_intents: [],
+          strengths: [],
+          visibility_gaps: [],
+          confidence: 0.6
+        }
+      : request.promptType === "ranking"
+        ? {
+            requested_top_k:
+              request.promptDepth === "weak"
+                ? 5
+                : request.promptDepth === "medium"
+                  ? 10
+                  : 20,
+            found: true,
+            rank_position: 1,
+            ordered_candidates: [
+              { rank: 1, name: request.exactTargetName }
+            ],
+            mention_count: 1,
+            confidence: 0.6
+          }
+        : request.promptType === "competitor"
+          ? {
+              direct_competitors: [],
+              indirect_competitors: [],
+              target_differentiation: "Fixture differentiation",
+              competitive_pressure: 0.5,
+              confidence: 0.6
+            }
+          : request.promptType === "price_range"
+            ? {
+                applicability: "unknown",
+                currency: null,
+                minimum: null,
+                maximum: null,
+                pricing_basis: "Unknown",
+                uncertainty: "Fixture",
+                confidence: 0.2
+              }
+            : {
+                pros: [],
+                cons: [],
+                best_fit_for: [],
+                poor_fit_for: [],
+                comparison_context: "Fixture context",
+                confidence: 0.6
+              };
+  return { ...common, result };
 }
 
 async function seedRun(
@@ -304,19 +374,31 @@ async function seedRun(
       `
         INSERT INTO analysis_runs (
           idempotency_key, user_id, workspace_id, starting_entity_path_id,
+          category_selection_mode, prompt_depth, prompt_policy_version,
           status, request_payload, started_at
         )
-        VALUES ($1, $2, $3, $4, 'processing', '{}'::jsonb, now())
+        VALUES (
+          $1, $2, $3, $4, 'all', 'high', 'geo-prompt-policy-v1',
+          'processing', jsonb_build_object('domain', $5::text), now()
+        )
         RETURNING analysis_run_id
       `,
-      [`provider_execution-run:${unique}`, userId, workspaceId, pathId]
+      [
+        `provider_execution-run:${unique}`,
+        userId,
+        workspaceId,
+        pathId,
+        `provider-execution-${unique}.example`
+      ]
     )
   ).rows[0]!.analysis_run_id;
+  const modelProfile = providerModelProfile(provider, model);
+  assert.ok(modelProfile);
   await pool.query(
     `INSERT INTO analysis_run_provider_models
-       (analysis_run_id, provider, model, ordinal)
-     VALUES ($1, $2, $3, 0)`,
-    [analysisRunId, provider, model]
+       (analysis_run_id, provider, model, model_profile_version, ordinal)
+     VALUES ($1, $2, $3, $4, 0)`,
+    [analysisRunId, provider, model, modelProfile.modelProfileVersion]
   );
   const itemId = (
     await pool.query<{ analysis_run_item_id: string }>(
@@ -345,34 +427,75 @@ async function seedRun(
   ).rows[0]!.llm_run_id;
   const jobs = [];
   for (const [index, promptType] of promptTypes.entries()) {
+    const promptPolicy = promptTypePolicy(promptType);
     const promptJobId = (
       await pool.query<{ prompt_job_id: string }>(
         `
           INSERT INTO prompt_jobs (
-            idempotency_key, llm_run_id, prompt_type, prompt_version,
+            idempotency_key, llm_run_id, prompt_type, prompt_depth,
+            business_prompt_version, response_contract_version,
             status, prompt_text, started_at
           )
-          VALUES ($1, $2, $3, 'v1', 'processing', $4, now())
+          VALUES (
+            $1, $2, $3, 'high', $4, $5, 'processing', $6, now()
+          )
           RETURNING prompt_job_id
         `,
-        [`provider_execution-prompt:${unique}:${index}`, llmRunId, promptType, `Rendered ${promptType} prompt`]
+        [
+          `provider_execution-prompt:${unique}:${index}`,
+          llmRunId,
+          promptType,
+          promptPolicy.businessPromptVersion,
+          promptPolicy.responseContractVersion,
+          `Rendered ${promptType} prompt`
+        ]
       )
     ).rows[0]!.prompt_job_id;
     const providerJobId = (
       await pool.query<{ provider_job_id: string }>(
         `
           INSERT INTO provider_jobs (
-            idempotency_key, prompt_job_id, provider, model, status
+            idempotency_key, job_kind, prompt_job_id, provider, model,
+            response_contract_version, provider_instruction_profile,
+            model_profile_version, structured_output_mode, request_payload,
+            status
           )
-          VALUES ($1, $2, $3, $4, 'queued')
+          VALUES (
+            $1, 'normal_prompt', $2, $3, $4, $5, $6, $7, $8, $9, 'queued'
+          )
           RETURNING provider_job_id
         `,
-        [`provider_execution-provider:${unique}:${index}`, promptJobId, provider, model]
+        [
+          `provider_execution-provider:${unique}:${index}`,
+          promptJobId,
+          provider,
+          model,
+          promptPolicy.responseContractVersion,
+          modelProfile.providerInstructionProfile,
+          modelProfile.modelProfileVersion,
+          modelProfile.preferredStructuredOutputMode,
+          {
+            entityPathContext: {
+              domain: {
+                id: domainId,
+                name: `provider-execution-${unique}.example`
+              },
+              category: null,
+              brand: null,
+              product: null,
+              useContext: null,
+              canonicalPath: `provider-execution-${unique}.example`,
+              startingLevel: "domain",
+              targetLevel: "domain"
+            }
+          }
+        ]
       )
     ).rows[0]!.provider_job_id;
     jobs.push({
       providerJobId,
       promptJobId,
+      promptType,
       payload: { providerJobId } as ProviderJobCreatedPayload
     });
   }

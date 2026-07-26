@@ -8,10 +8,14 @@ import {
   asObject,
   malformed,
   nonnegativeInteger,
-  normalizedEvidence,
   objectAt,
   stringAt
 } from "../../../utils/provider-response.js";
+import {
+  classificationResponseJsonSchema,
+  normalResponseJsonSchema
+} from "../contracts/provider-response.contracts.js";
+import { providerModelProfile } from "../registry/provider-model.registry.js";
 
 export class ClaudeProviderAdapter implements ProviderAdapter {
   readonly provider = "claude" as const;
@@ -22,7 +26,8 @@ export class ClaudeProviderAdapter implements ProviderAdapter {
   ) {}
 
   supportsModel(model: string) {
-    return model === "claude-3-5-sonnet";
+    const profile = providerModelProfile(this.provider, model);
+    return Boolean(profile?.enabled && profile.adapterSupported);
   }
 
   async execute(request: ProviderExecutionRequest) {
@@ -50,8 +55,23 @@ export class ClaudeProviderAdapter implements ProviderAdapter {
       },
       body: {
         model: request.model,
-        max_tokens: 512,
-        messages: [{ role: "user", content: request.promptText }]
+        max_tokens: request.maximumOutputTokens,
+        temperature: 0,
+        messages: [{ role: "user", content: request.promptText }],
+        tools: [
+          {
+            name: "submit_geo_result",
+            description: "Submit the strict GEO response contract.",
+            input_schema:
+              request.promptType === "domain_category_classification"
+                ? classificationResponseJsonSchema()
+                : normalResponseJsonSchema(
+                    request.promptType,
+                    request.responseContractVersion
+                  )
+          }
+        ],
+        tool_choice: { type: "tool", name: "submit_geo_result" }
       },
       timeoutMs: request.timeoutMs
     });
@@ -60,6 +80,17 @@ export class ClaudeProviderAdapter implements ProviderAdapter {
     }
     const raw = asObject(response.body, "Claude");
     const blocks = Array.isArray(raw.content) ? raw.content : [];
+    const toolInput = blocks
+      .map((block) => {
+        const item = objectAt(block);
+        return item?.type === "tool_use" &&
+          item.name === "submit_geo_result" &&
+          item.input &&
+          typeof item.input === "object"
+          ? item.input
+          : null;
+      })
+      .find((item) => item !== null);
     const text = blocks
       .map((block) => {
         const item = objectAt(block);
@@ -67,19 +98,16 @@ export class ClaudeProviderAdapter implements ProviderAdapter {
       })
       .filter((part): part is string => part !== null)
       .join("");
-    if (!text) throw malformed("Claude", raw);
+    if (!toolInput && !text) throw malformed("Claude", raw);
     const usage = objectAt(raw.usage);
     const inputTokens = nonnegativeInteger(usage?.input_tokens);
     const outputTokens = nonnegativeInteger(usage?.output_tokens);
     return {
-      rawResponse: raw,
-      parsedEvidence: normalizedEvidence({
-        provider: this.provider,
-        model: request.model,
-        promptType: request.promptType,
-        text,
-        refusal: stringAt(raw.stop_reason) === "refusal"
-      }),
+      generatedContent: toolInput ? JSON.stringify(toolInput) : text,
+      sanitizedProviderMetadata: {
+        contentBlockCount: blocks.length,
+        usedToolOutput: Boolean(toolInput)
+      },
       inputTokens,
       outputTokens,
       totalTokens:

@@ -1,4 +1,8 @@
-import type { ProviderName, PromptType } from "../../../common/types/database.types.js";
+import type {
+  PromptDepth,
+  ProviderName,
+  PromptType
+} from "../../../common/types/database.types.js";
 import { decideBudget } from "./budget-policy.service.js";
 import { BudgetRepository } from "../repositories/budget.repository.js";
 import type { BudgetDecision, UsageEstimate } from "../types/budget.types.js";
@@ -27,8 +31,8 @@ export class BudgetCheckService {
     anonymousSessionId: string | null;
     analysisRunId: string;
     promptText: string;
-    promptType: PromptType;
-    promptVersion: string;
+    promptType: PromptType | "domain_category_classification";
+    promptDepth: PromptDepth;
   }): Promise<BudgetCheckResult> {
     const estimate = this.estimator.estimate(input);
     const policies = await this.budgets.lockApplicablePolicies({

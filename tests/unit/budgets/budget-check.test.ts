@@ -33,7 +33,7 @@ describe("budget check and estimated-usage reservation", () => {
       analysisRunId: "10",
       promptText: "Budget-safe canonical prompt",
       promptType: "visibility",
-      promptVersion: "v1"
+      promptDepth: "medium"
     });
 
     assert.equal(result.allowed, true);
@@ -64,7 +64,7 @@ describe("budget check and estimated-usage reservation", () => {
       analysisRunId: "10",
       promptText: "Canonical prompt",
       promptType: "ranking",
-      promptVersion: "v1_light"
+      promptDepth: "weak"
     });
 
     assert.equal(result.allowed, false);
@@ -100,7 +100,7 @@ describe("budget check and estimated-usage reservation", () => {
         analysisRunId: "10",
         promptText: "Canonical prompt",
         promptType: "ranking",
-        promptVersion: "v1_light"
+        promptDepth: "weak"
       }),
       /Unsupported budget currency EUR/
     );

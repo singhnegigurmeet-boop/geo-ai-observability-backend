@@ -1,22 +1,23 @@
 import type {
   JsonObject,
+  ProviderScoreMetricType,
   PromptType,
   ProviderName
 } from "../../../common/types/database.types.js";
 
-export const SCORING_VERSION = "backend-v1";
+export const SCORING_VERSION = "geo-backend-v1";
 export const BASIC_REPORT_VERSION = "basic-v1";
-export const MULTI_PROVIDER_REPORT_VERSION = "multi-provider-v2";
+export const MULTI_PROVIDER_REPORT_VERSION = "multi-provider-geo-v3";
 
 export type ScoreCalculationInput = {
   promptType: PromptType;
-  promptVersion: string;
   provider: ProviderName;
   model: string;
-  parsedResponse: JsonObject;
+  validatedResponse: JsonObject;
 };
 
 export type ScoreCalculation = {
+  metricType: ProviderScoreMetricType;
   score: number;
   components: JsonObject;
 };
@@ -27,7 +28,7 @@ export type ReportScoreRecord = {
   score_components: JsonObject;
   provider: ProviderName;
   model: string;
-  parsed_response: JsonObject;
+  validated_response: JsonObject;
   input_tokens: number | null;
   output_tokens: number | null;
   cost_micros: string | null;

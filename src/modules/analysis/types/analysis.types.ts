@@ -3,6 +3,7 @@ import type {
   AnalysisRunSource,
   EntityPathType,
   JsonObject,
+  PromptDepth,
   ProviderName
 } from "../../../common/types/database.types.js";
 
@@ -12,10 +13,31 @@ export type CanonicalAnalysisRequest = JsonObject & {
   brandId: string | null;
   productId: string | null;
   useContextId: string | null;
+  categorySelection: {
+    mode: "all" | "selected";
+    categoryIds: string[];
+  };
+  promptDepth: PromptDepth;
+  promptPolicyVersion: string;
   providerModels: Array<{
     provider: ProviderName;
     model: string;
   }>;
+};
+
+export type AnalysisPreviewResponse = {
+  normalizedDomain: string;
+  categorySelectionMode: "all" | "selected";
+  resolvedCategoryCandidateCount: number;
+  reusedMatchedCategoryCount: number;
+  classificationRequired: boolean;
+  estimatedSelectedPathCount: number;
+  applicablePromptCount: number;
+  resolvedModelCount: number;
+  estimatedProviderJobCount: number;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  estimatedCostMicros: { minimum: number; maximum: number };
 };
 
 export type CreateAnalysisResponse = {

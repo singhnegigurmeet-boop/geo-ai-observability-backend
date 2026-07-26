@@ -24,6 +24,18 @@ export class AnalysisRunExpansionRepository {
     return result.rows[0] ?? null;
   }
 
+  async hasItems(analysisRunId: string) {
+    const result = await this.database.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM analysis_run_items
+         WHERE analysis_run_id = $1
+       ) AS exists`,
+      [analysisRunId]
+    );
+    return result.rows[0]?.exists ?? false;
+  }
+
   async listActiveCategoryChildren(domainId: string, limit: number) {
     return this.children(
       `
@@ -44,6 +56,44 @@ export class AnalysisRunExpansionRepository {
         LIMIT $2
       `,
       [domainId, limit],
+      (childId) => ({
+        domainId,
+        categoryId: childId,
+        brandId: null,
+        productId: null,
+        useContextId: null,
+        pathType: "category"
+      })
+    );
+  }
+
+  async listRequestedCategoryChildren(
+    analysisRunId: string,
+    domainId: string,
+    limit: number
+  ) {
+    return this.children(
+      `
+        SELECT
+          relationship.domain_category_id AS relationship_id,
+          relationship.sort_order,
+          relationship.created_at,
+          relationship.category_id AS child_id
+        FROM analysis_run_requested_categories AS requested
+        JOIN domain_categories AS relationship
+          ON relationship.category_id = requested.category_id
+         AND relationship.domain_id = $2
+         AND relationship.is_active
+        JOIN categories AS child
+          ON child.category_id = relationship.category_id AND child.is_active
+        WHERE requested.analysis_run_id = $1
+        ORDER BY relationship.classification_rank ASC NULLS LAST,
+                 relationship.sort_order ASC NULLS LAST,
+                 requested.ordinal,
+                 relationship.domain_category_id
+        LIMIT $3
+      `,
+      [analysisRunId, domainId, limit],
       (childId) => ({
         domainId,
         categoryId: childId,
@@ -222,7 +272,39 @@ export class AnalysisRunExpansionRepository {
             error_code = NULL,
             error_message = NULL,
             updated_at = now()
-        WHERE analysis_run_id = $1 AND status = 'queued'
+        WHERE analysis_run_id = $1 AND status IN ('queued', 'processing')
+      `,
+      [analysisRunId]
+    );
+  }
+
+  async latestClassificationStatus(analysisRunId: string) {
+    const result = await this.database.query<{ status: string }>(
+      `
+        SELECT status
+        FROM domain_category_classification_jobs
+        WHERE analysis_run_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [analysisRunId]
+    );
+    return result.rows[0]?.status ?? null;
+  }
+
+  async markClassificationFailed(analysisRunId: string) {
+    await this.database.query(
+      `
+        UPDATE analysis_runs
+        SET status = 'failed',
+            started_at = COALESCE(started_at, now()),
+            completed_at = now(),
+            error_code = 'CLASSIFICATION_EVIDENCE_UNAVAILABLE',
+            error_message =
+              'Domain category classification did not produce valid evidence.',
+            updated_at = now()
+        WHERE analysis_run_id = $1
+          AND status IN ('queued', 'processing')
       `,
       [analysisRunId]
     );

@@ -62,7 +62,13 @@ describe("analysis submission validation", () => {
     );
     for (const invalid of [
       { providerModels: [] },
-      { providerModels: [{ provider: "openai", model: "mock-fast" }] }
+      { providerModels: [{ provider: "openai" }] },
+      {
+        categorySelection: {
+          mode: "selected",
+          categoryIds: ["1", "1"]
+        }
+      }
     ]) {
       assert.equal(
         createAnalysisRequestSchema.safeParse({

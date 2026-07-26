@@ -1,19 +1,26 @@
 import { z } from "zod";
 import { ApplicationError } from "../../../common/errors/application-error.js";
 import type { RequestHandler } from "express";
+import { MAX_ANALYSIS_PROVIDER_MODELS } from "../../providers/registry/provider-model.registry.js";
 
 const databaseId = z
   .string()
   .regex(/^[1-9]\d*$/, "Must be a positive database identifier");
 
 const providerName = z.enum(["mock", "openai", "gemini", "claude"]);
-const providerModel = z.enum([
-  "mock-fast",
-  "mock-standard",
-  "mock-quality",
-  "gpt-4o-mini",
-  "gemini-1.5-flash",
-  "claude-3-5-sonnet"
+const categorySelection = z.union([
+  z.object({ mode: z.literal("all") }).strict(),
+  z
+    .object({
+      mode: z.literal("selected"),
+      categoryIds: z.array(databaseId).min(1).max(50)
+    })
+    .strict()
+]);
+
+const providerModelSelection = z.union([
+  z.object({ provider: providerName, model: z.string().trim().min(1).max(255) }).strict(),
+  z.object({ provider: providerName, selection: z.literal("all") }).strict()
 ]);
 
 export const createAnalysisRequestSchema = z
@@ -23,36 +30,26 @@ export const createAnalysisRequestSchema = z
     brandId: databaseId.optional(),
     productId: databaseId.optional(),
     useContextId: databaseId.optional(),
+    categorySelection: categorySelection.default({ mode: "all" }),
+    promptDepth: z.enum(["weak", "medium", "high"]).optional(),
     providerModels: z
-      .array(
-        z
-          .object({
-            provider: providerName,
-            model: providerModel
-          })
-          .strict()
-      )
+      .array(providerModelSelection)
       .min(1)
-      .max(4)
+      .max(MAX_ANALYSIS_PROVIDER_MODELS)
       .optional()
   })
   .strict()
   .superRefine((value, context) => {
-    for (const [index, pair] of (value.providerModels ?? []).entries()) {
-      const expectedProvider = pair.model.startsWith("mock-")
-        ? "mock"
-        : pair.model === "gpt-4o-mini"
-          ? "openai"
-          : pair.model === "gemini-1.5-flash"
-            ? "gemini"
-            : "claude";
-      if (pair.provider !== expectedProvider) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["providerModels", index, "model"],
-          message: "Provider and model must be an allowed exact pair"
-        });
-      }
+    if (
+      value.categorySelection.mode === "selected" &&
+      new Set(value.categorySelection.categoryIds).size !==
+        value.categorySelection.categoryIds.length
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["categorySelection", "categoryIds"],
+        message: "Duplicate category IDs are not allowed"
+      });
     }
     if (value.brandId && !value.categoryId) {
       addDependencyIssue(context, "brandId", "categoryId");
@@ -111,6 +108,10 @@ function addDependencyIssue(
   });
 }
 
-export type CreateAnalysisRequest = z.infer<
-  typeof createAnalysisRequestSchema
->;
+type ParsedCreateAnalysisRequest = z.infer<typeof createAnalysisRequestSchema>;
+export type CreateAnalysisRequest = Omit<
+  ParsedCreateAnalysisRequest,
+  "categorySelection"
+> & {
+  categorySelection?: ParsedCreateAnalysisRequest["categorySelection"];
+};

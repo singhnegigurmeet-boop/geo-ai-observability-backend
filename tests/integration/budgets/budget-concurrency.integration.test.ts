@@ -26,6 +26,8 @@ import type {
   ProviderResultCreatedPayload
 } from "../../../src/modules/scoring/messages/provider-score-worker.messages.js";
 import type { PromptType } from "../../../src/common/types/database.types.js";
+import { promptTypePolicy } from "../../../src/modules/prompts/policies/prompt-policy.registry.js";
+import { providerModelProfile } from "../../../src/modules/providers/registry/provider-model.registry.js";
 
 const enabled = process.env.RUN_BUDGET_CONCURRENCY_INTEGRATION_TESTS === "true";
 const lightPrompts: PromptType[] = ["visibility", "competitor", "ranking"];
@@ -627,11 +629,11 @@ describe(
           providerResultId: outcome.providerResultId
         });
       }
-      for (const result of resultPayloads) {
+      for (const result of [resultPayloads[0]!, resultPayloads[2]!]) {
         await new ProviderScoreService(pool).process(result);
       }
-      assert.equal(await count(pool, "provider_scores"), 3);
-      assert.equal(await count(pool, "reports"), 3);
+      assert.equal(await count(pool, "provider_scores"), 2);
+      assert.equal(await count(pool, "reports"), 2);
       assert.equal(await runStatus(pool, fixture.analysisRunId), "completed");
     });
   }
@@ -719,10 +721,12 @@ async function seedRun(
       `
         INSERT INTO analysis_runs (
           idempotency_key, anonymous_session_id, user_id, workspace_id,
-          starting_entity_path_id, status, request_payload, started_at
+          starting_entity_path_id, category_selection_mode, prompt_depth,
+          prompt_policy_version, status, request_payload, started_at
         )
         VALUES (
-          $1, $2, $3, $4, $5, 'processing', '{}'::jsonb, now()
+          $1, $2, $3, $4, $5, 'all', $6, 'geo-prompt-policy-v1',
+          'processing', jsonb_build_object('domain', $7::text), now()
         )
         RETURNING analysis_run_id
       `,
@@ -731,15 +735,20 @@ async function seedRun(
         anonymousSessionId,
         userId,
         workspaceId,
-        pathId
+        pathId,
+        actor === "anonymous" ? "weak" : "medium",
+        `budget-${unique}.example`
       ]
     )
   ).rows[0]!.analysis_run_id;
+  const model = actor === "anonymous" ? "mock-fast" : "mock-standard";
+  const modelProfile = providerModelProfile("mock", model);
+  assert.ok(modelProfile);
   await pool.query(
     `INSERT INTO analysis_run_provider_models
-       (analysis_run_id, provider, model, ordinal)
-     VALUES ($1, 'mock', $2, 0)`,
-    [analysisRunId, actor === "anonymous" ? "mock-fast" : "mock-standard"]
+       (analysis_run_id, provider, model, model_profile_version, ordinal)
+     VALUES ($1, 'mock', $2, $3, 0)`,
+    [analysisRunId, model, modelProfile.modelProfileVersion]
   );
   const itemId = (
     await pool.query<{ analysis_run_item_id: string }>(
@@ -772,47 +781,73 @@ async function seedRun(
     promptJobId: string;
     promptText: string;
     promptType: PromptType;
-    promptVersion: string;
+    promptDepth: "weak" | "medium";
     model: string;
     payload: ProviderJobCreatedPayload;
   }> = [];
   for (const [index, promptType] of promptTypes.entries()) {
-    const promptVersion = actor === "anonymous" ? "v1_light" : "v1";
+    const promptDepth = actor === "anonymous" ? "weak" : "medium";
+    const promptPolicy = promptTypePolicy(promptType);
     const promptText =
       `Canonical ${promptType} prompt for ${unique} item ${index}.`;
     const promptJobId = (
       await pool.query<{ prompt_job_id: string }>(
         `
           INSERT INTO prompt_jobs (
-            idempotency_key, llm_run_id, prompt_type, prompt_version,
+            idempotency_key, llm_run_id, prompt_type, prompt_depth,
+            business_prompt_version, response_contract_version,
             status, prompt_text, started_at
           )
-          VALUES ($1, $2, $3, $4, 'processing', $5, now())
+          VALUES ($1, $2, $3, $4, $5, $6, 'processing', $7, now())
           RETURNING prompt_job_id
         `,
         [
           `budget-prompt:${unique}:${promptType}:${index}`,
           llmRunId,
           promptType,
-          promptVersion,
+          promptDepth,
+          promptPolicy.businessPromptVersion,
+          promptPolicy.responseContractVersion,
           promptText
         ]
       )
     ).rows[0]!.prompt_job_id;
-    const model = actor === "anonymous" ? "mock-fast" : "mock-standard";
     const providerJobId = (
       await pool.query<{ provider_job_id: string }>(
         `
           INSERT INTO provider_jobs (
-            idempotency_key, prompt_job_id, provider, model, status
+            idempotency_key, job_kind, prompt_job_id, provider, model,
+            response_contract_version, provider_instruction_profile,
+            model_profile_version, structured_output_mode, request_payload,
+            status
           )
-          VALUES ($1, $2, 'mock', $3, 'queued')
+          VALUES (
+            $1, 'normal_prompt', $2, 'mock', $3, $4,
+            'mock-json-schema-v1', $5, 'json_schema', $6, 'queued'
+          )
           RETURNING provider_job_id
         `,
         [
           `budget-provider:${unique}:${promptType}:${index}`,
           promptJobId,
-          model
+          model,
+          promptPolicy.responseContractVersion,
+          modelProfile.modelProfileVersion,
+          {
+            entityPathContext: {
+              domain: {
+                id: domainId,
+                name: `budget-${unique}.example`
+              },
+              category: null,
+              brand: null,
+              product: null,
+              useContext: null,
+              canonicalPath: `budget-${unique}.example`,
+              startingLevel: "domain",
+              targetLevel: "domain"
+            }
+          }
         ]
       )
     ).rows[0]!.provider_job_id;
@@ -821,7 +856,7 @@ async function seedRun(
       promptJobId,
       promptText,
       promptType,
-      promptVersion,
+      promptDepth,
       model,
       payload: {
         providerJobId
@@ -840,7 +875,7 @@ async function seedRun(
 function estimateFor(job: {
   promptText: string;
   promptType: PromptType;
-  promptVersion: string;
+  promptDepth: "weak" | "medium";
   model: string;
 }) {
   return new TokenEstimatorService().estimate({
@@ -848,7 +883,7 @@ function estimateFor(job: {
     model: job.model,
     promptText: job.promptText,
     promptType: job.promptType,
-    promptVersion: job.promptVersion
+    promptDepth: job.promptDepth
   });
 }
 

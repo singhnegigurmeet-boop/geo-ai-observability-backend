@@ -8,13 +8,13 @@ import { EntityPathRepository } from "../../hierarchy/repositories/entity-path.r
 import { OutboxEventWriterRepository } from "../../outbox/repositories/outbox-event-writer.repository.js";
 import {
   parseProviderModels,
-  providerModelPairs,
   resolveProviderModelSet,
 } from "../../providers/policies/provider-model.policy.js";
 import { FailureRecordRepository } from "../../reliability/repositories/failure-record.repository.js";
 import { SchedulerRepository } from "../repositories/scheduler.repository.js";
 import { WorkspaceAuthorizationService } from "../../workspaces/services/workspace-authorization.service.js";
 import { WorkspaceMemberRepository } from "../../workspaces/repositories/workspace-member.repository.js";
+import { PROMPT_POLICY_VERSION } from "../../prompts/policies/prompt-policy.registry.js";
 
 type SchedulerDatabase = DatabaseExecutor & TransactionPool;
 
@@ -61,15 +61,44 @@ export class SchedulerService {
           );
         }
         if (job.timezone !== "UTC") {
-          throw new Error("Interval schedules require UTC");
+          throw new SchedulerValidationError(
+            "SCHEDULER_TIMEZONE_INVALID",
+            "Interval schedules require UTC"
+          );
+        }
+        if (job.prompt_policy_version !== PROMPT_POLICY_VERSION) {
+          throw new SchedulerValidationError(
+            "PROMPT_POLICY_VERSION_UNAVAILABLE",
+            "Scheduled prompt policy version is no longer executable"
+          );
         }
         const selection = resolveProviderModelSet({
           actorType: "user",
           providerModels: parseProviderModels(
             job.request_payload.providerModels
           ),
+          promptDepth: job.prompt_depth,
           realProvidersEnabled: this.realProvidersEnabled
         });
+        const categoryIds =
+          await schedules.activeRequestedCategoryIds(job.scheduler_job_id);
+        const expectedCategoryCount = await client.query<{ count: string }>(
+          `
+            SELECT count(*)::bigint AS count
+            FROM scheduler_job_requested_categories
+            WHERE scheduler_job_id = $1
+          `,
+          [job.scheduler_job_id]
+        );
+        if (
+          categoryIds.length === 0 ||
+          categoryIds.length !== Number(expectedCategoryCount.rows[0]?.count ?? 0)
+        ) {
+          throw new SchedulerValidationError(
+            "SCHEDULED_CATEGORY_SET_INVALID",
+            "One or more frozen scheduled categories are inactive"
+          );
+        }
         const dueAt = job.next_run_at;
         const tickKey =
           `scheduled_analysis:${job.scheduler_job_id}:${dueAt.toISOString()}`;
@@ -77,7 +106,8 @@ export class SchedulerService {
           job,
           idempotencyKey: tickKey,
           policy: {
-            providerModels: providerModelPairs(selection)
+            providerModels: selection,
+            categoryIds
           }
         });
         await new OutboxEventWriterRepository(client).createOrReuse({
@@ -112,6 +142,17 @@ export class SchedulerService {
         };
       } catch (error) {
         await client.query("ROLLBACK TO SAVEPOINT scheduler_tick_work");
+        if (
+          !(error instanceof SchedulerValidationError) &&
+          !(
+            error &&
+            typeof error === "object" &&
+            "permanent" in error &&
+            error.permanent === true
+          )
+        ) {
+          throw error;
+        }
         await schedules.pause(job.scheduler_job_id);
         await new FailureRecordRepository(client).createOrReuse({
           queueName: "scheduler_queue",
@@ -162,7 +203,8 @@ export function parseInterval(expression: string) {
   const match = /^interval:([1-9]\d*)$/.exec(expression);
   const seconds = match ? Number(match[1]) : NaN;
   if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > 31_536_000) {
-    throw new Error(
+    throw new SchedulerValidationError(
+      "SCHEDULE_EXPRESSION_INVALID",
       "schedule_expression must be interval:<seconds> between 60 and 31536000"
     );
   }

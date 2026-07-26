@@ -31,6 +31,8 @@ provider children are terminal.
 ```text
 HTTP / scheduler
   -> analysis_run
+  -> frozen requested categories
+  -> optional domain-category classification
   -> analysis_run_items
   -> llm_runs
   -> prompt_jobs
@@ -68,6 +70,8 @@ Final event payloads are:
 | Event | Payload |
 | --- | --- |
 | `analysis_run.created` | `analysisRunId` |
+| `domain_category_classification.created` | `classificationJobId` |
+| `domain_category_classification_result.created` | `providerResultId` |
 | `analysis_run_item.created` | `analysisRunItemId` |
 | `llm_run.created` | `llmRunId` |
 | `prompt_job.created` | `promptJobId` |
@@ -79,14 +83,16 @@ Final event payloads are:
 
 An empty database is bootstrapped by one migration:
 `src/common/database/migrations/001_v6_final_baseline.sql`. It directly creates the final
-31-table schema, enums, constraints, indexes, functions, and triggers.
+34-table schema, 26 enums, constraints, indexes, functions, and triggers.
 
 The tables cover:
 
 - identity: `users`, `user_sessions`, `anonymous_sessions`
 - workspaces: `workspaces`, `workspace_members`, `workspace_role_requests`
-- hierarchy: masters, relationship tables, and `entity_paths`
-- analysis: `analysis_runs`, frozen `analysis_run_provider_models`, and items
+- hierarchy: masters, relationship tables with classification provenance, and
+  `entity_paths`
+- analysis: `analysis_runs`, frozen requested categories, classification jobs,
+  frozen provider models, and items
 - execution: `llm_runs`, `prompt_jobs`, `provider_jobs`, `provider_results`
 - interpretation: `provider_scores`, immutable `reports`
 - limits/usage: `budget_policies`, `token_usage`
@@ -135,11 +141,13 @@ A successful upstream response can be valid evidence, a valid refusal, or
 invalid evidence. Invalid evidence is terminal and unscored. Transport and
 configuration failures are technical failures, not invalid evidence.
 
-Each valid `provider_result` can receive one immutable score per scoring
-version. Reports are immutable snapshots. New meaningful evidence creates a new
-revision; deep-equal state does not. Reports expose provider/model provenance
-and honest pending, valid, invalid, failed, paused, or cancelled coverage.
-Missing or failed evidence is never converted to numeric zero.
+Valid visibility and ranking results receive immutable, metric-specific scores.
+Competitor, price, and pros-and-cons results are diagnostic evidence and do not
+receive generic numeric scores. Reports are immutable snapshots. New meaningful
+evidence creates a new revision; deep-equal state does not. Reports expose
+classification and provider/model provenance plus honest pending, valid,
+invalid, failed, paused, cancelled, or never-materialized coverage. Missing or
+failed evidence is never converted to numeric zero.
 
 Final report outcomes include completed, completed-empty, failed-empty,
 budget-paused partial, cancelled-empty, and reachable cancelled-partial states.
@@ -187,9 +195,10 @@ npm run docker:up
 
 This starts PostgreSQL and RabbitMQ, applies the final baseline through the
 one-shot `migrate` service, then starts the API, outbox dispatcher, analysis
-workers, LLM worker, prompt worker, mock provider worker, scoring worker,
-scheduler, and notification worker. All application processes wait for a
-successful bootstrap. Real-provider workers are opt-in:
+workers, classification and classification-result workers, LLM worker, prompt
+worker, mock provider worker, scoring worker, scheduler, and notification
+worker. All application processes wait for a successful bootstrap.
+Real-provider workers are opt-in:
 
 ```bash
 docker compose --profile real-providers up -d --build
@@ -197,9 +206,9 @@ docker compose --profile real-providers up -d --build
 
 Individual process scripts are available in `package.json`, including
 `outbox:start`, `analysis-worker:start`, `analysis-item-worker:start`,
+`classification-worker:start`, `classification-result-worker:start`,
 `llm-run-worker:start`, `prompt-worker:start`, provider-worker scripts,
-`scoring-worker:start`, `scheduler-worker:start`, and
-`notification-worker:start`.
+`scoring-worker:start`, `scheduler-worker:start`, and `notification-worker:start`.
 
 ## Testing
 
@@ -222,6 +231,8 @@ regressions. The full profile is intentionally excluded from `verify` because
 it is slower and disruptive by design; `verify` includes the standard E2E gate.
 
 ## HTTP API
+
+- `POST /v1/analysis/preview` - validate and preview the frozen execution plan
 
 - `GET /health` — process liveness
 - `GET /ready` — PostgreSQL, exact baseline ledger, RabbitMQ, queues, and DLQs

@@ -1,17 +1,18 @@
 import type { DatabaseExecutor } from "../../../common/database/database-executor.js";
 import type {
-  JsonObject,
   PromptType,
+  PromptDepth,
   ProviderJobRow,
-  ProviderResultRow,
   TokenUsageRow
 } from "../../../common/types/database.types.js";
 
 export type MockProviderExecutionState = ProviderJobRow & {
   prompt_status: string;
   prompt_text: string | null;
-  prompt_type: PromptType;
-  prompt_version: string;
+  prompt_type: PromptType | null;
+  prompt_depth: PromptDepth | null;
+  business_prompt_version: string | null;
+  response_contract_version: string;
   analysis_run_id: string;
   analysis_run_status: string;
   anonymous_session_id: string | null;
@@ -30,7 +31,9 @@ export class MockProviderRepository {
           prompt.status AS prompt_status,
           prompt.prompt_text,
           prompt.prompt_type,
-          prompt.prompt_version,
+          prompt.prompt_depth,
+          prompt.business_prompt_version,
+          prompt.response_contract_version,
           item.analysis_run_id,
           run.status AS analysis_run_status,
           run.anonymous_session_id,
@@ -67,76 +70,6 @@ export class MockProviderRepository {
       [providerJobId]
     );
     return Boolean(result.rows[0]);
-  }
-
-  async createOrReuseResult(input: {
-    providerJobId: string;
-    model: string;
-    parsedResponse: JsonObject;
-    rawResponse: string;
-  }) {
-    const idempotencyKey = `provider_result:${input.providerJobId}`;
-    const inserted = await this.database.query<ProviderResultRow>(
-      `
-        INSERT INTO provider_results (
-          idempotency_key,
-          provider_job_id,
-          provider,
-          status,
-          provider_request_id,
-          model_version,
-          raw_response,
-          parsed_response,
-          validation_errors,
-          finish_reason,
-          latency_ms,
-          received_at
-        )
-        VALUES (
-          $1, $2, 'mock', 'valid', $3, $4, $5, $6,
-          '[]'::jsonb, 'mock_complete', 0, now()
-        )
-        ON CONFLICT (provider_job_id) DO NOTHING
-        RETURNING *
-      `,
-      [
-        idempotencyKey,
-        input.providerJobId,
-        `mock:${input.providerJobId}`,
-        input.model,
-        input.rawResponse,
-        input.parsedResponse
-      ]
-    );
-    if (inserted.rows[0]) {
-      return inserted.rows[0];
-    }
-    const existing = await this.database.query<ProviderResultRow>(
-      `
-        SELECT *
-        FROM provider_results
-        WHERE provider_job_id = $1
-          AND idempotency_key = $2
-          AND provider = 'mock'
-          AND status = 'valid'
-          AND provider_request_id = $3
-          AND model_version = $4
-          AND raw_response = $5
-          AND parsed_response = $6::jsonb
-      `,
-      [
-        input.providerJobId,
-        idempotencyKey,
-        `mock:${input.providerJobId}`,
-        input.model,
-        input.rawResponse,
-        input.parsedResponse
-      ]
-    );
-    if (!existing.rows[0]) {
-      throw new Error("Existing mock provider result violates stable evidence");
-    }
-    return existing.rows[0];
   }
 
   async createOrReuseActualUsage(input: {

@@ -7,10 +7,14 @@ import {
 
 describe("provider-set policy", () => {
   it("uses fixed actor defaults", () => {
-    assert.deepEqual(resolveProviderModelSet({ actorType: "anonymous" }), [
+    assert.deepEqual(resolveProviderModelSet({ actorType: "anonymous" }).map(
+      ({ provider, model, queueName }) => ({ provider, model, queueName })
+    ), [
       { provider: "mock", model: "mock-fast", queueName: "mock_queue" }
     ]);
-    assert.deepEqual(resolveProviderModelSet({ actorType: "user" }), [
+    assert.deepEqual(resolveProviderModelSet({ actorType: "user" }).map(
+      ({ provider, model, queueName }) => ({ provider, model, queueName })
+    ), [
       { provider: "mock", model: "mock-standard", queueName: "mock_queue" }
     ]);
   });
@@ -78,17 +82,17 @@ describe("provider-set policy", () => {
     );
   });
 
-  it("enforces the maximum final set size", () => {
-    assert.throws(
-      () =>
-        resolveProviderModelSet({
-          actorType: "user",
-          providerModels: Array.from({ length: 5 }, () => ({
-            provider: "mock" as const,
-            model: "mock-fast"
-          }))
-        }),
-      InvalidProviderModelSelectionError
+  it("expands vendor-wide all into the registry-bounded exact set", () => {
+    assert.deepEqual(
+      resolveProviderModelSet({
+        actorType: "user",
+        providerModels: [{ provider: "mock", selection: "all" }]
+      }).map(({ provider, model }) => ({ provider, model })),
+      [
+        { provider: "mock", model: "mock-fast" },
+        { provider: "mock", model: "mock-quality" },
+        { provider: "mock", model: "mock-standard" }
+      ]
     );
   });
 });

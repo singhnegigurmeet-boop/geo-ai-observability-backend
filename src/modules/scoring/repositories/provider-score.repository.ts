@@ -3,6 +3,7 @@ import type {
   AnalysisExecutionStatus,
   JsonObject,
   PromptType,
+  ProviderScoreMetricType,
   ProviderName,
   ProviderScoreRow,
   ProviderResultStatus
@@ -14,13 +15,12 @@ export type ProviderResultScoringState = {
   prompt_job_id: string;
   analysis_run_id: string;
   result_status: ProviderResultStatus;
-  parsed_response: JsonObject | null;
+  validated_response: JsonObject | null;
   provider: ProviderName;
   model: string;
   provider_job_status: string;
   prompt_job_status: string;
   prompt_type: PromptType;
-  prompt_version: string;
 };
 
 export class ProviderScoreRepository {
@@ -35,13 +35,13 @@ export class ProviderScoreRepository {
           prompt.prompt_job_id,
           item.analysis_run_id,
           result.status AS result_status,
-          result.parsed_response,
+          result.validated_response,
           job.provider,
           job.model,
           job.status AS provider_job_status,
           prompt.status AS prompt_job_status,
           prompt.prompt_type,
-          prompt.prompt_version
+          prompt.response_contract_version
         FROM provider_results AS result
         JOIN provider_jobs AS job
           ON job.provider_job_id = result.provider_job_id
@@ -64,25 +64,28 @@ export class ProviderScoreRepository {
     score: number;
     components: JsonObject;
     scoringVersion: string;
+    metricType: ProviderScoreMetricType;
   }) {
     const idempotencyKey =
-      `provider_score:${input.providerResultId}:${input.scoringVersion}`;
+      `provider_score:${input.providerResultId}:${input.scoringVersion}:${input.metricType}`;
     const inserted = await this.database.query<ProviderScoreRow>(
       `
         INSERT INTO provider_scores (
           idempotency_key,
           provider_result_id,
+          metric_type,
           scoring_version,
           score,
           score_components
         )
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (provider_result_id, scoring_version) DO NOTHING
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (provider_result_id, scoring_version, metric_type) DO NOTHING
         RETURNING *
       `,
       [
         idempotencyKey,
         input.providerResultId,
+        input.metricType,
         input.scoringVersion,
         input.score,
         input.components
@@ -98,13 +101,15 @@ export class ProviderScoreRepository {
         FROM provider_scores
         WHERE provider_result_id = $1
           AND scoring_version = $2
-          AND idempotency_key = $3
-          AND score = $4
-          AND score_components = $5::jsonb
+          AND metric_type = $3
+          AND idempotency_key = $4
+          AND score = $5
+          AND score_components = $6::jsonb
       `,
       [
         input.providerResultId,
         input.scoringVersion,
+        input.metricType,
         idempotencyKey,
         input.score,
         input.components

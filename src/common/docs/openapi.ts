@@ -102,6 +102,36 @@ export const openApiDocument = {
         }
       }
     },
+    "/v1/analysis/preview": {
+      post: {
+        tags: ["Analysis"],
+        summary: "Preview canonical analysis fan-out and estimated cost",
+        description:
+          "Uses the same category, prompt-depth, and provider/model planning policies as creation without creating a run.",
+        security: ownershipSecurity,
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/CreateAnalysisRequest" }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Resolved planning estimate",
+            content: {
+              "application/json": {
+                schema: { type: "object", additionalProperties: true }
+              }
+            }
+          },
+          "400": { description: "Invalid input" },
+          "401": { description: "Missing or invalid session" },
+          "403": { description: "Workspace or claim access denied" }
+        }
+      }
+    },
     "/v1/analysis/runs/{analysisRunId}": {
       get: {
         tags: ["Analysis"],
@@ -248,41 +278,81 @@ export const openApiDocument = {
         properties: {
           domain: {
             type: "string",
-            example: "https://www.example.com/catalog?source=campaign",
+            example: "example.com",
             description:
-              "Bare hostname or HTTP(S) URL-like value. Only the normalized public ASCII hostname is retained."
+              "Public ASCII website hostname only. Protocols, paths, ports, credentials, IP addresses, internal names, and free-form text are rejected."
           },
           categoryId: { $ref: "#/components/schemas/DatabaseId" },
           brandId: { $ref: "#/components/schemas/DatabaseId" },
           productId: { $ref: "#/components/schemas/DatabaseId" },
           useContextId: { $ref: "#/components/schemas/DatabaseId" },
+          categorySelection: {
+            oneOf: [
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["mode"],
+                properties: { mode: { type: "string", enum: ["all"] } }
+              },
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["mode", "categoryIds"],
+                properties: {
+                  mode: { type: "string", enum: ["selected"] },
+                  categoryIds: {
+                    type: "array",
+                    minItems: 1,
+                    maxItems: 50,
+                    uniqueItems: true,
+                    items: { $ref: "#/components/schemas/DatabaseId" }
+                  }
+                }
+              }
+            ]
+          },
+          promptDepth: {
+            type: "string",
+            enum: ["weak", "medium", "high"],
+            description:
+              "Anonymous requests are fixed to weak. Logged-in and claimed requests must supply a depth."
+          },
           providerModels: {
             type: "array",
             minItems: 1,
-            maxItems: 4,
+            maxItems: MAX_ANALYSIS_PROVIDER_MODELS,
             description:
               "Optional for logged-in requests. The set is validated, deduplicated, stably sorted, included in idempotency identity, and frozen on the run. Logged-in requests default to mock/mock-standard; anonymous requests always use mock/mock-fast and cannot supply this field.",
             items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["provider", "model"],
-              properties: {
-                provider: {
-                  type: "string",
-                  enum: ["mock", "openai", "gemini", "claude"]
+              oneOf: [
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["provider", "model"],
+                  properties: {
+                    provider: {
+                      type: "string",
+                      enum: [...new Set(PROVIDER_MODEL_REGISTRY.map((profile) => profile.provider))]
+                    },
+                    model: {
+                      type: "string",
+                      enum: PROVIDER_MODEL_REGISTRY.map((profile) => profile.model)
+                    }
+                  }
                 },
-                model: {
-                  type: "string",
-                  enum: [
-                    "mock-fast",
-                    "mock-standard",
-                    "mock-quality",
-                    "gpt-4o-mini",
-                    "gemini-1.5-flash",
-                    "claude-3-5-sonnet"
-                  ]
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["provider", "selection"],
+                  properties: {
+                    provider: {
+                      type: "string",
+                      enum: [...new Set(PROVIDER_MODEL_REGISTRY.map((profile) => profile.provider))]
+                    },
+                    selection: { type: "string", enum: ["all"] }
+                  }
                 }
-              }
+              ]
             }
           }
         }
@@ -475,3 +545,7 @@ export const openApiDocument = {
     }
   }
 } as const;
+import {
+  MAX_ANALYSIS_PROVIDER_MODELS,
+  PROVIDER_MODEL_REGISTRY
+} from "../../modules/providers/registry/provider-model.registry.js";

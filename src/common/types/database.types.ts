@@ -11,6 +11,27 @@ export type WorkspaceRole = "owner" | "admin" | "member" | "viewer";
 export type WorkspaceRoleChangeStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type EntityPathType = "domain" | "category" | "brand" | "product" | "use_context";
 export type AnalysisRunSource = "manual" | "scheduled";
+export type CategorySelectionMode = "all" | "selected";
+export type PromptDepth = "weak" | "medium" | "high";
+export type ClassificationJobStatus =
+  | "queued"
+  | "processing"
+  | "completed"
+  | "completed_empty"
+  | "invalid"
+  | "failed"
+  | "cancelled";
+export type ProviderJobKind =
+  | "normal_prompt"
+  | "domain_category_classification";
+export type ContextValidationStatus =
+  | "valid"
+  | "invalid"
+  | "not_applicable";
+export type ProviderScoreMetricType =
+  | "visibility"
+  | "ranking"
+  | "competitive_pressure";
 export type AnalysisExecutionStatus =
   | "queued"
   | "processing"
@@ -166,7 +187,11 @@ export type DomainCategoryRow = {
   category_id: DbId;
   is_active: boolean;
   sort_order: number | null;
-  source: string | null;
+  source: "manual" | "import" | "llm_classification";
+  classification_provider_result_id: DbId | null;
+  classification_rank: number | null;
+  classification_confidence: NumericString | null;
+  classified_at: Date | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -224,6 +249,9 @@ export type AnalysisRunRow = {
   user_id: DbId | null;
   workspace_id: DbId | null;
   starting_entity_path_id: DbId;
+  category_selection_mode: CategorySelectionMode;
+  prompt_depth: PromptDepth;
+  prompt_policy_version: string;
   source: AnalysisRunSource;
   status: AnalysisExecutionStatus;
   request_payload: JsonObject;
@@ -240,8 +268,42 @@ export type AnalysisRunProviderModelRow = {
   analysis_run_id: DbId;
   provider: ProviderName;
   model: string;
+  model_profile_version: string;
   ordinal: number;
   created_at: Date;
+};
+
+export type AnalysisRunRequestedCategoryRow = {
+  analysis_run_requested_category_id: DbId;
+  analysis_run_id: DbId;
+  category_id: DbId;
+  ordinal: number;
+  created_at: Date;
+};
+
+export type DomainCategoryClassificationJobRow = {
+  domain_category_classification_job_id: DbId;
+  idempotency_key: string;
+  analysis_run_id: DbId;
+  domain_id: DbId;
+  candidate_set_hash: string;
+  status: ClassificationJobStatus;
+  classifier_provider: ProviderName;
+  classifier_model: string;
+  model_profile_version: string;
+  prompt_version: string;
+  response_contract_version: string;
+  provider_instruction_profile: string;
+  structured_output_mode: string;
+  input_payload: JsonObject;
+  rendered_prompt: string | null;
+  candidate_count: number;
+  error_code: string | null;
+  error_message: string | null;
+  started_at: Date | null;
+  completed_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
 };
 
 export type AnalysisRunItemRow = {
@@ -278,7 +340,9 @@ export type PromptJobRow = {
   idempotency_key: string;
   llm_run_id: DbId;
   prompt_type: PromptType;
-  prompt_version: string;
+  prompt_depth: PromptDepth;
+  business_prompt_version: string;
+  response_contract_version: string;
   status: JobStatus;
   prompt_text: string | null;
   input_payload: JsonObject;
@@ -296,9 +360,16 @@ export type PromptJobRow = {
 export type ProviderJobRow = {
   provider_job_id: DbId;
   idempotency_key: string;
-  prompt_job_id: DbId;
+  job_kind: ProviderJobKind;
+  prompt_job_id: DbId | null;
+  classification_job_id: DbId | null;
   provider: ProviderName;
   model: string;
+  response_contract_version: string;
+  provider_instruction_profile: string;
+  model_profile_version: string;
+  structured_output_mode: string;
+  request_hash: string | null;
   status: JobStatus;
   request_payload: JsonObject;
   attempt_count: number;
@@ -318,11 +389,16 @@ export type ProviderResultRow = {
   provider_job_id: DbId;
   provider: ProviderName;
   status: ProviderResultStatus;
+  response_contract_version: string;
   provider_request_id: string | null;
   model_version: string | null;
   raw_response: string;
-  parsed_response: JsonValue | null;
+  raw_response_truncated: boolean;
+  raw_response_original_bytes: number;
+  provider_metadata: JsonObject;
+  validated_response: JsonValue | null;
   validation_errors: JsonValue[];
+  context_validation_status: ContextValidationStatus;
   finish_reason: string | null;
   latency_ms: number;
   received_at: Date;
@@ -368,6 +444,7 @@ export type ProviderScoreRow = {
   provider_score_id: DbId;
   idempotency_key: string;
   provider_result_id: DbId;
+  metric_type: ProviderScoreMetricType;
   scoring_version: string;
   score: NumericString;
   score_components: JsonObject;
@@ -453,6 +530,9 @@ export type SchedulerJobRow = {
   workspace_id: DbId;
   created_by_user_id: DbId;
   starting_entity_path_id: DbId;
+  category_selection_mode: CategorySelectionMode;
+  prompt_depth: PromptDepth;
+  prompt_policy_version: string;
   job_name: string;
   schedule_expression: string;
   timezone: string;
@@ -463,4 +543,12 @@ export type SchedulerJobRow = {
   last_analysis_run_id: DbId | null;
   created_at: Date;
   updated_at: Date;
+};
+
+export type SchedulerJobRequestedCategoryRow = {
+  scheduler_job_requested_category_id: DbId;
+  scheduler_job_id: DbId;
+  category_id: DbId;
+  ordinal: number;
+  created_at: Date;
 };

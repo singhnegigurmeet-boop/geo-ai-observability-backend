@@ -13,6 +13,10 @@ import {
 import { PromptRendererService } from "./prompt-renderer.service.js";
 import type { PromptJobCreatedPayload } from "../messages/prompt-worker.messages.js";
 import type { PromptType } from "../../../common/types/database.types.js";
+import { createHash } from "node:crypto";
+import { EntityPathContextRepository } from "../repositories/entity-path-context.repository.js";
+import { providerModelProfile } from "../../providers/registry/provider-model.registry.js";
+import { isDeepStrictEqual } from "node:util";
 
 type PromptExecutionDatabase = DatabaseExecutor & TransactionPool;
 
@@ -65,18 +69,27 @@ export class PromptExecutionService {
           "Pending prompt job already contains rendered text"
         );
       }
-      const actorType =
-        state.user_id && state.workspace_id ? "user" : "anonymous";
+      const entityPathContext = await new EntityPathContextRepository(
+        client
+      ).find(state.entity_path_id, state.starting_entity_path_id);
+      if (
+        !entityPathContext ||
+        !isDeepStrictEqual(
+          state.input_payload.entityPathContext,
+          entityPathContext
+        )
+      ) {
+        throw new PromptExecutionError(
+          "ENTITY_PATH_CONTEXT_CHANGED",
+          "Frozen prompt context does not match the authoritative hierarchy"
+        );
+      }
       const promptText = this.renderer.render({
         promptType: state.prompt_type,
-        promptVersion: state.prompt_version as "v1" | "v1_light",
-        actorType,
-        normalizedDomain: state.normalized_domain,
-        pathType: state.path_type,
-        categoryName: state.category_name,
-        brandName: state.brand_name,
-        productName: state.product_name,
-        useContextName: state.use_context_name
+        promptDepth: state.prompt_depth,
+        businessPromptVersion: state.business_prompt_version,
+        responseContractVersion: state.response_contract_version,
+        entityPathContext
       });
       if (!promptText.trim()) {
         throw new PromptExecutionError(
@@ -96,7 +109,7 @@ export class PromptExecutionService {
         );
       }
       const providerModels =
-        await new AnalysisRunProviderModelRepository(client).listPairs(
+        await new AnalysisRunProviderModelRepository(client).list(
           state.analysis_run_id
         );
       if (providerModels.length === 0) {
@@ -110,14 +123,51 @@ export class PromptExecutionService {
       let firstProviderJobId: string | null = null;
       for (const pair of providerModels) {
         const selection = validateFrozenProviderModel(
-          pair,
-          this.realProvidersEnabled
+          {
+            provider: pair.provider,
+            model: pair.model,
+            modelProfileVersion: pair.model_profile_version
+          },
+          this.realProvidersEnabled,
+          state.prompt_depth
         );
+        const profile = providerModelProfile(
+          selection.provider,
+          selection.model
+        );
+        if (!profile) {
+          throw new PromptExecutionError(
+            "FROZEN_MODEL_PROFILE_MISSING",
+            "Frozen provider model is no longer represented in the registry"
+          );
+        }
+        const requestPayload = {
+          promptJobId: state.prompt_job_id,
+          promptType: state.prompt_type,
+          promptDepth: state.prompt_depth,
+          businessPromptVersion: state.business_prompt_version,
+          responseContractVersion: state.response_contract_version,
+          promptText,
+          entityPathContext,
+          temperature: profile.defaultRequestSettings.temperature,
+          maximumOutputTokens:
+            profile.maximumOutputTokens[state.prompt_depth]
+        };
+        const requestHash = createHash("sha256")
+          .update(JSON.stringify(requestPayload))
+          .digest("hex");
         const providerJob = await jobs.createOrReuse({
           promptJobId: state.prompt_job_id,
           provider: selection.provider,
           model: selection.model,
-          requestPayload: { promptJobId: state.prompt_job_id }
+          responseContractVersion: state.response_contract_version,
+          providerInstructionProfile:
+            selection.providerInstructionProfile,
+          modelProfileVersion: selection.modelProfileVersion,
+          structuredOutputMode:
+            selection.preferredStructuredOutputMode,
+          requestHash,
+          requestPayload
         });
         firstProviderJobId ??= providerJob.provider_job_id;
         await outbox.createOrReuse({

@@ -2,6 +2,8 @@ import type { DatabaseExecutor } from "../../../common/database/database-executo
 import type {
   EntityPathType,
   JobStatus,
+  JsonObject,
+  PromptDepth,
   PromptType
 } from "../../../common/types/database.types.js";
 
@@ -9,7 +11,10 @@ export type PromptExecutionState = {
   prompt_job_id: string;
   llm_run_id: string;
   prompt_type: PromptType;
-  prompt_version: string;
+  prompt_depth: PromptDepth;
+  business_prompt_version: string;
+  response_contract_version: string;
+  input_payload: JsonObject;
   prompt_status: JobStatus;
   prompt_text: string | null;
   analysis_run_item_id: string;
@@ -37,7 +42,10 @@ export class PromptExecutionRepository {
           prompt.prompt_job_id,
           prompt.llm_run_id,
           prompt.prompt_type,
-          prompt.prompt_version,
+          prompt.prompt_depth,
+          prompt.business_prompt_version,
+          prompt.response_contract_version,
+          prompt.input_payload,
           prompt.status AS prompt_status,
           prompt.prompt_text,
           item.analysis_run_item_id,

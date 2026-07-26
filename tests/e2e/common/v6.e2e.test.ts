@@ -41,6 +41,12 @@ import { ProviderWorker } from "../../../src/modules/providers/workers/provider-
 import { FailureRecordRepository } from "../../../src/modules/reliability/repositories/failure-record.repository.js";
 import { AnalysisRunItemWorkerRuntime } from "../../../src/modules/analysis/runtime/analysis-run-item-worker.runtime.js";
 import { AnalysisRunWorkerRuntime } from "../../../src/modules/analysis/runtime/analysis-run-worker.runtime.js";
+import { ClassificationWorkerRuntime } from "../../../src/modules/analysis/runtime/classification-worker.runtime.js";
+import { ClassificationResultWorkerRuntime } from "../../../src/modules/analysis/runtime/classification-result-worker.runtime.js";
+import { ClassificationWorker } from "../../../src/modules/analysis/workers/classification-worker.js";
+import { ClassificationResultWorker } from "../../../src/modules/analysis/workers/classification-result-worker.js";
+import { ClassificationPlanningService } from "../../../src/modules/analysis/services/classification-planning.service.js";
+import { ClassificationResultService } from "../../../src/modules/analysis/services/classification-result.service.js";
 import { LlmRunWorkerRuntime } from "../../../src/modules/llm/runtime/llm-run-worker.runtime.js";
 import { MockProviderWorkerRuntime } from "../../../src/modules/providers/runtime/mock-provider-worker.runtime.js";
 import { NotificationWorkerRuntime } from "../../../src/modules/notifications/runtime/notification-worker.runtime.js";
@@ -165,11 +171,11 @@ describe("GEO V6 final end-to-end runtime", {
 
     const shape = await executionShape(pool, created.body.analysisRunId);
     assert.deepEqual(shape, {
-      prompts: 5,
-      providerJobs: 10,
-      providerResults: 10,
-      providerScores: 10,
-      actualUsage: 10
+      prompts: 3,
+      providerJobs: 6,
+      providerResults: 6,
+      providerScores: 4,
+      actualUsage: 6
     });
     assert.ok(
       (
@@ -232,7 +238,7 @@ describe("GEO V6 final end-to-end runtime", {
       async () =>
         (await runStatus(pool, created.body.analysisRunId)) ===
           "partial_success" &&
-        (await failedProviderJobs(pool, created.body.analysisRunId)) === 5,
+        (await failedProviderJobs(pool, created.body.analysisRunId)) === 3,
       "terminal gap-aware failure"
     );
     await driveUntil(
@@ -249,10 +255,10 @@ describe("GEO V6 final end-to-end runtime", {
     const latest = await latestReport(pool, created.body.analysisRunId);
     assert.equal(latest.report_data.final, true);
     assert.equal(latest.report_data.lifecycleState, "completed_with_gaps");
-    assert.equal(latest.report_data.counts.scored, 5);
-    assert.equal(latest.report_data.counts.failed, 5);
-    assert.equal(await scoreCount(pool, created.body.analysisRunId), 5);
-    assert.ok((await resultCount(pool, created.body.analysisRunId)) >= 5);
+    assert.equal(latest.report_data.counts.scored, 2);
+    assert.equal(latest.report_data.counts.failed, 3);
+    assert.equal(await scoreCount(pool, created.body.analysisRunId), 2);
+    assert.ok((await resultCount(pool, created.body.analysisRunId)) >= 3);
     const deadLetter = await channel.get(deadLetterQueueName("openai_queue"), {
       noAck: false
     });
@@ -340,10 +346,10 @@ describe("GEO V6 final end-to-end runtime", {
        WHERE item.analysis_run_id = $1`,
       [created.body.analysisRunId]
     );
-    assert.deepEqual(invalid.rows[0], { count: "5", scored: "0" });
+    assert.deepEqual(invalid.rows[0], { count: "3", scored: "0" });
     const latest = await latestReport(pool, created.body.analysisRunId);
-    assert.equal(latest.report_data.counts.invalid, 5);
-    assert.equal(latest.report_data.counts.scored, 5);
+    assert.equal(latest.report_data.counts.invalid, 3);
+    assert.equal(latest.report_data.counts.scored, 2);
   });
 
   it("supports pre-provider cancellation, rejects late cancellation, and no-ops delayed messages", async () => {
@@ -516,23 +522,28 @@ describe("GEO V6 final end-to-end runtime", {
 
   it("returns completed_empty without technical failure when expansion has no target", async () => {
     const owner = await createUserOwner(pool, "empty");
-    await seedDomainOnly(pool, "empty.example");
+    const emptyCategoryId = await seedCategoryOnly(
+      pool,
+      "empty.example"
+    );
     const created = await postAnalysis(
       server.url,
       owner,
       "empty-e2e",
       "empty.example",
-      [{ provider: "mock", model: "mock-standard" }]
+      [{ provider: "mock", model: "mock-standard" }],
+      { categoryId: emptyCategoryId }
     );
     await driveUntil(
       dispatcher,
       async () => (await runStatus(pool, created.body.analysisRunId)) === "completed",
       "completed-empty outcome"
     );
+    const emptyReport = await latestReport(pool, created.body.analysisRunId);
+    assert.equal(emptyReport.report_data.lifecycleState, "completed_empty");
     assert.equal(
-      (await latestReport(pool, created.body.analysisRunId)).report_data
-        .lifecycleState,
-      "completed_empty"
+      emptyReport.report_data.reason,
+      "no_applicable_analysis_item"
     );
     assert.equal(await failureCount(pool), 0);
     assert.equal(
@@ -540,6 +551,77 @@ describe("GEO V6 final end-to-end runtime", {
         noAck: true
       }),
       false
+    );
+  });
+
+  it("classifies a domain against the frozen candidate set before expansion", async () => {
+    const owner = await createUserOwner(pool, "classification");
+    const categoryId = await seedClassificationCandidate(
+      pool,
+      "classification.example"
+    );
+    const created = await postAnalysis(
+      server.url,
+      owner,
+      "classification-e2e",
+      "classification.example",
+      [{ provider: "mock", model: "mock-standard" }],
+      {
+        categorySelection: {
+          mode: "selected",
+          categoryIds: [categoryId]
+        }
+      }
+    );
+    assert.equal(created.status, 202);
+    await driveUntil(
+      dispatcher,
+      async () =>
+        (await runStatus(pool, created.body.analysisRunId)) === "completed",
+      "classification-driven completion"
+    );
+    const evidence = await pool.query<{
+      classification_status: string;
+      source: string;
+      classification_rank: number;
+      provider_results: string;
+    }>(
+      `SELECT classification.status AS classification_status,
+              relationship.source,
+              relationship.classification_rank,
+              count(result.provider_result_id)::text AS provider_results
+       FROM domain_category_classification_jobs AS classification
+       JOIN provider_jobs AS job
+         ON job.classification_job_id =
+            classification.domain_category_classification_job_id
+       JOIN provider_results AS result
+         ON result.provider_job_id = job.provider_job_id
+       JOIN domain_categories AS relationship
+         ON relationship.classification_provider_result_id =
+            result.provider_result_id
+       WHERE classification.analysis_run_id = $1
+       GROUP BY classification.status, relationship.domain_category_id`,
+      [created.body.analysisRunId]
+    );
+    assert.deepEqual(evidence.rows, [
+      {
+        classification_status: "completed",
+        source: "llm_classification",
+        classification_rank: 1,
+        provider_results: "1"
+      }
+    ]);
+    assert.deepEqual(await executionShape(pool, created.body.analysisRunId), {
+      prompts: 3,
+      providerJobs: 3,
+      providerResults: 3,
+      providerScores: 2,
+      actualUsage: 3
+    });
+    assert.equal(
+      (await latestReport(pool, created.body.analysisRunId)).report_data
+        .classification.evidenceStatus,
+      "valid"
     );
   });
 
@@ -572,11 +654,11 @@ describe("GEO V6 final end-to-end runtime", {
       "concurrent provider completion"
     );
     assert.deepEqual(await executionShape(pool, runId), {
-      prompts: 5,
-      providerJobs: 10,
-      providerResults: 10,
-      providerScores: 10,
-      actualUsage: 10
+      prompts: 3,
+      providerJobs: 6,
+      providerResults: 6,
+      providerScores: 4,
+      actualUsage: 6
     });
     const revisions = await pool.query<{
       revision: number;
@@ -635,11 +717,11 @@ describe("GEO V6 final end-to-end runtime", {
         `full contention repetition ${repetition}`
       );
       assert.deepEqual(await executionShape(pool, runId), {
-        prompts: 5,
-        providerJobs: 10,
-        providerResults: 10,
-        providerScores: 10,
-        actualUsage: 10
+        prompts: 3,
+        providerJobs: 6,
+        providerResults: 6,
+        providerScores: 4,
+        actualUsage: 6
       });
       const duplicates = await pool.query(
         `SELECT idempotency_key
@@ -690,11 +772,11 @@ describe("GEO V6 final end-to-end runtime", {
       "process restart recovery"
     );
     assert.deepEqual(await executionShape(pool, created.body.analysisRunId), {
-      prompts: 5,
-      providerJobs: 10,
-      providerResults: 10,
-      providerScores: 10,
-      actualUsage: 10
+      prompts: 3,
+      providerJobs: 6,
+      providerResults: 6,
+      providerScores: 4,
+      actualUsage: 6
     });
   });
 
@@ -738,11 +820,11 @@ describe("GEO V6 final end-to-end runtime", {
       "RabbitMQ outage recovery"
     );
     assert.deepEqual(await executionShape(pool, created.body.analysisRunId), {
-      prompts: 5,
-      providerJobs: 10,
-      providerResults: 10,
-      providerScores: 10,
-      actualUsage: 10
+      prompts: 3,
+      providerJobs: 6,
+      providerResults: 6,
+      providerScores: 4,
+      actualUsage: 6
     });
   });
   }
@@ -758,6 +840,24 @@ describe("GEO V6 final end-to-end runtime", {
       new AnalysisRunWorkerRuntime(
         consumerChannel,
         new AnalysisRunWorker(new AnalysisRunExpansionService(database)),
+        failures,
+        options,
+        quietLogger
+      ),
+      new ClassificationWorkerRuntime(
+        consumerChannel,
+        new ClassificationWorker(
+          new ClassificationPlanningService(database)
+        ),
+        failures,
+        options,
+        quietLogger
+      ),
+      new ClassificationResultWorkerRuntime(
+        consumerChannel,
+        new ClassificationResultWorker(
+          new ClassificationResultService(database)
+        ),
         failures,
         options,
         quietLogger
@@ -947,20 +1047,58 @@ async function seedHierarchy(pool: pg.Pool, domainName: string) {
   return path.rows[0]!.entity_path_id;
 }
 
+async function seedCategoryOnly(pool: pg.Pool, domainName: string) {
+  const domainId = await seedDomainOnly(pool, domainName);
+  const unique = crypto.randomUUID();
+  const category = await pool.query<{ category_id: string }>(
+    `INSERT INTO categories (category_name, normalized_name)
+     VALUES ($1, $2) RETURNING category_id`,
+    [`E2E empty ${unique}`, `e2e-empty-${unique}`]
+  );
+  await pool.query(
+    `INSERT INTO domain_categories (domain_id, category_id, sort_order)
+     VALUES ($1, $2, 0)`,
+    [domainId, category.rows[0]!.category_id]
+  );
+  return category.rows[0]!.category_id;
+}
+
+async function seedClassificationCandidate(
+  pool: pg.Pool,
+  domainName: string
+) {
+  await seedDomainOnly(pool, domainName);
+  const unique = crypto.randomUUID();
+  return (
+    await pool.query<{ category_id: string }>(
+      `INSERT INTO categories (category_name, normalized_name)
+       VALUES ($1, $2) RETURNING category_id`,
+      [`E2E candidate ${unique}`, `e2e-candidate-${unique}`]
+    )
+  ).rows[0]!.category_id;
+}
+
 async function postAnalysis(
   baseUrl: string,
   owner: { headers: Record<string, string> },
   idempotencyKey: string,
   domain: string,
-  providerModels?: Array<{ provider: string; model: string }>
+  providerModels?: Array<{ provider: string; model: string }>,
+  extra: Record<string, unknown> = {}
 ) {
+  const authenticated = "authorization" in owner.headers;
   const response = await fetch(`${baseUrl}/v1/analysis`, {
     method: "POST",
     headers: {
       ...owner.headers,
       "idempotency-key": idempotencyKey
     },
-    body: JSON.stringify({ domain, ...(providerModels ? { providerModels } : {}) })
+    body: JSON.stringify({
+      domain,
+      ...(authenticated ? { promptDepth: "high" } : {}),
+      ...(providerModels ? { providerModels } : {}),
+      ...extra
+    })
   });
   return {
     status: response.status,
@@ -1159,14 +1297,30 @@ async function insertSchedule(
   dueAt: Date,
   suffix: string
 ) {
-  await pool.query(
+  const category = await pool.query<{ category_id: string }>(
+    `SELECT relationship.category_id
+     FROM entity_paths AS path
+     JOIN domain_categories AS relationship
+       ON relationship.domain_id = path.domain_id
+      AND relationship.is_active
+     WHERE path.entity_path_id = $1
+     ORDER BY relationship.sort_order NULLS LAST,
+              relationship.domain_category_id
+     LIMIT 1`,
+    [pathId]
+  );
+  const schedule = await pool.query<{ scheduler_job_id: string }>(
     `INSERT INTO scheduler_jobs (
        idempotency_key, workspace_id, created_by_user_id,
-       starting_entity_path_id, job_name, schedule_expression,
+       starting_entity_path_id, category_selection_mode, prompt_depth,
+       prompt_policy_version, job_name, schedule_expression,
        request_payload, next_run_at
-     ) VALUES ($1, $2, $3, $4, $5, 'interval:3600',
+     ) VALUES (
+               $1, $2, $3, $4, 'selected', 'high',
+               'geo-prompt-policy-v1', $5, 'interval:3600',
                '{"providerModels":[{"provider":"mock","model":"mock-standard"}]}',
-               $6)`,
+               $6)
+     RETURNING scheduler_job_id`,
     [
       `e2e-schedule-${suffix}`,
       owner.workspaceId,
@@ -1175,6 +1329,13 @@ async function insertSchedule(
       `E2E ${suffix}`,
       dueAt
     ]
+  );
+  assert.ok(category.rows[0]);
+  await pool.query(
+    `INSERT INTO scheduler_job_requested_categories (
+       scheduler_job_id, category_id, ordinal
+     ) VALUES ($1, $2, 0)`,
+    [schedule.rows[0]!.scheduler_job_id, category.rows[0]!.category_id]
   );
 }
 
@@ -1203,7 +1364,7 @@ class ControlledOpenAiAdapter implements ProviderAdapter {
   async execute(request: ProviderExecutionRequest) {
     const behavior =
       [...this.behaviors.entries()].find(([domain]) =>
-        request.promptText.includes(`domain=${domain}`)
+        request.promptText.includes(`website domain: ${domain}`)
       )?.[1] ?? "success";
     if (behavior === "retry_failure") {
       throw new ProviderExecutionError(
@@ -1222,19 +1383,9 @@ class ControlledOpenAiAdapter implements ProviderAdapter {
         }
       );
     }
-    const parsedEvidence = {
-      evidence: [
-        {
-          claim: `OpenAI ${request.promptType} evidence`,
-          source: "controlled-openai",
-          confidence: 0.8
-        }
-      ],
-      summary: "Controlled OpenAI response"
-    };
     return {
-      rawResponse: parsedEvidence,
-      parsedEvidence,
+      generatedContent: JSON.stringify(controlledResponse(request)),
+      sanitizedProviderMetadata: { controlled: true },
       inputTokens: 20,
       outputTokens: 10,
       totalTokens: 30,
@@ -1244,6 +1395,84 @@ class ControlledOpenAiAdapter implements ProviderAdapter {
       latencyMs: 1
     };
   }
+}
+
+function controlledResponse(request: ProviderExecutionRequest) {
+  const envelope = {
+    prompt_type: request.promptType,
+    contract_version: request.responseContractVersion,
+    evidence: [
+      {
+        claim: `OpenAI ${request.promptType} evidence`,
+        source: "controlled-openai",
+        confidence: 0.8
+      }
+    ],
+    summary: "Controlled OpenAI response"
+  };
+  if (request.promptType === "domain_category_classification") {
+    return {
+      prompt_type: request.promptType,
+      contract_version: request.responseContractVersion,
+      matches: [],
+      summary: envelope.summary
+    };
+  }
+  const result =
+    request.promptType === "visibility"
+      ? {
+          target_mentioned: true,
+          mention_likelihood: 0.8,
+          recommendation_likelihood: 0.7,
+          competitive_prominence: 0.6,
+          query_intents: [],
+          strengths: [],
+          visibility_gaps: [],
+          confidence: 0.8
+        }
+      : request.promptType === "ranking"
+        ? {
+            requested_top_k:
+              request.promptDepth === "weak"
+                ? 5
+                : request.promptDepth === "medium"
+                  ? 10
+                  : 20,
+            found: true,
+            rank_position: 1,
+            ordered_candidates: [
+              { rank: 1, name: request.exactTargetName }
+            ],
+            mention_count: 1,
+            confidence: 0.8
+          }
+        : request.promptType === "competitor"
+          ? {
+              direct_competitors: [],
+              indirect_competitors: [],
+              target_differentiation: "Controlled differentiation",
+              competitive_pressure: 0.5,
+              confidence: 0.8
+            }
+          : request.promptType === "price_range"
+            ? {
+                applicability: "unknown",
+                currency: null,
+                minimum: null,
+                maximum: null,
+                pricing_basis: "No controlled pricing",
+                uncertainty: "Controlled fixture",
+                confidence: 0.2
+              }
+            : {
+                pros: [],
+                cons: [],
+                best_fit_for: [],
+                poor_fit_for: [],
+                comparison_context: "Controlled context",
+                confidence: 0.8
+              };
+  return { ...envelope, result };
 }
 
 async function listen(app: ReturnType<typeof createApp>) {

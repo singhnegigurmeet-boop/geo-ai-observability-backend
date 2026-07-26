@@ -184,37 +184,43 @@ describe(
 
     assert.deepEqual(
       await new AnalysisRunExpansionService(pool).expand(payload(run)),
-      { outcome: "empty", itemCount: 0 }
+      { outcome: "classification_pending", itemCount: 0 }
     );
     const state = await runState(pool, run.runId);
-    assert.equal(state.status, "completed");
+    assert.equal(state.status, "processing");
     assert.equal(state.error_code, null);
     assert.ok(state.started_at);
-    assert.ok(state.completed_at);
+    assert.equal(state.completed_at, null);
     assert.equal((await runItems(pool, run.runId)).length, 0);
     assert.equal(await itemOutboxCount(pool, run.runId), 0);
-    const emptyReport = await pool.query<{
+    const classification = await pool.query<{
       status: string;
-      lifecycle_state: string;
-      target_count: number;
+      candidate_count: number;
     }>(
       `SELECT status,
-              report_data->>'lifecycleState' AS lifecycle_state,
-              (report_data->>'expandedTargetCount')::integer AS target_count
-       FROM reports WHERE analysis_run_id = $1`,
+              jsonb_array_length(input_payload->'candidates') AS candidate_count
+       FROM domain_category_classification_jobs
+       WHERE analysis_run_id = $1`,
       [run.runId]
     );
-    assert.deepEqual(emptyReport.rows, [
-      {
-        status: "completed",
-        lifecycle_state: "completed_empty",
-        target_count: 0
-      }
+    assert.deepEqual(classification.rows, [
+      { status: "queued", candidate_count: 2 }
     ]);
     assert.equal(await countFailureRecords(pool), 0);
     assert.deepEqual(
       await new AnalysisRunExpansionService(pool).expand(payload(run)),
-      { outcome: "noop", itemCount: 0 }
+      { outcome: "classification_pending", itemCount: 0 }
+    );
+    assert.equal(
+      (
+        await pool.query(
+          `SELECT 1
+           FROM domain_category_classification_jobs
+           WHERE analysis_run_id = $1`,
+          [run.runId]
+        )
+      ).rowCount,
+      1
     );
   });
 
@@ -539,18 +545,33 @@ async function createRun(pool: pg.Pool, pathId: string, owner: Owner) {
   const result = await pool.query<{ analysis_run_id: string }>(
     `INSERT INTO analysis_runs
        (idempotency_key, anonymous_session_id, user_id, workspace_id,
-        starting_entity_path_id, request_payload)
-     VALUES ($1, $2, $3, $4, $5, '{}'::jsonb)
+        starting_entity_path_id, category_selection_mode, prompt_depth,
+        prompt_policy_version, request_payload)
+     VALUES (
+       $1, $2, $3, $4, $5, 'all', $6, 'geo-prompt-policy-v1',
+       '{"domain":"expansion.example"}'::jsonb
+     )
      RETURNING analysis_run_id`,
     [
       crypto.randomUUID(),
       owner.anonymousSessionId,
       owner.userId,
       owner.workspaceId,
-      pathId
+      pathId,
+      owner.actorType === "anonymous" ? "weak" : "medium"
     ]
   );
-  return { runId: result.rows[0]!.analysis_run_id, pathId };
+  const runId = result.rows[0]!.analysis_run_id;
+  await pool.query(
+    `INSERT INTO analysis_run_requested_categories (
+       analysis_run_id, category_id, ordinal
+     )
+     SELECT $1, category_id, row_number() OVER (ORDER BY category_id) - 1
+     FROM categories
+     WHERE is_active`,
+    [runId]
+  );
+  return { runId, pathId };
 }
 
 function payload(

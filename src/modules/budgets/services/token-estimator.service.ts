@@ -1,59 +1,33 @@
 import type {
+  PromptDepth,
   PromptType,
   ProviderName
 } from "../../../common/types/database.types.js";
+import { providerModelProfile } from "../../providers/registry/provider-model.registry.js";
 import { estimateCostMicros } from "../policies/provider-pricing.policy.js";
 import type { UsageEstimate } from "../types/budget.types.js";
 
-const outputTokensByPrompt: Record<PromptType, number> = {
-  visibility: 48,
-  competitor: 64,
-  ranking: 48,
-  price_range: 64,
-  pros_cons: 72
-};
-
-const modelOutputMultiplier: Record<
-  ProviderName,
-  Record<string, number>
-> = {
-  mock: {
-    "mock-fast": 0.75,
-    "mock-standard": 1,
-    "mock-quality": 1.25
-  },
-  openai: { "gpt-4o-mini": 1 },
-  gemini: { "gemini-1.5-flash": 1 },
-  claude: { "claude-3-5-sonnet": 1.25 }
-};
+type ExecutablePromptType =
+  | PromptType
+  | "domain_category_classification";
 
 export class TokenEstimatorService {
   estimate(input: {
     provider: ProviderName;
     model: string;
     promptText: string;
-    promptType: PromptType;
-    promptVersion: string;
+    promptType: ExecutablePromptType;
+    promptDepth: PromptDepth;
   }): UsageEstimate {
     if (!input.promptText.trim()) {
       throw new Error("Cannot estimate tokens for a blank prompt");
     }
-    const multiplier = modelOutputMultiplier[input.provider][input.model];
-    if (multiplier === undefined) {
-      throw new Error(
-        `Cannot estimate ${input.provider}/${input.model}`
-      );
+    const profile = providerModelProfile(input.provider, input.model);
+    if (!profile) {
+      throw new Error(`Cannot estimate ${input.provider}/${input.model}`);
     }
     const inputTokens = Math.max(1, Math.ceil(input.promptText.length / 4));
-    const versionMultiplier = input.promptVersion === "v1_light" ? 0.75 : 1;
-    const outputTokens = Math.max(
-      32,
-      Math.ceil(
-        outputTokensByPrompt[input.promptType] *
-          multiplier *
-          versionMultiplier
-      )
-    );
+    const outputTokens = profile.maximumOutputTokens[input.promptDepth];
     const totalTokens = inputTokens + outputTokens;
     return {
       inputTokens,

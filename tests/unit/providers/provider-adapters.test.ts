@@ -86,7 +86,7 @@ describe("real provider adapters", () => {
     const result = await new OpenAiProviderAdapter(http, "test-key").execute(
       request("openai", "gpt-4o-mini")
     );
-    assert.equal(result.parsedEvidence.refusal, true);
+    assert.equal(result.generatedContent, "I cannot answer.");
     assert.equal(result.inputTokens, null);
     assert.equal(result.outputTokens, null);
   });
@@ -127,7 +127,16 @@ function request(provider: "openai" | "gemini" | "claude", model: string) {
     model,
     promptText: "Rendered canonical prompt",
     promptType: "visibility" as const,
-    promptVersion: "v1",
+    promptDepth: "medium" as const,
+    responseContractVersion: "visibility-response-v1",
+    structuredOutputMode:
+      provider === "openai"
+        ? "json_schema"
+        : provider === "gemini"
+          ? "response_mime_type"
+          : "tool_schema",
+    maximumOutputTokens: 512,
+    exactTargetName: "Example",
     timeoutMs: 1000
   };
 }

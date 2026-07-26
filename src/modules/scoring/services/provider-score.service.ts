@@ -9,6 +9,7 @@ import { calculateProviderScore } from "../../../utils/score-calculators.js";
 import { ProviderScoreRepository } from "../repositories/provider-score.repository.js";
 import type { ProviderResultCreatedPayload } from "../messages/provider-score-worker.messages.js";
 import { SCORING_VERSION } from "../types/score.types.js";
+import { requiresScoring } from "../../prompts/policies/prompt-policy.registry.js";
 
 type ScoringDatabase = DatabaseExecutor & TransactionPool;
 
@@ -51,7 +52,8 @@ export class ProviderScoreService {
       }
       if (
         state.result_status !== "valid" ||
-        state.parsed_response === null ||
+        state.validated_response === null ||
+        !requiresScoring(state.prompt_type) ||
         state.provider_job_status !== "succeeded"
       ) {
         throw new ProviderScoringError(
@@ -62,14 +64,14 @@ export class ProviderScoreService {
 
       const calculation = calculateProviderScore({
         promptType: state.prompt_type,
-        promptVersion: state.prompt_version,
         provider: state.provider,
         model: state.model,
-        parsedResponse: state.parsed_response
+        validatedResponse: state.validated_response
       });
       const score = await scores.createOrReuse({
         providerResultId: state.provider_result_id,
         scoringVersion: SCORING_VERSION,
+        metricType: calculation.metricType,
         score: calculation.score,
         components: calculation.components
       });

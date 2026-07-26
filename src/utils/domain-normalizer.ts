@@ -39,22 +39,18 @@ export function normalizeDomain(input: string) {
   const decoded = safelyDecode(raw);
   rejectHostileText(raw, decoded);
 
-  let parsed: URL;
-  try {
-    parsed = new URL(hasScheme(raw) ? raw : `http://${raw}`);
-  } catch {
-    throw invalidDomain();
-  }
-
+  // The analysis contract accepts a hostname, not a URL or authority string.
+  // Rejecting these forms before URL parsing prevents paths, ports and
+  // credentials from being silently discarded during canonicalization.
   if (
-    !["http:", "https:"].includes(parsed.protocol) ||
-    parsed.username !== "" ||
-    parsed.password !== ""
+    hasScheme(raw) ||
+    /[/?#:@[\]]/.test(raw) ||
+    decoded !== raw
   ) {
     throw invalidDomain();
   }
 
-  let hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+  let hostname = raw.toLowerCase().replace(/\.$/, "");
   if (hostname.startsWith("www.")) {
     hostname = hostname.slice(4);
   }

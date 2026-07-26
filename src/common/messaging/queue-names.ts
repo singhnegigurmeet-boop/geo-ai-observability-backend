@@ -2,6 +2,8 @@ export const QUEUE_NAMES = [
   "analysis_run_queue",
   "analysis_run_item_queue",
   "llm_run_queue",
+  "domain_category_classification_queue",
+  "domain_category_classification_result_queue",
   "competitor_prompt_queue",
   "ranking_prompt_queue",
   "visibility_prompt_queue",
@@ -27,6 +29,17 @@ export const PROMPT_QUEUE_NAMES = [
 ] as const satisfies readonly QueueName[];
 
 export type PromptQueueName = (typeof PROMPT_QUEUE_NAMES)[number];
+
+export function promptQueueName(
+  promptType:
+    | "competitor"
+    | "ranking"
+    | "visibility"
+    | "price_range"
+    | "pros_cons"
+): PromptQueueName {
+  return `${promptType}_prompt_queue`;
+}
 
 const queueNameSet = new Set<string>(QUEUE_NAMES);
 

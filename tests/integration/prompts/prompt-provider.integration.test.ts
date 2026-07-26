@@ -22,6 +22,9 @@ import { FailureRecordRepository } from "../../../src/modules/reliability/reposi
 import { MockProviderWorkerRuntime } from "../../../src/modules/providers/runtime/mock-provider-worker.runtime.js";
 import { PromptWorkerRuntime } from "../../../src/modules/prompts/runtime/prompt-worker.runtime.js";
 import type { PromptType } from "../../../src/common/types/database.types.js";
+import { promptTypePolicy } from "../../../src/modules/prompts/policies/prompt-policy.registry.js";
+import { providerModelProfile } from "../../../src/modules/providers/registry/provider-model.registry.js";
+import { EntityPathContextRepository } from "../../../src/modules/prompts/repositories/entity-path-context.repository.js";
 
 const enabled = process.env.RUN_PROMPT_PROVIDER_INTEGRATION_TESTS === "true";
 const userPromptTypes: PromptType[] = [
@@ -121,7 +124,10 @@ describe(
         const prompt = await promptState(pool, fixture.promptJobId);
         assert.equal(prompt.status, "processing");
         assert.ok(prompt.prompt_text?.trim());
-        assert.match(prompt.prompt_text!, /domain=provider-[\w-]+\.example/);
+        assert.match(
+          prompt.prompt_text!,
+          /website domain: provider-[\w-]+\.example/
+        );
         assert.doesNotMatch(prompt.prompt_text!, /RAW-USER-INPUT/);
 
         const jobs = await providerJobs(pool, fixture.promptJobId);
@@ -158,7 +164,7 @@ describe(
         const prompt = await promptState(pool, fixture.promptJobId);
         assert.equal(prompt.status, "processing");
         assert.ok(prompt.prompt_text?.trim());
-        assert.match(prompt.prompt_text!, /actor_policy=user/);
+        assert.match(prompt.prompt_text!, /prompt depth: high/);
         const job = (await providerJobs(pool, fixture.promptJobId))[0]!;
         assert.equal(job.provider, "mock");
         assert.equal(job.model, "mock-standard");
@@ -173,7 +179,7 @@ describe(
       const fixture = await seedPrompt(pool, "visibility", "claimed");
       await new PromptExecutionService(pool).execute(promptPayload(fixture));
       const prompt = await promptState(pool, fixture.promptJobId);
-      assert.match(prompt.prompt_text!, /actor_policy=user/);
+      assert.match(prompt.prompt_text!, /prompt depth: high/);
       assert.equal(fixture.actorType, "user");
       assert.ok(fixture.anonymousSessionId);
       assert.equal(
@@ -186,8 +192,10 @@ describe(
       const fixture = await seedPrompt(pool, "visibility", "user");
       await pool.query(
         `INSERT INTO analysis_run_provider_models (
-           analysis_run_id, provider, model, ordinal
-         ) VALUES ($1, 'mock', 'mock-quality', 1)`,
+           analysis_run_id, provider, model, model_profile_version, ordinal
+         ) VALUES (
+           $1, 'mock', 'mock-quality', 'mock-quality-profile-v1', 1
+         )`,
         [fixture.runId]
       );
 
@@ -317,9 +325,11 @@ describe(
       assert.equal(result.provider, "mock");
       assert.equal(result.status, "valid");
       assert.equal(result.model_version, "mock-quality");
-      assert.equal(result.parsed_response.provider, "mock");
-      assert.equal(result.parsed_response.model, "mock-quality");
-      assert.equal(result.parsed_response.promptType, "pros_cons");
+      assert.equal(result.validated_response.prompt_type, "pros_cons");
+      assert.equal(
+        result.validated_response.contract_version,
+        "pros-cons-response-v1"
+      );
       assert.equal(result.latency_ms, 0);
 
       const usage = await tokenUsage(pool, planned.providerJobId);
@@ -330,7 +340,7 @@ describe(
       assert.ok(Number(estimated?.output_tokens) > 0);
       assert.ok(Number(estimated?.cost_micros) > 0);
       assert.ok(Number(actual?.input_tokens) > 0);
-      assert.equal(actual?.output_tokens, "32");
+      assert.ok(Number(actual?.output_tokens) > 0);
       assert.ok(Number(actual?.cost_micros) > 0);
       assert.equal((await promptState(pool, fixture.promptJobId)).status, "succeeded");
       assert.equal((await providerJobs(pool, fixture.promptJobId))[0]?.status, "succeeded");
@@ -347,16 +357,7 @@ describe(
         `,
         [completed.providerResultId]
       );
-      assert.equal(
-        scoreEvent.rows[0]?.event_key,
-        `provider_result.created:${completed.providerResultId}`
-      );
-      assert.deepEqual(scoreEvent.rows[0]?.headers, {
-        queueName: "scoring_queue"
-      });
-      assert.deepEqual(scoreEvent.rows[0]?.payload, {
-        providerResultId: completed.providerResultId
-      });
+      assert.equal(scoreEvent.rowCount, 0);
 
       assert.deepEqual(await new MockProviderService(pool).execute(payload), {
         outcome: "noop",
@@ -613,7 +614,7 @@ type Fixture = {
   entityPathId: string;
   startingEntityPathId: string;
   promptType: PromptType;
-  promptVersion: "v1" | "v1_light";
+  promptDepth: "weak" | "high";
   expectedModel: "mock-fast" | "mock-standard" | "mock-quality";
   actorType: "anonymous" | "user";
   userId: string | null;
@@ -638,11 +639,21 @@ async function seedPrompt(
      VALUES ('Provider Category', $1) RETURNING category_id AS id`,
     [`provider-${suffix}`]
   );
+  await pool.query(
+    `INSERT INTO domain_categories (domain_id, category_id)
+     VALUES ($1, $2)`,
+    [domain.rows[0]!.id, category.rows[0]!.id]
+  );
   const path = await pool.query<{ id: string }>(
     `INSERT INTO entity_paths (domain_id, category_id, path_type)
      VALUES ($1, $2, 'category') RETURNING entity_path_id AS id`,
     [domain.rows[0]!.id, category.rows[0]!.id]
   );
+  const entityPathContext = await new EntityPathContextRepository(pool).find(
+    path.rows[0]!.id,
+    path.rows[0]!.id
+  );
+  assert.ok(entityPathContext);
   let userId: string | null = null;
   let workspaceId: string | null = null;
   if (ownership !== "anonymous") {
@@ -691,24 +702,45 @@ async function seedPrompt(
     await pool.query<{ id: string }>(
       `INSERT INTO analysis_runs (
          idempotency_key, anonymous_session_id, user_id, workspace_id,
-         starting_entity_path_id, status, request_payload, started_at
+         starting_entity_path_id, category_selection_mode, prompt_depth,
+         prompt_policy_version, status, request_payload, started_at
        )
-       VALUES ($1, $2, $3, $4, $5, 'processing', '{}'::jsonb, now())
+       VALUES (
+         $1, $2, $3, $4, $5, 'selected', $6, 'geo-prompt-policy-v1',
+         'processing', jsonb_build_object('domain', $7::text), now()
+       )
        RETURNING analysis_run_id AS id`,
       [
         `provider-run-${suffix}`,
         anonymousSessionId,
         userId,
         workspaceId,
-        path.rows[0]!.id
+        path.rows[0]!.id,
+        ownership === "anonymous" ? "weak" : "high",
+        `provider-${suffix}.example`
       ]
     )
   ).rows[0]!.id;
   await pool.query(
+    `INSERT INTO analysis_run_requested_categories (
+       analysis_run_id, category_id, ordinal
+     ) VALUES ($1, $2, 0)`,
+    [runId, category.rows[0]!.id]
+  );
+  const modelProfile = providerModelProfile(
+    "mock",
+    resolvedModel ?? "mock-fast"
+  );
+  assert.ok(modelProfile);
+  await pool.query(
     `INSERT INTO analysis_run_provider_models (
-       analysis_run_id, provider, model, ordinal
-     ) VALUES ($1, 'mock', $2, 0)`,
-    [runId, resolvedModel ?? "mock-fast"]
+       analysis_run_id, provider, model, model_profile_version, ordinal
+     ) VALUES ($1, 'mock', $2, $3, 0)`,
+    [
+      runId,
+      resolvedModel ?? "mock-fast",
+      modelProfile.modelProfileVersion
+    ]
   );
   const itemId = (
     await pool.query<{ id: string }>(
@@ -732,20 +764,27 @@ async function seedPrompt(
     )
   ).rows[0]!.id;
   const promptJobId = (
-    await pool.query<{ id: string }>(
+    await (() => {
+      const policy = promptTypePolicy(promptType);
+      return pool.query<{ id: string }>(
       `INSERT INTO prompt_jobs (
-         idempotency_key, llm_run_id, prompt_type, prompt_version,
-         status, prompt_text
+         idempotency_key, llm_run_id, prompt_type, prompt_depth,
+         business_prompt_version, response_contract_version,
+         status, prompt_text, input_payload
        )
-       VALUES ($1, $2, $3, $4, 'pending', NULL)
+       VALUES ($1, $2, $3, $4, $5, $6, 'pending', NULL, $7)
        RETURNING prompt_job_id AS id`,
       [
         `provider-prompt-${suffix}`,
         llmRunId,
         promptType,
-        ownership === "anonymous" ? "v1_light" : "v1"
+        ownership === "anonymous" ? "weak" : "high",
+        policy.businessPromptVersion,
+        policy.responseContractVersion,
+        { entityPathContext }
       ]
-    )
+      );
+    })()
   ).rows[0]!.id;
   return {
     promptJobId,
@@ -755,7 +794,7 @@ async function seedPrompt(
     entityPathId: path.rows[0]!.id,
     startingEntityPathId: path.rows[0]!.id,
     promptType,
-    promptVersion: ownership === "anonymous" ? "v1_light" : "v1",
+    promptDepth: ownership === "anonymous" ? "weak" : "high",
     expectedModel: resolvedModel ?? "mock-fast",
     actorType: ownership === "anonymous" ? "anonymous" : "user",
     userId,
@@ -792,9 +831,15 @@ async function insertProviderJob(pool: pg.Pool, promptJobId: string) {
   return (
     await pool.query<{ provider_job_id: string }>(
       `INSERT INTO provider_jobs (
-         idempotency_key, prompt_job_id, provider, model, status
+         idempotency_key, job_kind, prompt_job_id, provider, model,
+         response_contract_version, provider_instruction_profile,
+         model_profile_version, structured_output_mode, status
        )
-       VALUES ($1, $2, 'mock', 'mock-fast', 'queued')
+       VALUES (
+         $1, 'normal_prompt', $2, 'mock', 'mock-fast',
+         'competitor-response-v1', 'mock-json-schema-v1',
+         'mock-fast-profile-v1', 'json_schema', 'queued'
+       )
        RETURNING provider_job_id`,
       [`manual-provider:${promptJobId}`, promptJobId]
     )
@@ -845,7 +890,7 @@ async function providerResult(pool: pg.Pool, providerJobId: string) {
       provider: string;
       status: string;
       model_version: string;
-      parsed_response: Record<string, unknown>;
+      validated_response: Record<string, unknown>;
       latency_ms: number;
     }>("SELECT * FROM provider_results WHERE provider_job_id = $1", [
       providerJobId

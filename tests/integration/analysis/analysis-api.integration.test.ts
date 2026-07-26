@@ -113,9 +113,12 @@ describe(
     });
 
     after(async () => {
-      await new Promise<void>((resolve, reject) => {
-        server?.close((error) => (error ? reject(error) : resolve()));
-      });
+      if (server) {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+          server.closeAllConnections();
+        });
+      }
       await pool?.end();
     });
 
@@ -186,13 +189,21 @@ describe(
       }
     });
 
-    it("persists and exposes only the normalized domain from URL-like input", async () => {
+    it("rejects URL-like input and persists only canonical hostnames", async () => {
       const anonymous = await createAnonymousOwner();
       const rawDomain =
         "HTTPS://WWW.Normalized-Only.COM:8443/catalog/item?source=campaign#details";
-      const created = await postAnalysis(
+      const rejected = await postAnalysis(
         { domain: rawDomain },
         "normalized-only",
+        anonymous
+      );
+      assert.equal(rejected.response.status, 400);
+      assert.equal(rejected.body.details.category, "VALIDATION_ERROR");
+
+      const created = await postAnalysis(
+        { domain: "WWW.Normalized-Only.COM." },
+        "canonical-hostname",
         anonymous
       );
       assert.equal(created.response.status, 202);
@@ -222,10 +233,7 @@ describe(
         stored.rows[0]?.request_payload.domain,
         "normalized-only.com"
       );
-      assert.equal(
-        JSON.stringify(stored.rows[0]).includes(rawDomain),
-        false
-      );
+      assert.equal(JSON.stringify(stored.rows[0]).includes(rawDomain), false);
 
       const event = await pool.query<{ payload: Record<string, unknown> }>(
         `
@@ -898,10 +906,14 @@ describe(
       idempotencyKey: string | null,
       credentials: Credentials
     ) {
+      const requestBody =
+        credentials.userToken && body.promptDepth === undefined
+          ? { ...body, promptDepth: "medium" }
+          : body;
       const response = await fetch(`${baseUrl}/v1/analysis`, {
         method: "POST",
         headers: requestHeaders(credentials, idempotencyKey),
-        body: JSON.stringify(body)
+        body: JSON.stringify(requestBody)
       });
       return {
         response,
@@ -1045,8 +1057,8 @@ async function seedHierarchy(pool: pg.Pool): Promise<HierarchyFixture> {
         sort_order,
         source
       )
-      VALUES ($1, $2, 1, 'analysis-test'),
-             ($1, $3, 2, 'analysis-test')
+      VALUES ($1, $2, 1, 'manual'),
+             ($1, $3, 2, 'manual')
       RETURNING domain_category_id
     `,
     [domainId, categoryA, categoryB]

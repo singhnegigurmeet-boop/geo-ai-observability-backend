@@ -112,7 +112,7 @@ describe(
       await pool?.end();
     });
 
-    it("creates four ID-only relationship tables and 31 production tables", async () => {
+    it("creates four ID-only hierarchy tables within the 34-table baseline", async () => {
       const tables = await pool.query<{ table_name: string }>(
         `
           SELECT table_name
@@ -122,7 +122,7 @@ describe(
           ORDER BY table_name
         `
       );
-      assert.equal(tables.rows.length, 31);
+      assert.equal(tables.rows.length, 34);
       for (const table of [
         "domain_categories",
         "category_brands",
@@ -637,10 +637,10 @@ async function seedFixture(pool: pg.Pool): Promise<Fixture> {
         source
       )
       VALUES
-        ($1, $2, true, 2, 'hierarchy'),
-        ($1, $3, true, 1, 'hierarchy'),
-        ($1, $4, true, NULL, 'hierarchy'),
-        ($1, $5, false, 0, 'hierarchy')
+        ($1, $2, true, 2, 'manual'),
+        ($1, $3, true, 1, 'manual'),
+        ($1, $4, true, NULL, 'manual'),
+        ($1, $5, false, 0, 'manual')
       RETURNING domain_category_id
     `,
     [domainId, categories[0], categories[1], categories[2], categories[4]]

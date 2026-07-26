@@ -1,9 +1,14 @@
-import type { JsonObject } from "../../../common/types/database.types.js";
+import type {
+  JsonObject,
+  PromptType
+} from "../../../common/types/database.types.js";
+import { PROMPT_DEPTH_LIMITS } from "../../prompts/policies/prompt-policy.registry.js";
 import type {
   ProviderAdapter,
   ProviderExecutionRequest
 } from "../types/provider-adapter.types.js";
 import { isMockModel } from "../policies/provider-model.policy.js";
+import { providerModelProfile } from "../registry/provider-model.registry.js";
 
 export class MockProviderAdapter implements ProviderAdapter {
   readonly provider = "mock" as const;
@@ -13,18 +18,21 @@ export class MockProviderAdapter implements ProviderAdapter {
   }
 
   async execute(request: ProviderExecutionRequest) {
-    const parsedEvidence = deterministicEvidence(
-      request.providerJobId,
-      request.promptType,
-      request.model
-    );
+    const response = deterministicResponse(request);
+    const generatedContent = JSON.stringify(response);
     const inputTokens = Math.max(1, Math.ceil(request.promptText.length / 4));
+    const modelProfile = providerModelProfile("mock", request.model);
+    const outputTokens = Math.min(
+      modelProfile?.maximumOutputTokens[request.promptDepth] ??
+        Number.POSITIVE_INFINITY,
+      Math.max(1, Math.ceil(generatedContent.length / 4))
+    );
     return {
-      rawResponse: parsedEvidence,
-      parsedEvidence,
+      generatedContent,
+      sanitizedProviderMetadata: { deterministic: true },
       inputTokens,
-      outputTokens: 32,
-      totalTokens: inputTokens + 32,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
       finishReason: "mock_complete",
       providerRequestId: `mock:${request.providerJobId}`,
       modelVersion: request.model,
@@ -33,23 +41,94 @@ export class MockProviderAdapter implements ProviderAdapter {
   }
 }
 
-function deterministicEvidence(
-  providerJobId: string,
-  promptType: string,
-  model: string
-): JsonObject {
+function deterministicResponse(request: ProviderExecutionRequest): JsonObject {
+  if (request.promptType === "domain_category_classification") {
+    const first = request.classificationCandidates?.[0];
+    return {
+      prompt_type: "domain_category_classification",
+      contract_version: request.responseContractVersion,
+      matches: first
+        ? [
+            {
+              category_id: first.categoryId,
+              rank: 1,
+              confidence: 0.75,
+              reason: "Deterministic match against a supplied category."
+            }
+          ]
+        : [],
+      summary: first
+        ? "One deterministic category match."
+        : "No category matched."
+    };
+  }
+  const result = resultFor(request.promptType, request);
   return {
-    provider: "mock",
-    model,
-    promptType,
+    prompt_type: request.promptType,
+    contract_version: request.responseContractVersion,
+    result,
     evidence: [
       {
-        claim: `Mock ${promptType} evidence for the selected entity path.`,
+        claim: `Deterministic ${request.promptType} evidence for the exact entity path.`,
         source: "mock-provider",
         confidence: 0.75
       }
     ],
-    summary: "Deterministic mock provider response.",
-    evidenceId: `mock-evidence:${providerJobId}`
+    summary: "Deterministic mock provider response."
   };
+}
+
+function resultFor(
+  promptType: PromptType,
+  request: ProviderExecutionRequest
+): JsonObject {
+  switch (promptType) {
+    case "visibility":
+      return {
+        target_mentioned: true,
+        mention_likelihood: 0.75,
+        recommendation_likelihood: 0.7,
+        competitive_prominence: 0.65,
+        query_intents: ["category discovery"],
+        strengths: ["Clear target context"],
+        visibility_gaps: ["Limited independent evidence"],
+        confidence: 0.75
+      };
+    case "ranking":
+      return {
+        requested_top_k: PROMPT_DEPTH_LIMITS[request.promptDepth].topK,
+        found: true,
+        rank_position: 1,
+        ordered_candidates: [{ rank: 1, name: request.exactTargetName }],
+        mention_count: 1,
+        confidence: 0.75
+      };
+    case "competitor":
+      return {
+        direct_competitors: [],
+        indirect_competitors: [],
+        target_differentiation: "Exact target context is preserved.",
+        competitive_pressure: 0.5,
+        confidence: 0.75
+      };
+    case "price_range":
+      return {
+        applicability: "unknown",
+        currency: null,
+        minimum: null,
+        maximum: null,
+        pricing_basis: "No reliable public price was supplied.",
+        uncertainty: "Pricing requires current public evidence.",
+        confidence: 0.25
+      };
+    case "pros_cons":
+      return {
+        pros: ["Exact context is represented"],
+        cons: ["Independent evidence is limited"],
+        best_fit_for: ["The specified use context"],
+        poor_fit_for: ["Unspecified contexts"],
+        comparison_context: "The exact frozen entity path.",
+        confidence: 0.75
+      };
+  }
 }

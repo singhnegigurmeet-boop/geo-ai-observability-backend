@@ -1,10 +1,18 @@
-import type { JsonObject, ProviderName } from "../../../common/types/database.types.js";
+import type {
+  CategorySelectionMode,
+  JsonObject,
+  PromptDepth
+} from "../../../common/types/database.types.js";
+import type { ProviderModelSelection } from "../../providers/policies/provider-model.policy.js";
 
 export type DueSchedulerJob = {
   scheduler_job_id: string;
   workspace_id: string;
   created_by_user_id: string;
   starting_entity_path_id: string;
+  category_selection_mode: CategorySelectionMode;
+  prompt_depth: PromptDepth;
+  prompt_policy_version: string;
   schedule_expression: string;
   timezone: string;
   request_payload: JsonObject;
@@ -17,8 +25,6 @@ export type DueSchedulerJob = {
 };
 
 export type SchedulerRequestPolicy = {
-  providerModels: Array<{
-    provider: ProviderName;
-    model: string;
-  }>;
+  providerModels: ProviderModelSelection[];
+  categoryIds: string[];
 };

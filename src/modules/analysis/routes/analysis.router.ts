@@ -16,6 +16,11 @@ export function createAnalysisRouter(
   router.use(ownershipMiddleware);
 
   router.post(
+    "/preview",
+    validateBody(createAnalysisRequestSchema),
+    asyncApiHandler(controller.preview)
+  );
+  router.post(
     "/",
     validateIdempotencyKeyHeader,
     validateBody(createAnalysisRequestSchema),

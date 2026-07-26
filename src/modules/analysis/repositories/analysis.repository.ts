@@ -1,7 +1,12 @@
 import type { DatabaseExecutor } from "../../../common/database/database-executor.js";
 import { ownedAnalysisRunClause } from "../../../common/ownership/owned-analysis-run.sql.js";
 import type { OwnershipContext } from "../../../common/ownership/ownership-context.types.js";
-import type { AnalysisRunRow, JsonObject } from "../../../common/types/database.types.js";
+import type {
+  AnalysisRunRow,
+  CategorySelectionMode,
+  JsonObject,
+  PromptDepth
+} from "../../../common/types/database.types.js";
 import type {
   AnalysisReportRecord,
   AnalysisRunStatusRecord
@@ -13,6 +18,9 @@ export type CreateAnalysisRunRecord = {
   userId: string | null;
   workspaceId: string | null;
   startingEntityPathId: string;
+  categorySelectionMode: CategorySelectionMode;
+  promptDepth: PromptDepth;
+  promptPolicyVersion: string;
   requestPayload: JsonObject;
 };
 
@@ -36,11 +44,14 @@ export class AnalysisRepository {
           user_id,
           workspace_id,
           starting_entity_path_id,
+          category_selection_mode,
+          prompt_depth,
+          prompt_policy_version,
           source,
           status,
           request_payload
         )
-        VALUES ($1, $2, $3, $4, $5, 'manual', 'queued', $6)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'manual', 'queued', $9)
         ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING *
       `,
@@ -50,6 +61,9 @@ export class AnalysisRepository {
         input.userId,
         input.workspaceId,
         input.startingEntityPathId,
+        input.categorySelectionMode,
+        input.promptDepth,
+        input.promptPolicyVersion,
         input.requestPayload
       ]
     );

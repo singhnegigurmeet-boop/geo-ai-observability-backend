@@ -17,6 +17,11 @@ const envSchema = z
     RABBITMQ_CONFIRM_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
     ANALYSIS_RUN_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(5),
     ANALYSIS_RUN_ITEM_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
+    CLASSIFICATION_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(5),
+    CLASSIFICATION_PROVIDER: z
+      .enum(["mock", "openai", "gemini", "claude"])
+      .default("mock"),
+    CLASSIFICATION_MODEL: z.string().trim().min(1).default("mock-fast"),
     LLM_RUN_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
     PROMPT_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
     MOCK_PROVIDER_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),

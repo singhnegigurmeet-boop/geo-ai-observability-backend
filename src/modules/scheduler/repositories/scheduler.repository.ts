@@ -17,6 +17,9 @@ export class SchedulerRepository {
           schedule.workspace_id,
           schedule.created_by_user_id,
           schedule.starting_entity_path_id,
+          schedule.category_selection_mode,
+          schedule.prompt_depth,
+          schedule.prompt_policy_version,
           schedule.schedule_expression,
           schedule.timezone,
           schedule.request_payload,
@@ -42,6 +45,21 @@ export class SchedulerRepository {
     return result.rows[0] ?? null;
   }
 
+  async activeRequestedCategoryIds(schedulerJobId: string) {
+    const result = await this.database.query<{ category_id: string }>(
+      `
+        SELECT category.category_id
+        FROM scheduler_job_requested_categories AS requested
+        JOIN categories AS category
+          ON category.category_id = requested.category_id AND category.is_active
+        WHERE requested.scheduler_job_id = $1
+        ORDER BY requested.ordinal
+      `,
+      [schedulerJobId]
+    );
+    return result.rows.map((row) => row.category_id);
+  }
+
   async createOrReuseRun(input: {
     job: DueSchedulerJob;
     idempotencyKey: string;
@@ -53,7 +71,16 @@ export class SchedulerRepository {
       brandId: input.job.brand_id,
       productId: input.job.product_id,
       useContextId: input.job.use_context_id,
-      providerModels: input.policy.providerModels,
+      categorySelection: {
+        mode: input.job.category_selection_mode,
+        categoryIds: input.policy.categoryIds
+      },
+      promptDepth: input.job.prompt_depth,
+      promptPolicyVersion: input.job.prompt_policy_version,
+      providerModels: input.policy.providerModels.map(({ provider, model }) => ({
+        provider,
+        model
+      })),
       schedulerJobId: input.job.scheduler_job_id,
       scheduledDueAt: input.job.next_run_at.toISOString()
     };
@@ -64,11 +91,14 @@ export class SchedulerRepository {
           user_id,
           workspace_id,
           starting_entity_path_id,
+          category_selection_mode,
+          prompt_depth,
+          prompt_policy_version,
           source,
           status,
           request_payload
         )
-        VALUES ($1, $2, $3, $4, 'scheduled', 'queued', $5)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled', 'queued', $8)
         ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING *
       `,
@@ -77,6 +107,9 @@ export class SchedulerRepository {
         input.job.created_by_user_id,
         input.job.workspace_id,
         input.job.starting_entity_path_id,
+        input.job.category_selection_mode,
+        input.job.prompt_depth,
+        input.job.prompt_policy_version,
         requestPayload
       ]
     );
@@ -86,6 +119,10 @@ export class SchedulerRepository {
       ).createOrReuse(
         inserted.rows[0].analysis_run_id,
         input.policy.providerModels
+      );
+      await this.createRunRequestedCategories(
+        inserted.rows[0].analysis_run_id,
+        input.policy.categoryIds
       );
       return inserted.rows[0];
     }
@@ -117,7 +154,29 @@ export class SchedulerRepository {
       existing.rows[0].analysis_run_id,
       input.policy.providerModels
     );
+    await this.createRunRequestedCategories(
+      existing.rows[0].analysis_run_id,
+      input.policy.categoryIds
+    );
     return existing.rows[0];
+  }
+
+  private async createRunRequestedCategories(
+    analysisRunId: string,
+    categoryIds: readonly string[]
+  ) {
+    for (const [ordinal, categoryId] of categoryIds.entries()) {
+      await this.database.query(
+        `
+          INSERT INTO analysis_run_requested_categories (
+            analysis_run_id, category_id, ordinal
+          )
+          VALUES ($1, $2, $3)
+          ON CONFLICT (analysis_run_id, category_id) DO NOTHING
+        `,
+        [analysisRunId, categoryId, ordinal]
+      );
+    }
   }
 
   async advance(input: {

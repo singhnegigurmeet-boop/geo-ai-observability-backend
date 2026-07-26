@@ -39,6 +39,30 @@ CREATE TYPE public.analysis_run_source AS ENUM (
     'scheduled'
 );
 
+--
+-- Name: category_selection_mode; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.category_selection_mode AS ENUM (
+    'all',
+    'selected'
+);
+
+
+--
+-- Name: classification_job_status; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.classification_job_status AS ENUM (
+    'queued',
+    'processing',
+    'completed',
+    'completed_empty',
+    'invalid',
+    'failed',
+    'cancelled'
+);
+
 
 --
 -- Name: budget_limit_mode; Type: TYPE; Schema: public; Owner: -
@@ -170,6 +194,48 @@ CREATE TYPE public.provider_name AS ENUM (
 CREATE TYPE public.provider_result_status AS ENUM (
     'valid',
     'invalid'
+);
+
+--
+-- Name: context_validation_status; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.context_validation_status AS ENUM (
+    'valid',
+    'invalid',
+    'not_applicable'
+);
+
+
+--
+-- Name: prompt_depth; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.prompt_depth AS ENUM (
+    'weak',
+    'medium',
+    'high'
+);
+
+
+--
+-- Name: provider_job_kind; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.provider_job_kind AS ENUM (
+    'normal_prompt',
+    'domain_category_classification'
+);
+
+
+--
+-- Name: provider_score_metric_type; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.provider_score_metric_type AS ENUM (
+    'visibility',
+    'ranking',
+    'competitive_pressure'
 );
 
 
@@ -317,15 +383,28 @@ CREATE FUNCTION public.enforce_provider_job_rendered_prompt() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM public.prompt_jobs
-    WHERE prompt_job_id = NEW.prompt_job_id
-      AND prompt_text IS NOT NULL
-      AND length(btrim(prompt_text)) > 0
-  ) THEN
-    RAISE EXCEPTION 'provider_jobs requires a rendered nonblank prompt'
-      USING ERRCODE = '23514';
+  IF NEW.job_kind = 'normal_prompt' THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM public.prompt_jobs
+      WHERE prompt_job_id = NEW.prompt_job_id
+        AND prompt_text IS NOT NULL
+        AND length(btrim(prompt_text)) > 0
+    ) THEN
+      RAISE EXCEPTION 'normal provider job requires a rendered nonblank prompt'
+        USING ERRCODE = '23514';
+    END IF;
+  ELSIF NEW.job_kind = 'domain_category_classification' THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM public.domain_category_classification_jobs
+      WHERE domain_category_classification_job_id = NEW.classification_job_id
+        AND rendered_prompt IS NOT NULL
+        AND length(btrim(rendered_prompt)) > 0
+    ) THEN
+      RAISE EXCEPTION 'classification provider job requires a rendered nonblank prompt'
+        USING ERRCODE = '23514';
+    END IF;
   END IF;
 
   RETURN NEW;
@@ -336,6 +415,32 @@ $$;
 --
 -- Name: notify_analysis_cancelled(); Type: FUNCTION; Schema: public; Owner: -
 --
+
+CREATE FUNCTION public.preserve_provider_job_execution_identity() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.status <> 'pending'
+     AND (
+       NEW.job_kind IS DISTINCT FROM OLD.job_kind
+       OR NEW.prompt_job_id IS DISTINCT FROM OLD.prompt_job_id
+       OR NEW.classification_job_id IS DISTINCT FROM OLD.classification_job_id
+       OR NEW.provider IS DISTINCT FROM OLD.provider
+       OR NEW.model IS DISTINCT FROM OLD.model
+       OR NEW.response_contract_version IS DISTINCT FROM OLD.response_contract_version
+       OR NEW.provider_instruction_profile IS DISTINCT FROM OLD.provider_instruction_profile
+       OR NEW.model_profile_version IS DISTINCT FROM OLD.model_profile_version
+       OR NEW.structured_output_mode IS DISTINCT FROM OLD.structured_output_mode
+       OR NEW.request_payload IS DISTINCT FROM OLD.request_payload
+       OR NEW.request_hash IS DISTINCT FROM OLD.request_hash
+     ) THEN
+    RAISE EXCEPTION 'provider job execution identity is immutable after queueing'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 
 CREATE FUNCTION public.notify_analysis_cancelled() RETURNS trigger
     LANGUAGE plpgsql
@@ -594,10 +699,35 @@ CREATE TABLE public.analysis_run_provider_models (
     analysis_run_id bigint NOT NULL,
     provider public.provider_name NOT NULL,
     model text NOT NULL,
+    model_profile_version text NOT NULL,
     ordinal integer NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT analysis_run_provider_models_model_not_blank_check CHECK ((length(btrim(model)) > 0)),
+    CONSTRAINT analysis_run_provider_models_profile_not_blank_check CHECK ((length(btrim(model_profile_version)) > 0)),
     CONSTRAINT analysis_run_provider_models_ordinal_check CHECK ((ordinal >= 0))
+);
+
+--
+-- Name: analysis_run_requested_categories; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.analysis_run_requested_categories (
+    analysis_run_requested_category_id bigint NOT NULL,
+    analysis_run_id bigint NOT NULL,
+    category_id bigint NOT NULL,
+    ordinal integer NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT analysis_run_requested_categories_ordinal_check CHECK ((ordinal >= 0))
+);
+
+
+ALTER TABLE public.analysis_run_requested_categories ALTER COLUMN analysis_run_requested_category_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.analysis_run_requested_categories_analysis_run_requested_category_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
 );
 
 
@@ -626,6 +756,9 @@ CREATE TABLE public.analysis_runs (
     user_id bigint,
     workspace_id bigint,
     starting_entity_path_id bigint NOT NULL,
+    category_selection_mode public.category_selection_mode NOT NULL,
+    prompt_depth public.prompt_depth NOT NULL,
+    prompt_policy_version text NOT NULL,
     source public.analysis_run_source DEFAULT 'manual'::public.analysis_run_source NOT NULL,
     status public.analysis_execution_status DEFAULT 'queued'::public.analysis_execution_status NOT NULL,
     request_payload jsonb NOT NULL,
@@ -638,6 +771,7 @@ CREATE TABLE public.analysis_runs (
     CONSTRAINT analysis_runs_completion_check CHECK ((((status = ANY (ARRAY['completed'::public.analysis_execution_status, 'partial_success'::public.analysis_execution_status, 'failed'::public.analysis_execution_status, 'cancelled'::public.analysis_execution_status])) AND (completed_at IS NOT NULL)) OR ((status <> ALL (ARRAY['completed'::public.analysis_execution_status, 'partial_success'::public.analysis_execution_status, 'failed'::public.analysis_execution_status, 'cancelled'::public.analysis_execution_status])) AND (completed_at IS NULL)))),
     CONSTRAINT analysis_runs_idempotency_not_blank_check CHECK ((length(btrim(idempotency_key)) > 0)),
     CONSTRAINT analysis_runs_ownership_check CHECK ((((anonymous_session_id IS NOT NULL) AND (user_id IS NULL) AND (workspace_id IS NULL)) OR ((user_id IS NOT NULL) AND (workspace_id IS NOT NULL)))),
+    CONSTRAINT analysis_runs_prompt_policy_not_blank_check CHECK ((length(btrim(prompt_policy_version)) > 0)),
     CONSTRAINT analysis_runs_request_payload_object_check CHECK ((jsonb_typeof(request_payload) = 'object'::text))
 );
 
@@ -866,9 +1000,60 @@ CREATE TABLE public.domain_categories (
     category_id bigint NOT NULL,
     is_active boolean DEFAULT true NOT NULL,
     sort_order integer,
-    source text,
+    source text DEFAULT 'manual'::text NOT NULL,
+    classification_provider_result_id bigint,
+    classification_rank integer,
+    classification_confidence numeric(5,4),
+    classified_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT domain_categories_classification_provenance_check CHECK ((((source = ANY (ARRAY['manual'::text, 'import'::text])) AND (classification_provider_result_id IS NULL) AND (classification_rank IS NULL) AND (classification_confidence IS NULL) AND (classified_at IS NULL)) OR ((source = 'llm_classification'::text) AND (classification_provider_result_id IS NOT NULL) AND (classification_rank IS NOT NULL) AND (classification_rank > 0) AND (classification_confidence IS NOT NULL) AND (classification_confidence >= (0)::numeric) AND (classification_confidence <= (1)::numeric) AND (classified_at IS NOT NULL)))),
+    CONSTRAINT domain_categories_source_check CHECK ((source = ANY (ARRAY['manual'::text, 'import'::text, 'llm_classification'::text])))
+);
+
+--
+-- Name: domain_category_classification_jobs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.domain_category_classification_jobs (
+    domain_category_classification_job_id bigint NOT NULL,
+    idempotency_key text NOT NULL,
+    analysis_run_id bigint NOT NULL,
+    domain_id bigint NOT NULL,
+    candidate_set_hash character(64) NOT NULL,
+    status public.classification_job_status DEFAULT 'queued'::public.classification_job_status NOT NULL,
+    classifier_provider public.provider_name NOT NULL,
+    classifier_model text NOT NULL,
+    model_profile_version text NOT NULL,
+    prompt_version text NOT NULL,
+    response_contract_version text NOT NULL,
+    provider_instruction_profile text NOT NULL,
+    structured_output_mode text NOT NULL,
+    input_payload jsonb NOT NULL,
+    rendered_prompt text,
+    candidate_count integer NOT NULL,
+    error_code text,
+    error_message text,
+    started_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT classification_jobs_candidate_count_check CHECK ((candidate_count > 0)),
+    CONSTRAINT classification_jobs_completion_check CHECK ((((status = ANY (ARRAY['completed'::public.classification_job_status, 'completed_empty'::public.classification_job_status, 'invalid'::public.classification_job_status, 'failed'::public.classification_job_status, 'cancelled'::public.classification_job_status])) AND (completed_at IS NOT NULL)) OR ((status = ANY (ARRAY['queued'::public.classification_job_status, 'processing'::public.classification_job_status])) AND (completed_at IS NULL)))),
+    CONSTRAINT classification_jobs_hash_check CHECK ((candidate_set_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT classification_jobs_input_object_check CHECK ((jsonb_typeof(input_payload) = 'object'::text)),
+    CONSTRAINT classification_jobs_nonblank_check CHECK (((length(btrim(idempotency_key)) > 0) AND (length(btrim(classifier_model)) > 0) AND (length(btrim(model_profile_version)) > 0) AND (length(btrim(prompt_version)) > 0) AND (length(btrim(response_contract_version)) > 0) AND (length(btrim(provider_instruction_profile)) > 0) AND (length(btrim(structured_output_mode)) > 0))),
+    CONSTRAINT classification_jobs_rendered_state_check CHECK ((((status = 'queued'::public.classification_job_status) AND (rendered_prompt IS NULL)) OR ((status <> 'queued'::public.classification_job_status) AND (rendered_prompt IS NOT NULL) AND (length(btrim(rendered_prompt)) > 0))))
+);
+
+
+ALTER TABLE public.domain_category_classification_jobs ALTER COLUMN domain_category_classification_job_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.domain_category_classification_jobs_domain_category_classification_job_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
 );
 
 
@@ -1192,7 +1377,9 @@ CREATE TABLE public.prompt_jobs (
     idempotency_key text NOT NULL,
     llm_run_id bigint NOT NULL,
     prompt_type public.prompt_type NOT NULL,
-    prompt_version text NOT NULL,
+    prompt_depth public.prompt_depth NOT NULL,
+    business_prompt_version text NOT NULL,
+    response_contract_version text NOT NULL,
     status public.job_status DEFAULT 'pending'::public.job_status NOT NULL,
     prompt_text text,
     input_payload jsonb DEFAULT '{}'::jsonb NOT NULL,
@@ -1209,7 +1396,7 @@ CREATE TABLE public.prompt_jobs (
     CONSTRAINT prompt_jobs_idempotency_not_blank_check CHECK ((length(btrim(idempotency_key)) > 0)),
     CONSTRAINT prompt_jobs_input_payload_object_check CHECK ((jsonb_typeof(input_payload) = 'object'::text)),
     CONSTRAINT prompt_jobs_text_null_or_not_blank_check CHECK (((prompt_text IS NULL) OR (length(btrim(prompt_text)) > 0))),
-    CONSTRAINT prompt_jobs_version_not_blank_check CHECK ((length(btrim(prompt_version)) > 0))
+    CONSTRAINT prompt_jobs_versions_not_blank_check CHECK (((length(btrim(business_prompt_version)) > 0) AND (length(btrim(response_contract_version)) > 0)))
 );
 
 
@@ -1234,9 +1421,16 @@ ALTER TABLE public.prompt_jobs ALTER COLUMN prompt_job_id ADD GENERATED ALWAYS A
 CREATE TABLE public.provider_jobs (
     provider_job_id bigint NOT NULL,
     idempotency_key text NOT NULL,
-    prompt_job_id bigint NOT NULL,
+    job_kind public.provider_job_kind NOT NULL,
+    prompt_job_id bigint,
+    classification_job_id bigint,
     provider public.provider_name NOT NULL,
     model text NOT NULL,
+    response_contract_version text NOT NULL,
+    provider_instruction_profile text NOT NULL,
+    model_profile_version text NOT NULL,
+    structured_output_mode text NOT NULL,
+    request_hash character(64),
     status public.job_status DEFAULT 'pending'::public.job_status NOT NULL,
     request_payload jsonb DEFAULT '{}'::jsonb NOT NULL,
     attempt_count integer DEFAULT 0 NOT NULL,
@@ -1250,7 +1444,10 @@ CREATE TABLE public.provider_jobs (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT provider_jobs_attempts_check CHECK (((attempt_count >= 0) AND (max_attempts = 3) AND (attempt_count <= max_attempts))),
     CONSTRAINT provider_jobs_idempotency_not_blank_check CHECK ((length(btrim(idempotency_key)) > 0)),
+    CONSTRAINT provider_jobs_identity_not_blank_check CHECK (((length(btrim(response_contract_version)) > 0) AND (length(btrim(provider_instruction_profile)) > 0) AND (length(btrim(model_profile_version)) > 0) AND (length(btrim(structured_output_mode)) > 0))),
+    CONSTRAINT provider_jobs_kind_parent_check CHECK ((((job_kind = 'normal_prompt'::public.provider_job_kind) AND (prompt_job_id IS NOT NULL) AND (classification_job_id IS NULL)) OR ((job_kind = 'domain_category_classification'::public.provider_job_kind) AND (prompt_job_id IS NULL) AND (classification_job_id IS NOT NULL)))),
     CONSTRAINT provider_jobs_model_not_blank_check CHECK ((length(btrim(model)) > 0)),
+    CONSTRAINT provider_jobs_request_hash_check CHECK (((request_hash IS NULL) OR (request_hash ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT provider_jobs_request_payload_object_check CHECK ((jsonb_typeof(request_payload) = 'object'::text))
 );
 
@@ -1279,20 +1476,27 @@ CREATE TABLE public.provider_results (
     provider_job_id bigint NOT NULL,
     provider public.provider_name NOT NULL,
     status public.provider_result_status NOT NULL,
+    response_contract_version text NOT NULL,
     provider_request_id text,
     model_version text,
     raw_response text NOT NULL,
-    parsed_response jsonb,
+    raw_response_truncated boolean DEFAULT false NOT NULL,
+    raw_response_original_bytes integer NOT NULL,
+    provider_metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    validated_response jsonb,
     validation_errors jsonb DEFAULT '[]'::jsonb NOT NULL,
+    context_validation_status public.context_validation_status NOT NULL,
     finish_reason text,
     latency_ms integer NOT NULL,
     received_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT provider_results_idempotency_not_blank_check CHECK ((length(btrim(idempotency_key)) > 0)),
     CONSTRAINT provider_results_latency_check CHECK ((latency_ms >= 0)),
-    CONSTRAINT provider_results_raw_response_not_blank_check CHECK ((length(raw_response) > 0)),
+    CONSTRAINT provider_results_metadata_object_check CHECK ((jsonb_typeof(provider_metadata) = 'object'::text)),
+    CONSTRAINT provider_results_raw_response_size_check CHECK (((octet_length(raw_response) <= 262144) AND (raw_response_original_bytes >= 0) AND (((NOT raw_response_truncated) AND (raw_response_original_bytes = octet_length(raw_response))) OR (raw_response_truncated AND (raw_response_original_bytes > octet_length(raw_response)))))),
+    CONSTRAINT provider_results_response_contract_not_blank_check CHECK ((length(btrim(response_contract_version)) > 0)),
     CONSTRAINT provider_results_validation_errors_array_check CHECK ((jsonb_typeof(validation_errors) = 'array'::text)),
-    CONSTRAINT provider_results_validation_state_check CHECK ((((status = 'valid'::public.provider_result_status) AND (parsed_response IS NOT NULL) AND (validation_errors = '[]'::jsonb)) OR ((status = 'invalid'::public.provider_result_status) AND (validation_errors <> '[]'::jsonb))))
+    CONSTRAINT provider_results_validation_state_check CHECK ((((status = 'valid'::public.provider_result_status) AND (validated_response IS NOT NULL) AND (validation_errors = '[]'::jsonb) AND (context_validation_status = ANY (ARRAY['valid'::public.context_validation_status, 'not_applicable'::public.context_validation_status]))) OR ((status = 'invalid'::public.provider_result_status) AND (validated_response IS NULL) AND (validation_errors <> '[]'::jsonb) AND (context_validation_status = 'invalid'::public.context_validation_status))))
 );
 
 
@@ -1318,6 +1522,7 @@ CREATE TABLE public.provider_scores (
     provider_score_id bigint NOT NULL,
     idempotency_key text NOT NULL,
     provider_result_id bigint NOT NULL,
+    metric_type public.provider_score_metric_type NOT NULL,
     scoring_version text NOT NULL,
     score numeric(7,4) NOT NULL,
     score_components jsonb DEFAULT '{}'::jsonb NOT NULL,
@@ -1390,6 +1595,9 @@ CREATE TABLE public.scheduler_jobs (
     workspace_id bigint NOT NULL,
     created_by_user_id bigint NOT NULL,
     starting_entity_path_id bigint NOT NULL,
+    category_selection_mode public.category_selection_mode NOT NULL,
+    prompt_depth public.prompt_depth NOT NULL,
+    prompt_policy_version text NOT NULL,
     job_name text NOT NULL,
     schedule_expression text NOT NULL,
     timezone text DEFAULT 'UTC'::text NOT NULL,
@@ -1403,8 +1611,32 @@ CREATE TABLE public.scheduler_jobs (
     CONSTRAINT scheduler_jobs_expression_not_blank_check CHECK ((length(btrim(schedule_expression)) > 0)),
     CONSTRAINT scheduler_jobs_idempotency_not_blank_check CHECK ((length(btrim(idempotency_key)) > 0)),
     CONSTRAINT scheduler_jobs_name_not_blank_check CHECK ((length(btrim(job_name)) > 0)),
+    CONSTRAINT scheduler_jobs_prompt_policy_not_blank_check CHECK ((length(btrim(prompt_policy_version)) > 0)),
     CONSTRAINT scheduler_jobs_payload_object_check CHECK ((jsonb_typeof(request_payload) = 'object'::text)),
     CONSTRAINT scheduler_jobs_timezone_not_blank_check CHECK ((length(btrim(timezone)) > 0))
+);
+
+--
+-- Name: scheduler_job_requested_categories; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scheduler_job_requested_categories (
+    scheduler_job_requested_category_id bigint NOT NULL,
+    scheduler_job_id bigint NOT NULL,
+    category_id bigint NOT NULL,
+    ordinal integer NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT scheduler_job_requested_categories_ordinal_check CHECK ((ordinal >= 0))
+);
+
+
+ALTER TABLE public.scheduler_job_requested_categories ALTER COLUMN scheduler_job_requested_category_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.scheduler_job_requested_categories_scheduler_job_requested_category_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
 );
 
 
@@ -1694,6 +1926,30 @@ ALTER TABLE ONLY public.analysis_run_provider_models
 
 
 --
+-- Name: analysis_run_requested_categories analysis_run_requested_categories_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.analysis_run_requested_categories
+    ADD CONSTRAINT analysis_run_requested_categories_pkey PRIMARY KEY (analysis_run_requested_category_id);
+
+
+--
+-- Name: analysis_run_requested_categories analysis_run_requested_categories_run_category_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.analysis_run_requested_categories
+    ADD CONSTRAINT analysis_run_requested_categories_run_category_unique UNIQUE (analysis_run_id, category_id);
+
+
+--
+-- Name: analysis_run_requested_categories analysis_run_requested_categories_run_ordinal_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.analysis_run_requested_categories
+    ADD CONSTRAINT analysis_run_requested_categories_run_ordinal_unique UNIQUE (analysis_run_id, ordinal);
+
+
+--
 -- Name: analysis_runs analysis_runs_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1819,6 +2075,30 @@ ALTER TABLE ONLY public.domain_categories
 
 ALTER TABLE ONLY public.domain_categories
     ADD CONSTRAINT domain_categories_pkey PRIMARY KEY (domain_category_id);
+
+
+--
+-- Name: domain_category_classification_jobs domain_category_classification_jobs_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.domain_category_classification_jobs
+    ADD CONSTRAINT domain_category_classification_jobs_idempotency_key_key UNIQUE (idempotency_key);
+
+
+--
+-- Name: domain_category_classification_jobs domain_category_classification_jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.domain_category_classification_jobs
+    ADD CONSTRAINT domain_category_classification_jobs_pkey PRIMARY KEY (domain_category_classification_job_id);
+
+
+--
+-- Name: domain_category_classification_jobs domain_category_classification_jobs_run_hash_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.domain_category_classification_jobs
+    ADD CONSTRAINT domain_category_classification_jobs_run_hash_unique UNIQUE (analysis_run_id, candidate_set_hash);
 
 
 --
@@ -1970,7 +2250,7 @@ ALTER TABLE ONLY public.prompt_jobs
 --
 
 ALTER TABLE ONLY public.prompt_jobs
-    ADD CONSTRAINT prompt_jobs_llm_type_version_unique UNIQUE (llm_run_id, prompt_type, prompt_version);
+    ADD CONSTRAINT prompt_jobs_llm_type_version_unique UNIQUE (llm_run_id, prompt_type, business_prompt_version, prompt_depth);
 
 
 --
@@ -2008,10 +2288,6 @@ ALTER TABLE ONLY public.provider_jobs
 --
 -- Name: provider_jobs provider_jobs_prompt_provider_model_unique; Type: CONSTRAINT; Schema: public; Owner: -
 --
-
-ALTER TABLE ONLY public.provider_jobs
-    ADD CONSTRAINT provider_jobs_prompt_provider_model_unique UNIQUE (prompt_job_id, provider, model);
-
 
 --
 -- Name: provider_results provider_results_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -2058,7 +2334,7 @@ ALTER TABLE ONLY public.provider_scores
 --
 
 ALTER TABLE ONLY public.provider_scores
-    ADD CONSTRAINT provider_scores_result_version_unique UNIQUE (provider_result_id, scoring_version);
+    ADD CONSTRAINT provider_scores_result_version_unique UNIQUE (provider_result_id, scoring_version, metric_type);
 
 
 --
@@ -2107,6 +2383,30 @@ ALTER TABLE ONLY public.scheduler_jobs
 
 ALTER TABLE ONLY public.scheduler_jobs
     ADD CONSTRAINT scheduler_jobs_workspace_name_unique UNIQUE (workspace_id, job_name);
+
+
+--
+-- Name: scheduler_job_requested_categories scheduler_job_requested_categories_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scheduler_job_requested_categories
+    ADD CONSTRAINT scheduler_job_requested_categories_pkey PRIMARY KEY (scheduler_job_requested_category_id);
+
+
+--
+-- Name: scheduler_job_requested_categories scheduler_job_requested_categories_job_category_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scheduler_job_requested_categories
+    ADD CONSTRAINT scheduler_job_requested_categories_job_category_unique UNIQUE (scheduler_job_id, category_id);
+
+
+--
+-- Name: scheduler_job_requested_categories scheduler_job_requested_categories_job_ordinal_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scheduler_job_requested_categories
+    ADD CONSTRAINT scheduler_job_requested_categories_job_ordinal_unique UNIQUE (scheduler_job_id, ordinal);
 
 
 --
@@ -2216,6 +2516,9 @@ CREATE INDEX analysis_run_items_status_updated_idx ON public.analysis_run_items 
 --
 
 CREATE INDEX analysis_run_provider_models_run_order_idx ON public.analysis_run_provider_models USING btree (analysis_run_id, ordinal);
+
+
+CREATE INDEX analysis_run_requested_categories_run_order_idx ON public.analysis_run_requested_categories USING btree (analysis_run_id, ordinal);
 
 
 --
@@ -2330,6 +2633,12 @@ CREATE INDEX domain_categories_category_idx ON public.domain_categories USING bt
 CREATE INDEX domain_categories_selection_idx ON public.domain_categories USING btree (domain_id, is_active, sort_order, created_at, domain_category_id);
 
 
+CREATE INDEX domain_category_classification_jobs_dispatch_idx ON public.domain_category_classification_jobs USING btree (status, created_at, domain_category_classification_job_id) WHERE (status = ANY (ARRAY['queued'::public.classification_job_status, 'processing'::public.classification_job_status]));
+
+
+CREATE INDEX domain_category_classification_jobs_run_idx ON public.domain_category_classification_jobs USING btree (analysis_run_id, created_at);
+
+
 --
 -- Name: entity_paths_domain_category_brand_idx; Type: INDEX; Schema: public; Owner: -
 --
@@ -2363,6 +2672,9 @@ CREATE INDEX entity_paths_product_idx ON public.entity_paths USING btree (produc
 --
 
 CREATE INDEX failure_records_open_queue_idx ON public.failure_records USING btree (queue_name, occurred_at DESC) WHERE (status = ANY (ARRAY['open'::public.failure_record_status, 'acknowledged'::public.failure_record_status]));
+
+
+CREATE INDEX failure_records_aggregate_status_idx ON public.failure_records USING btree (aggregate_type, aggregate_id, status, occurred_at DESC) WHERE (aggregate_type IS NOT NULL AND aggregate_id IS NOT NULL);
 
 
 --
@@ -2463,6 +2775,15 @@ CREATE INDEX provider_jobs_dispatch_idx ON public.provider_jobs USING btree (pro
 CREATE INDEX provider_jobs_prompt_idx ON public.provider_jobs USING btree (prompt_job_id, provider);
 
 
+CREATE INDEX provider_jobs_classification_idx ON public.provider_jobs USING btree (classification_job_id, provider) WHERE (classification_job_id IS NOT NULL);
+
+
+CREATE UNIQUE INDEX provider_jobs_normal_prompt_unique_idx ON public.provider_jobs USING btree (prompt_job_id, provider, model) WHERE (job_kind = 'normal_prompt'::public.provider_job_kind);
+
+
+CREATE UNIQUE INDEX provider_jobs_classification_unique_idx ON public.provider_jobs USING btree (classification_job_id) WHERE (job_kind = 'domain_category_classification'::public.provider_job_kind);
+
+
 --
 -- Name: provider_results_provider_request_unique_idx; Type: INDEX; Schema: public; Owner: -
 --
@@ -2503,6 +2824,9 @@ CREATE INDEX scheduler_jobs_due_idx ON public.scheduler_jobs USING btree (next_r
 --
 
 CREATE INDEX scheduler_jobs_workspace_idx ON public.scheduler_jobs USING btree (workspace_id, status);
+
+
+CREATE INDEX scheduler_job_requested_categories_job_order_idx ON public.scheduler_job_requested_categories USING btree (scheduler_job_id, ordinal);
 
 
 --
@@ -2561,6 +2885,9 @@ CREATE INDEX workspace_role_change_pending_idx ON public.workspace_role_change_r
 CREATE TRIGGER analysis_run_provider_models_immutable_trigger BEFORE DELETE OR UPDATE ON public.analysis_run_provider_models FOR EACH ROW EXECUTE FUNCTION public.reject_immutable_evidence_mutation();
 
 
+CREATE TRIGGER analysis_run_requested_categories_immutable_trigger BEFORE DELETE OR UPDATE ON public.analysis_run_requested_categories FOR EACH ROW EXECUTE FUNCTION public.reject_immutable_evidence_mutation();
+
+
 --
 -- Name: analysis_runs analysis_runs_notify_budget_paused_trigger; Type: TRIGGER; Schema: public; Owner: -
 --
@@ -2607,7 +2934,12 @@ CREATE TRIGGER failure_records_notify_terminal_trigger AFTER INSERT ON public.fa
 -- Name: provider_jobs provider_jobs_require_rendered_prompt_trigger; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER provider_jobs_require_rendered_prompt_trigger BEFORE INSERT OR UPDATE OF prompt_job_id ON public.provider_jobs FOR EACH ROW EXECUTE FUNCTION public.enforce_provider_job_rendered_prompt();
+CREATE TRIGGER provider_jobs_require_rendered_prompt_trigger BEFORE INSERT OR UPDATE OF job_kind, prompt_job_id, classification_job_id ON public.provider_jobs FOR EACH ROW EXECUTE FUNCTION public.enforce_provider_job_rendered_prompt();
+
+
+CREATE TRIGGER provider_jobs_preserve_execution_identity_trigger BEFORE UPDATE ON public.provider_jobs FOR EACH ROW EXECUTE FUNCTION public.preserve_provider_job_execution_identity();
+
+
 
 
 --
@@ -2636,6 +2968,9 @@ CREATE TRIGGER reports_immutable_trigger BEFORE DELETE OR UPDATE ON public.repor
 --
 
 CREATE TRIGGER reports_notify_ready_trigger AFTER INSERT ON public.reports FOR EACH ROW EXECUTE FUNCTION public.notify_report_ready();
+
+
+CREATE TRIGGER scheduler_job_requested_categories_immutable_trigger BEFORE DELETE OR UPDATE ON public.scheduler_job_requested_categories FOR EACH ROW EXECUTE FUNCTION public.reject_immutable_evidence_mutation();
 
 
 --
@@ -2667,6 +3002,14 @@ ALTER TABLE ONLY public.analysis_run_items
 
 ALTER TABLE ONLY public.analysis_run_provider_models
     ADD CONSTRAINT analysis_run_provider_models_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES public.analysis_runs(analysis_run_id) ON DELETE RESTRICT;
+
+
+ALTER TABLE ONLY public.analysis_run_requested_categories
+    ADD CONSTRAINT analysis_run_requested_categories_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES public.analysis_runs(analysis_run_id) ON DELETE RESTRICT;
+
+
+ALTER TABLE ONLY public.analysis_run_requested_categories
+    ADD CONSTRAINT analysis_run_requested_categories_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.categories(category_id) ON DELETE RESTRICT;
 
 
 --
@@ -2813,6 +3156,18 @@ ALTER TABLE ONLY public.domain_categories
     ADD CONSTRAINT domain_categories_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES public.domains(domain_id) ON DELETE RESTRICT;
 
 
+ALTER TABLE ONLY public.domain_categories
+    ADD CONSTRAINT domain_categories_classification_provider_result_id_fkey FOREIGN KEY (classification_provider_result_id) REFERENCES public.provider_results(provider_result_id) ON DELETE RESTRICT;
+
+
+ALTER TABLE ONLY public.domain_category_classification_jobs
+    ADD CONSTRAINT domain_category_classification_jobs_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES public.analysis_runs(analysis_run_id) ON DELETE RESTRICT;
+
+
+ALTER TABLE ONLY public.domain_category_classification_jobs
+    ADD CONSTRAINT domain_category_classification_jobs_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES public.domains(domain_id) ON DELETE RESTRICT;
+
+
 --
 -- Name: entity_paths entity_paths_brand_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
@@ -2925,6 +3280,10 @@ ALTER TABLE ONLY public.provider_jobs
     ADD CONSTRAINT provider_jobs_prompt_job_id_fkey FOREIGN KEY (prompt_job_id) REFERENCES public.prompt_jobs(prompt_job_id) ON DELETE RESTRICT;
 
 
+ALTER TABLE ONLY public.provider_jobs
+    ADD CONSTRAINT provider_jobs_classification_job_id_fkey FOREIGN KEY (classification_job_id) REFERENCES public.domain_category_classification_jobs(domain_category_classification_job_id) ON DELETE RESTRICT;
+
+
 --
 -- Name: provider_results provider_results_job_provider_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
@@ -2963,6 +3322,14 @@ ALTER TABLE ONLY public.scheduler_jobs
 
 ALTER TABLE ONLY public.scheduler_jobs
     ADD CONSTRAINT scheduler_jobs_starting_entity_path_id_fkey FOREIGN KEY (starting_entity_path_id) REFERENCES public.entity_paths(entity_path_id) ON DELETE RESTRICT;
+
+
+ALTER TABLE ONLY public.scheduler_job_requested_categories
+    ADD CONSTRAINT scheduler_job_requested_categories_scheduler_job_id_fkey FOREIGN KEY (scheduler_job_id) REFERENCES public.scheduler_jobs(scheduler_job_id) ON DELETE RESTRICT;
+
+
+ALTER TABLE ONLY public.scheduler_job_requested_categories
+    ADD CONSTRAINT scheduler_job_requested_categories_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.categories(category_id) ON DELETE RESTRICT;
 
 
 --

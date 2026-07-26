@@ -19,15 +19,15 @@ import { LlmRunWorkerRuntime } from "../../../src/modules/llm/runtime/llm-run-wo
 const enabled = process.env.RUN_PROMPT_PLANNING_INTEGRATION_TESTS === "true";
 const userPromptTypes = [
   "visibility",
-  "competitor",
   "ranking",
+  "competitor",
   "price_range",
   "pros_cons"
 ] as const;
 const anonymousPromptTypes = [
   "visibility",
-  "competitor",
-  "ranking"
+  "ranking",
+  "competitor"
 ] as const;
 const queueByPromptType = {
   competitor: "competitor_prompt_queue",
@@ -109,14 +109,18 @@ describe(
         jobs.map((job) => job.prompt_type),
         [...anonymousPromptTypes]
       );
-      assert.ok(jobs.every((job) => job.prompt_version === "v1_light"));
+      assert.ok(jobs.every((job) => job.prompt_depth === "weak"));
+      assert.ok(jobs.every((job) => job.business_prompt_version.endsWith("-v1")));
+      assert.ok(
+        jobs.every((job) => job.response_contract_version.endsWith("-response-v1"))
+      );
       assert.ok(jobs.every((job) => job.status === "pending"));
       assert.ok(jobs.every((job) => job.prompt_text === null));
       assert.ok(
         jobs.every(
           (job) =>
             job.idempotency_key ===
-            `prompt_job:${fixture.llmRunId}:${job.prompt_type}:v1_light`
+            `prompt_job:${fixture.llmRunId}:${job.prompt_type}:${job.business_prompt_version}:weak`
         )
       );
 
@@ -139,7 +143,10 @@ describe(
         loggedJobs.map((job) => job.prompt_type),
         [...userPromptTypes]
       );
-      assert.ok(loggedJobs.every((job) => job.prompt_version === "v1"));
+      assert.ok(loggedJobs.every((job) => job.prompt_depth === "high"));
+      assert.ok(
+        loggedJobs.every((job) => job.business_prompt_version.endsWith("-v1"))
+      );
 
       const fixture = await seedLlmRun(pool, "claimed");
       await new PromptPlanningService(pool).plan(payload(fixture));
@@ -321,10 +328,78 @@ async function seedLlmRun(
      VALUES ($1) RETURNING domain_id AS id`,
     [`${suffix}.prompt-planning.example`]
   );
+  const category = await pool.query<{ id: string }>(
+    `INSERT INTO categories (category_name, normalized_name)
+     VALUES ($1, $2) RETURNING category_id AS id`,
+    [`Category ${suffix}`, `category-${suffix}`]
+  );
+  const domainCategory = await pool.query<{ id: string }>(
+    `INSERT INTO domain_categories (domain_id, category_id)
+     VALUES ($1, $2) RETURNING domain_category_id AS id`,
+    [domain.rows[0]!.id, category.rows[0]!.id]
+  );
+  let pathColumns: {
+    pathType: "category" | "use_context";
+    brandId: string | null;
+    productId: string | null;
+    useContextId: string | null;
+  } = {
+    pathType: "category",
+    brandId: null,
+    productId: null,
+    useContextId: null
+  };
+  if (ownership !== "anonymous") {
+    const brand = await pool.query<{ id: string }>(
+      `INSERT INTO brands (brand_name, normalized_name)
+       VALUES ($1, $2) RETURNING brand_id AS id`,
+      [`Brand ${suffix}`, `brand-${suffix}`]
+    );
+    const categoryBrand = await pool.query<{ id: string }>(
+      `INSERT INTO category_brands (domain_category_id, brand_id)
+       VALUES ($1, $2) RETURNING category_brand_id AS id`,
+      [domainCategory.rows[0]!.id, brand.rows[0]!.id]
+    );
+    const product = await pool.query<{ id: string }>(
+      `INSERT INTO products (product_name, normalized_name)
+       VALUES ($1, $2) RETURNING product_id AS id`,
+      [`Product ${suffix}`, `product-${suffix}`]
+    );
+    const brandProduct = await pool.query<{ id: string }>(
+      `INSERT INTO brand_products (category_brand_id, product_id)
+       VALUES ($1, $2) RETURNING brand_product_id AS id`,
+      [categoryBrand.rows[0]!.id, product.rows[0]!.id]
+    );
+    const useContext = await pool.query<{ id: string }>(
+      `INSERT INTO use_contexts (use_context_name, normalized_name)
+       VALUES ($1, $2) RETURNING use_context_id AS id`,
+      [`Context ${suffix}`, `context-${suffix}`]
+    );
+    await pool.query(
+      `INSERT INTO product_use_contexts (brand_product_id, use_context_id)
+       VALUES ($1, $2)`,
+      [brandProduct.rows[0]!.id, useContext.rows[0]!.id]
+    );
+    pathColumns = {
+      pathType: "use_context",
+      brandId: brand.rows[0]!.id,
+      productId: product.rows[0]!.id,
+      useContextId: useContext.rows[0]!.id
+    };
+  }
   const entityPath = await pool.query<{ id: string }>(
-    `INSERT INTO entity_paths (domain_id, path_type)
-     VALUES ($1, 'domain') RETURNING entity_path_id AS id`,
-    [domain.rows[0]!.id]
+    `INSERT INTO entity_paths (
+       domain_id, category_id, brand_id, product_id, use_context_id, path_type
+     )
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING entity_path_id AS id`,
+    [
+      domain.rows[0]!.id,
+      category.rows[0]!.id,
+      pathColumns.brandId,
+      pathColumns.productId,
+      pathColumns.useContextId,
+      pathColumns.pathType
+    ]
   );
   let userId: string | null = null;
   let workspaceId: string | null = null;
@@ -366,22 +441,34 @@ async function seedLlmRun(
   const run = await pool.query<{ id: string }>(
     `INSERT INTO analysis_runs (
        idempotency_key, anonymous_session_id, user_id, workspace_id,
-       starting_entity_path_id, status, request_payload, started_at
+       starting_entity_path_id, category_selection_mode, prompt_depth,
+       prompt_policy_version, status, request_payload, started_at
      )
-     VALUES ($1, $2, $3, $4, $5, 'processing', '{}'::jsonb, now())
+     VALUES (
+       $1, $2, $3, $4, $5, 'selected', $6, 'geo-prompt-policy-v1',
+       'processing', jsonb_build_object('domain', $7::text), now()
+     )
      RETURNING analysis_run_id AS id`,
     [
       `prompt_planning-run-${suffix}`,
       anonymousSessionId,
       userId,
       workspaceId,
-      entityPath.rows[0]!.id
+      entityPath.rows[0]!.id,
+      ownership === "anonymous" ? "weak" : "high",
+      `${suffix}.prompt-planning.example`
     ]
   );
   await pool.query(
+    `INSERT INTO analysis_run_requested_categories (
+       analysis_run_id, category_id, ordinal
+     ) VALUES ($1, $2, 0)`,
+    [run.rows[0]!.id, category.rows[0]!.id]
+  );
+  await pool.query(
     `INSERT INTO analysis_run_provider_models
-       (analysis_run_id, provider, model, ordinal)
-     VALUES ($1, 'mock', 'mock-standard', 0)`,
+       (analysis_run_id, provider, model, model_profile_version, ordinal)
+     VALUES ($1, 'mock', 'mock-standard', 'mock-standard-v1', 0)`,
     [run.rows[0]!.id]
   );
   const item = await pool.query<{ id: string }>(
@@ -439,7 +526,9 @@ async function promptJobs(pool: pg.Pool, llmRunId: string) {
       prompt_job_id: string;
       idempotency_key: string;
       prompt_type: string;
-      prompt_version: string;
+      prompt_depth: string;
+      business_prompt_version: string;
+      response_contract_version: string;
       status: string;
       prompt_text: string | null;
     }>(

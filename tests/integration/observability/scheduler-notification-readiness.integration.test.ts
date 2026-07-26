@@ -44,10 +44,13 @@ describe("Scheduler, notifications, and readiness integration", {
       `
         INSERT INTO scheduler_jobs (
           idempotency_key, workspace_id, created_by_user_id,
-          starting_entity_path_id, job_name, schedule_expression,
+          starting_entity_path_id, category_selection_mode, prompt_depth,
+          prompt_policy_version, job_name, schedule_expression,
           request_payload, next_run_at
         )
-        VALUES ($1, $2, $3, $4, 'daily visibility', 'interval:3600',
+        VALUES (
+                $1, $2, $3, $4, 'selected', 'medium',
+                'geo-prompt-policy-v1', 'daily visibility', 'interval:3600',
                 '{"providerModels":[{"provider":"mock","model":"mock-standard"}]}',
                 $5)
         RETURNING scheduler_job_id
@@ -59,6 +62,12 @@ describe("Scheduler, notifications, and readiness integration", {
         fixture.pathId,
         dueAt
       ]
+    );
+    await pool.query(
+      `INSERT INTO scheduler_job_requested_categories (
+         scheduler_job_id, category_id, ordinal
+       ) VALUES ($1, $2, 0)`,
+      [schedule.rows[0]!.scheduler_job_id, fixture.categoryId]
     );
     const scheduler = new SchedulerService(pool);
     const outcomes = await Promise.all([
@@ -116,17 +125,27 @@ describe("Scheduler, notifications, and readiness integration", {
   it("pauses an invalid schedule and records one admin notification transactionally", async () => {
     const fixture = await seedOwnedHierarchy(pool);
     const dueAt = new Date("2026-07-25T00:00:00.000Z");
-    await pool.query(
+    const schedule = await pool.query<{ scheduler_job_id: string }>(
       `
         INSERT INTO scheduler_jobs (
           idempotency_key, workspace_id, created_by_user_id,
-          starting_entity_path_id, job_name, schedule_expression,
+          starting_entity_path_id, category_selection_mode, prompt_depth,
+          prompt_policy_version, job_name, schedule_expression,
           next_run_at
         )
-        VALUES ('invalid-schedule', $1, $2, $3, 'invalid',
-                'cron:* * * * *', $4)
+        VALUES (
+          'invalid-schedule', $1, $2, $3, 'selected', 'medium',
+          'geo-prompt-policy-v1', 'invalid', 'cron:* * * * *', $4
+        )
+        RETURNING scheduler_job_id
       `,
       [fixture.workspaceId, fixture.userId, fixture.pathId, dueAt]
+    );
+    await pool.query(
+      `INSERT INTO scheduler_job_requested_categories (
+         scheduler_job_id, category_id, ordinal
+       ) VALUES ($1, $2, 0)`,
+      [schedule.rows[0]!.scheduler_job_id, fixture.categoryId]
     );
     const result = await new SchedulerService(pool).tick(dueAt);
     assert.equal(result.outcome, "failed");
@@ -162,15 +181,19 @@ describe("Scheduler, notifications, and readiness integration", {
       await truncatePublicTables(pool);
       const fixture = await seedOwnedHierarchy(pool);
       const dueAt = new Date("2026-07-25T00:00:00.000Z");
-      await pool.query(
+      const schedule = await pool.query<{ scheduler_job_id: string }>(
         `INSERT INTO scheduler_jobs (
            idempotency_key, workspace_id, created_by_user_id,
-           starting_entity_path_id, job_name, schedule_expression,
+           starting_entity_path_id, category_selection_mode, prompt_depth,
+           prompt_policy_version, job_name, schedule_expression,
            request_payload, next_run_at
          )
-         VALUES ($1, $2, $3, $4, 'revalidation', 'interval:3600',
+         VALUES (
+                 $1, $2, $3, $4, 'selected', 'medium',
+                 'geo-prompt-policy-v1', 'revalidation', 'interval:3600',
                  '{"providerModels":[{"provider":"mock","model":"mock-standard"}]}',
-                 $5)`,
+                 $5)
+         RETURNING scheduler_job_id`,
         [
           `operations-revalidate-${invalidation}`,
           fixture.workspaceId,
@@ -178,6 +201,12 @@ describe("Scheduler, notifications, and readiness integration", {
           fixture.pathId,
           dueAt
         ]
+      );
+      await pool.query(
+        `INSERT INTO scheduler_job_requested_categories (
+           scheduler_job_id, category_id, ordinal
+         ) VALUES ($1, $2, 0)`,
+        [schedule.rows[0]!.scheduler_job_id, fixture.categoryId]
       );
       if (invalidation === "user") {
         await pool.query(
@@ -383,7 +412,8 @@ async function seedOwnedHierarchy(pool: pg.Pool) {
   return {
     userId: user.rows[0]!.user_id,
     workspaceId: workspace.rows[0]!.workspace_id,
-    pathId: path.rows[0]!.entity_path_id
+    pathId: path.rows[0]!.entity_path_id,
+    categoryId: category.rows[0]!.category_id
   };
 }
 
@@ -396,18 +426,31 @@ async function seedRun(
     `
       INSERT INTO analysis_runs (
         idempotency_key, user_id, workspace_id,
-        starting_entity_path_id, source, status, request_payload
+        starting_entity_path_id, category_selection_mode, prompt_depth,
+        prompt_policy_version, source, status, request_payload
       )
-      VALUES ('operations-run', $1, $2, $3, 'manual', $4, '{}')
+      VALUES (
+        'operations-run', $1, $2, $3, 'selected', 'medium',
+        'geo-prompt-policy-v1', 'manual', $4,
+        '{"domain":"operations.example"}'
+      )
       RETURNING analysis_run_id
     `,
     [fixture.userId, fixture.workspaceId, fixture.pathId, status]
   );
   const analysisRunId = result.rows[0]!.analysis_run_id;
   await pool.query(
+    `INSERT INTO analysis_run_requested_categories (
+       analysis_run_id, category_id, ordinal
+     ) VALUES ($1, $2, 0)`,
+    [analysisRunId, fixture.categoryId]
+  );
+  await pool.query(
     `INSERT INTO analysis_run_provider_models
-       (analysis_run_id, provider, model, ordinal)
-     VALUES ($1, 'mock', 'mock-standard', 0)`,
+       (analysis_run_id, provider, model, model_profile_version, ordinal)
+     VALUES (
+       $1, 'mock', 'mock-standard', 'mock-standard-profile-v1', 0
+     )`,
     [analysisRunId]
   );
   return analysisRunId;

@@ -3,7 +3,11 @@ import type {
   AnalysisRunProviderModelRow,
   ProviderName
 } from "../../../common/types/database.types.js";
-import type { ProviderModelPair } from "../policies/provider-model.policy.js";
+import type {
+  ProviderModelPair,
+  ProviderModelSelection
+} from "../policies/provider-model.policy.js";
+import { providerModelProfile } from "../registry/provider-model.registry.js";
 
 /**
  * Owns persistence for the immutable provider/model set frozen on a run.
@@ -15,18 +19,33 @@ export class AnalysisRunProviderModelRepository {
 
   async createOrReuse(
     analysisRunId: string,
-    providerModels: readonly ProviderModelPair[]
+    providerModels: readonly (ProviderModelSelection | ProviderModelPair)[]
   ) {
     for (const [ordinal, pair] of providerModels.entries()) {
+      const modelProfileVersion =
+        "modelProfileVersion" in pair
+          ? pair.modelProfileVersion
+          : providerModelProfile(pair.provider, pair.model)?.modelProfileVersion;
+      if (!modelProfileVersion) {
+        throw new Error(
+          `Cannot freeze unknown provider model ${pair.provider}/${pair.model}`
+        );
+      }
       await this.database.query(
         `
           INSERT INTO analysis_run_provider_models (
-            analysis_run_id, provider, model, ordinal
+            analysis_run_id, provider, model, model_profile_version, ordinal
           )
-          VALUES ($1, $2, $3, $4)
+          VALUES ($1, $2, $3, $4, $5)
           ON CONFLICT (analysis_run_id, provider, model) DO NOTHING
         `,
-        [analysisRunId, pair.provider, pair.model, ordinal]
+        [
+          analysisRunId,
+          pair.provider,
+          pair.model,
+          modelProfileVersion,
+          ordinal
+        ]
       );
     }
     return this.list(analysisRunId);

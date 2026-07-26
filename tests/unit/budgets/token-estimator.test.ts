@@ -10,7 +10,7 @@ describe("Token and pricing estimation", () => {
       provider: "mock" as const,
       promptText: "x".repeat(400),
       promptType: "pros_cons" as const,
-      promptVersion: "v1"
+      promptDepth: "medium" as const
     };
     const fast = estimator.estimate({ ...common, model: "mock-fast" });
     const standard = estimator.estimate({

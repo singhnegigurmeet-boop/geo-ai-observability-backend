@@ -2,7 +2,7 @@ services:
   migrate:
     build: .
     container_name: geo-migrate
-    command: node dist/db/migrate.js
+    command: node dist/common/database/migrate.js
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
@@ -36,7 +36,7 @@ services:
   outbox-dispatcher:
     build: .
     container_name: geo-outbox-dispatcher
-    command: node dist/outbox/main.js
+    command: node dist/modules/outbox/entrypoints/main.js
     environment:
       NODE_ENV: development
       PORT: 4000
@@ -64,7 +64,7 @@ services:
   analysis-run-worker:
     build: .
     container_name: geo-analysis-run-worker
-    command: node dist/analysis-worker/main.js
+    command: node dist/modules/analysis/entrypoints/run-worker.js
     environment:
       NODE_ENV: development
       PORT: 4000
@@ -86,7 +86,7 @@ services:
   analysis-run-item-worker:
     build: .
     container_name: geo-analysis-run-item-worker
-    command: node dist/analysis-item-worker/main.js
+    command: node dist/modules/analysis/entrypoints/run-item-worker.js
     environment:
       NODE_ENV: development
       PORT: 4000
@@ -105,10 +105,53 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  classification-worker:
+    build: .
+    container_name: geo-classification-worker
+    command: node dist/modules/analysis/entrypoints/run-classification-worker.js
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
+      RABBITMQ_EXCHANGE: geo.v6.main
+      RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
+      CLASSIFICATION_WORKER_PREFETCH: 5
+      CLASSIFICATION_PROVIDER: ${CLASSIFICATION_PROVIDER:-mock}
+      CLASSIFICATION_MODEL: ${CLASSIFICATION_MODEL:-mock-fast}
+      ENABLE_REAL_PROVIDERS: ${ENABLE_REAL_PROVIDERS:-false}
+      SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  classification-result-worker:
+    build: .
+    container_name: geo-classification-result-worker
+    command: node dist/modules/analysis/entrypoints/run-classification-result-worker.js
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
+      RABBITMQ_EXCHANGE: geo.v6.main
+      RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
+      CLASSIFICATION_WORKER_PREFETCH: 5
+      SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
   llm-run-worker:
     build: .
     container_name: geo-llm-run-worker
-    command: node dist/llm-run-worker/main.js
+    command: node dist/modules/llm/entrypoints/run-worker.js
     environment:
       NODE_ENV: development
       PORT: 4000
@@ -130,7 +173,7 @@ services:
   prompt-worker:
     build: .
     container_name: geo-prompt-worker
-    command: node dist/prompt-worker/main.js
+    command: node dist/modules/prompts/entrypoints/run-worker.js
     environment:
       NODE_ENV: development
       PORT: 4000
@@ -153,7 +196,7 @@ services:
   mock-provider-worker:
     build: .
     container_name: geo-mock-provider-worker
-    command: node dist/mock-provider-worker/main.js
+    command: node dist/modules/providers/entrypoints/run-mock-worker.js
     environment:
       NODE_ENV: development
       PORT: 4000
@@ -175,7 +218,7 @@ services:
   openai-provider-worker:
     profiles: ["real-providers"]
     build: .
-    command: node dist/provider-worker/main.js openai
+    command: node dist/modules/providers/entrypoints/run-provider-worker.js openai
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
@@ -196,7 +239,7 @@ services:
   gemini-provider-worker:
     profiles: ["real-providers"]
     build: .
-    command: node dist/provider-worker/main.js gemini
+    command: node dist/modules/providers/entrypoints/run-provider-worker.js gemini
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
@@ -217,7 +260,7 @@ services:
   claude-provider-worker:
     profiles: ["real-providers"]
     build: .
-    command: node dist/provider-worker/main.js claude
+    command: node dist/modules/providers/entrypoints/run-provider-worker.js claude
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
@@ -238,7 +281,7 @@ services:
   scoring-worker:
     build: .
     container_name: geo-scoring-worker
-    command: node dist/scoring-worker/main.js
+    command: node dist/modules/scoring/entrypoints/run-worker.js
     environment:
       NODE_ENV: development
       PORT: 4000
@@ -260,7 +303,7 @@ services:
   scheduler-worker:
     build: .
     container_name: geo-scheduler-worker
-    command: node dist/scheduler-worker/main.js
+    command: node dist/modules/scheduler/entrypoints/run-worker.js
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
@@ -278,7 +321,7 @@ services:
   notification-worker:
     build: .
     container_name: geo-notification-worker
-    command: node dist/notification-worker/main.js
+    command: node dist/modules/notifications/entrypoints/run-worker.js
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability

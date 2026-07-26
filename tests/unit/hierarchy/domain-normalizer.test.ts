@@ -4,18 +4,11 @@ import { ApplicationError } from "../../../src/common/errors/application-error.j
 import { normalizeDomain } from "../../../src/utils/domain-normalizer.js";
 
 describe("domain normalization", () => {
-  it("extracts and normalizes safe URL-like input", () => {
+  it("normalizes a strict public hostname", () => {
     assert.equal(normalizeDomain("  EXAMPLE.COM. "), "example.com");
-    assert.equal(
-      normalizeDomain(
-        "https://www.Example.COM:8443/products/item?source=test#details"
-      ),
-      "example.com"
-    );
-    assert.equal(
-      normalizeDomain("www.shop.example.com/catalog?q=one"),
-      "shop.example.com"
-    );
+    assert.equal(normalizeDomain("www.shop.example.com"), "shop.example.com");
+    assertInvalid("https://www.Example.COM/products");
+    assertInvalid("www.shop.example.com/catalog?q=one");
   });
 
   it("rejects instruction and HTML-like input", () => {

@@ -14,6 +14,7 @@ const enabled = process.env.RUN_SCHEMA_TESTS === "true";
 const expectedTables = [
   "analysis_run_items",
   "analysis_run_provider_models",
+  "analysis_run_requested_categories",
   "analysis_runs",
   "anonymous_sessions",
   "brand_products",
@@ -22,6 +23,7 @@ const expectedTables = [
   "categories",
   "category_brands",
   "domain_categories",
+  "domain_category_classification_jobs",
   "domains",
   "entity_paths",
   "failure_records",
@@ -36,6 +38,7 @@ const expectedTables = [
   "provider_scores",
   "reports",
   "scheduler_jobs",
+  "scheduler_job_requested_categories",
   "token_usage",
   "use_contexts",
   "user_sessions",
@@ -95,7 +98,7 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
     );
   });
 
-  it("creates exactly the 31 final production tables", async () => {
+  it("creates exactly the 34 final production tables", async () => {
     const result = await pool.query<{ tablename: string }>(
       `SELECT tablename
        FROM pg_tables
@@ -135,12 +138,12 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
          WHERE trigger_schema = 'public') AS triggers
     `);
     assert.deepEqual(result.rows[0], {
-      enums: "20",
-      foreign_keys: "49",
-      unique_constraints: "39",
-      check_constraints: "94",
-      indexes: "121",
-      triggers: "20"
+      enums: "26",
+      foreign_keys: "57",
+      unique_constraints: "44",
+      check_constraints: "112",
+      indexes: "137",
+      triggers: "25"
     });
   });
 
@@ -170,8 +173,11 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
     await assert.rejects(
       pool.query(
         `INSERT INTO analysis_runs (
-           idempotency_key, starting_entity_path_id, request_payload
-         ) VALUES ('invalid-owner', $1, '{}')`,
+           idempotency_key, starting_entity_path_id, category_selection_mode,
+           prompt_depth, prompt_policy_version, request_payload
+         ) VALUES (
+           'invalid-owner', $1, 'all', 'weak', 'geo-prompt-policy-v1', '{}'
+         )`,
         [path.rows[0]!.id]
       ),
       hasCode("23514")
@@ -181,9 +187,9 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
   it("freezes the normalized provider set after run creation", async () => {
     const fixture = await seedAnonymousRun(pool);
     const frozen = await pool.query<{ id: string }>(
-      `INSERT INTO analysis_run_provider_models (
-         analysis_run_id, provider, model, ordinal
-       ) VALUES ($1, 'mock', 'mock-fast', 0)
+       `INSERT INTO analysis_run_provider_models (
+         analysis_run_id, provider, model, model_profile_version, ordinal
+       ) VALUES ($1, 'mock', 'mock-fast', 'mock-fast-v1', 0)
        RETURNING analysis_run_provider_model_id AS id`,
       [fixture.runId]
     );
@@ -205,8 +211,14 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
     await assert.rejects(
       pool.query(
         `INSERT INTO provider_jobs (
-           idempotency_key, prompt_job_id, provider, model, request_payload
-         ) VALUES ('unrendered-provider', $1, 'mock', 'mock-fast', '{}')`,
+           idempotency_key, job_kind, prompt_job_id, provider, model,
+           response_contract_version, provider_instruction_profile,
+           model_profile_version, structured_output_mode, request_payload
+         ) VALUES (
+           'unrendered-provider', 'normal_prompt', $1, 'mock', 'mock-fast',
+           'geo-response-contract-v1', 'mock-json-v1',
+           'mock-fast-v1', 'native_json_schema', '{}'
+         )`,
         [fixture.promptId]
       ),
       hasCode("23514")
@@ -225,9 +237,11 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
       triggerTables.rows.map((row) => row.event_object_table),
       [
         "analysis_run_provider_models",
+        "analysis_run_requested_categories",
         "provider_results",
         "provider_scores",
         "reports",
+        "scheduler_job_requested_categories",
         "token_usage"
       ]
     );
@@ -292,8 +306,11 @@ async function seedAnonymousRun(
   const run = await pool.query<{ id: string }>(
     `INSERT INTO analysis_runs (
        idempotency_key, anonymous_session_id, starting_entity_path_id,
+       category_selection_mode, prompt_depth, prompt_policy_version,
        request_payload
-     ) VALUES ('schema-run', $1, $2, '{}')
+     ) VALUES (
+       'schema-run', $1, $2, 'all', 'weak', 'geo-prompt-policy-v1', '{}'
+     )
      RETURNING analysis_run_id AS id`,
     [session.rows[0]!.id, path.rows[0]!.id]
   );
@@ -320,8 +337,12 @@ async function seedPrompt(
   );
   const prompt = await pool.query<{ id: string }>(
     `INSERT INTO prompt_jobs (
-       idempotency_key, llm_run_id, prompt_type, prompt_version, prompt_text
-     ) VALUES ('schema-prompt', $1, 'visibility', 'v1_light', $2)
+       idempotency_key, llm_run_id, prompt_type, prompt_depth,
+       business_prompt_version, response_contract_version, prompt_text
+     ) VALUES (
+       'schema-prompt', $1, 'visibility', 'weak',
+       'geo-business-prompt-v1', 'geo-response-contract-v1', $2
+     )
      RETURNING prompt_job_id AS id`,
     [llm.rows[0]!.id, promptText]
   );

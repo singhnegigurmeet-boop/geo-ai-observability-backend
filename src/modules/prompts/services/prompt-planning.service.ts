@@ -7,6 +7,7 @@ import type { LlmRunCreatedPayload } from "../../llm/messages/llm-run-worker.mes
 import { LlmRunRepository } from "../../llm/repositories/llm-run.repository.js";
 import { OutboxEventWriterRepository } from "../../outbox/repositories/outbox-event-writer.repository.js";
 import { PromptJobRepository } from "../repositories/prompt-job.repository.js";
+import { EntityPathContextRepository } from "../repositories/entity-path-context.repository.js";
 import { promptPlanFor } from "../policies/prompt-plan.policy.js";
 import type { PromptPlanningResult } from "../types/prompt.types.js";
 
@@ -62,22 +63,29 @@ export class PromptPlanningService {
           "Analysis run item entity path does not exist or is inactive"
         );
       }
-      const actorType =
-        parent.user_id && parent.workspace_id ? "user" : "anonymous";
       const plan = promptPlanFor({
-        actorType,
-        userId: parent.user_id,
-        workspaceId: parent.workspace_id,
-        anonymousSessionId: parent.anonymous_session_id,
-        pathLevel: path.path_type
+        pathLevel: path.path_type,
+        promptDepth: parent.prompt_depth
       });
+      const entityPathContext = await new EntityPathContextRepository(
+        client
+      ).find(path.entity_path_id, parent.starting_entity_path_id);
+      if (!entityPathContext) {
+        throw new PromptPlanningError(
+          "ENTITY_PATH_CONTEXT_INVALID",
+          "The authoritative entity path context is missing or inactive"
+        );
+      }
       const prompts = new PromptJobRepository(client);
       const outbox = new OutboxEventWriterRepository(client);
       for (const entry of plan) {
         const promptJob = await prompts.createOrReuse({
           llmRunId: llmRun.llm_run_id,
           promptType: entry.promptType,
-          promptVersion: entry.promptVersion
+          promptDepth: entry.promptDepth,
+          businessPromptVersion: entry.businessPromptVersion,
+          responseContractVersion: entry.responseContractVersion,
+          entityPathContext
         });
         await outbox.createOrReuse({
           eventKey: `prompt_job.created:${promptJob.prompt_job_id}`,

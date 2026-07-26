@@ -8,10 +8,10 @@ import {
   asObject,
   malformed,
   nonnegativeInteger,
-  normalizedEvidence,
   objectAt,
   stringAt
 } from "../../../utils/provider-response.js";
+import { providerModelProfile } from "../registry/provider-model.registry.js";
 
 export class GeminiProviderAdapter implements ProviderAdapter {
   readonly provider = "gemini" as const;
@@ -22,7 +22,8 @@ export class GeminiProviderAdapter implements ProviderAdapter {
   ) {}
 
   supportsModel(model: string) {
-    return model === "gemini-1.5-flash";
+    const profile = providerModelProfile(this.provider, model);
+    return Boolean(profile?.enabled && profile.adapterSupported);
   }
 
   async execute(request: ProviderExecutionRequest) {
@@ -50,7 +51,12 @@ export class GeminiProviderAdapter implements ProviderAdapter {
         "x-goog-api-key": this.apiKey
       },
       body: {
-        contents: [{ role: "user", parts: [{ text: request.promptText }] }]
+        contents: [{ role: "user", parts: [{ text: request.promptText }] }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: request.maximumOutputTokens,
+          responseMimeType: "application/json"
+        }
       },
       timeoutMs: request.timeoutMs
     });
@@ -72,14 +78,13 @@ export class GeminiProviderAdapter implements ProviderAdapter {
     const answer = text || `Gemini refusal: ${blockReason ?? "empty response"}`;
     const usage = objectAt(raw.usageMetadata);
     return {
-      rawResponse: raw,
-      parsedEvidence: normalizedEvidence({
-        provider: this.provider,
-        model: request.model,
-        promptType: request.promptType,
-        text: answer,
-        refusal: !text
-      }),
+      generatedContent: answer,
+      sanitizedProviderMetadata: {
+        candidateCount: Array.isArray(raw.candidates)
+          ? raw.candidates.length
+          : 0,
+        blocked: !text
+      },
       inputTokens: nonnegativeInteger(usage?.promptTokenCount),
       outputTokens: nonnegativeInteger(usage?.candidatesTokenCount),
       totalTokens: nonnegativeInteger(usage?.totalTokenCount),

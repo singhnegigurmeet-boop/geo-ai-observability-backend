@@ -343,16 +343,22 @@ async function seedItem(
   const run = await pool.query<{ id: string }>(
     `INSERT INTO analysis_runs (
        idempotency_key, anonymous_session_id, user_id, workspace_id,
-       starting_entity_path_id, status, request_payload, started_at
+       starting_entity_path_id, category_selection_mode, prompt_depth,
+       prompt_policy_version, status, request_payload, started_at
      )
-     VALUES ($1, $2, $3, $4, $5, 'processing', '{}'::jsonb, now())
+     VALUES (
+       $1, $2, $3, $4, $5, 'all', $6, 'geo-prompt-policy-v1',
+       'processing', jsonb_build_object('domain', $7::text), now()
+     )
      RETURNING analysis_run_id AS id`,
     [
       `llm_run-run-${suffix}`,
       anonymous.rows[0]!.id,
       userId,
       workspaceId,
-      entityPath.rows[0]!.id
+      entityPath.rows[0]!.id,
+      ownership === "claimed" ? "medium" : "weak",
+      `${suffix}.llm-run.example`
     ]
   );
   const item = await pool.query<{ id: string }>(

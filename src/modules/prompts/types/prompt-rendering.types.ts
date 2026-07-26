@@ -1,15 +1,26 @@
-import type { EntityPathType, PromptType } from "../../../common/types/database.types.js";
+import type {
+  EntityPathType,
+  PromptDepth,
+  PromptType
+} from "../../../common/types/database.types.js";
+
+export type EntityPathContext = {
+  domain: { id: string; name: string };
+  category?: { id: string; name: string };
+  brand?: { id: string; name: string };
+  product?: { id: string; name: string };
+  useContext?: { id: string; name: string };
+  startingLevel: EntityPathType;
+  targetLevel: EntityPathType;
+  canonicalPath: string;
+};
 
 export type PromptRenderingContext = {
   promptType: PromptType;
-  promptVersion: "v1" | "v1_light";
-  actorType: "anonymous" | "user";
-  normalizedDomain: string;
-  pathType: EntityPathType;
-  categoryName: string | null;
-  brandName: string | null;
-  productName: string | null;
-  useContextName: string | null;
+  promptDepth: PromptDepth;
+  businessPromptVersion: string;
+  responseContractVersion: string;
+  entityPathContext: EntityPathContext;
 };
 
 export type PromptTemplate = (context: PromptRenderingContext) => string;

@@ -8,10 +8,14 @@ import {
   asObject,
   malformed,
   nonnegativeInteger,
-  normalizedEvidence,
   objectAt,
   stringAt
 } from "../../../utils/provider-response.js";
+import {
+  classificationResponseJsonSchema,
+  normalResponseJsonSchema
+} from "../contracts/provider-response.contracts.js";
+import { providerModelProfile } from "../registry/provider-model.registry.js";
 
 export class OpenAiProviderAdapter implements ProviderAdapter {
   readonly provider = "openai" as const;
@@ -22,7 +26,8 @@ export class OpenAiProviderAdapter implements ProviderAdapter {
   ) {}
 
   supportsModel(model: string) {
-    return model === "gpt-4o-mini";
+    const profile = providerModelProfile(this.provider, model);
+    return Boolean(profile?.enabled && profile.adapterSupported);
   }
 
   async execute(request: ProviderExecutionRequest) {
@@ -49,7 +54,23 @@ export class OpenAiProviderAdapter implements ProviderAdapter {
       },
       body: {
         model: request.model,
-        messages: [{ role: "user", content: request.promptText }]
+        messages: [{ role: "user", content: request.promptText }],
+        temperature: 0,
+        max_completion_tokens: request.maximumOutputTokens,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: request.responseContractVersion.replaceAll("-", "_"),
+            strict: true,
+            schema:
+              request.promptType === "domain_category_classification"
+                ? classificationResponseJsonSchema()
+                : normalResponseJsonSchema(
+                    request.promptType,
+                    request.responseContractVersion
+                  )
+          }
+        }
       },
       timeoutMs: request.timeoutMs
     });
@@ -67,14 +88,10 @@ export class OpenAiProviderAdapter implements ProviderAdapter {
     if (!choice || !message || text === null) throw malformed("OpenAI", raw);
     const usage = objectAt(raw.usage);
     return {
-      rawResponse: raw,
-      parsedEvidence: normalizedEvidence({
-        provider: this.provider,
-        model: request.model,
-        promptType: request.promptType,
-        text,
-        refusal: content === null && refusal !== null
-      }),
+      generatedContent: text,
+      sanitizedProviderMetadata: {
+        choiceCount: Array.isArray(raw.choices) ? raw.choices.length : 0
+      },
       inputTokens: nonnegativeInteger(usage?.prompt_tokens),
       outputTokens: nonnegativeInteger(usage?.completion_tokens),
       totalTokens: nonnegativeInteger(usage?.total_tokens),

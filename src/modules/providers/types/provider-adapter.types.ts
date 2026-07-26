@@ -1,5 +1,6 @@
 import type {
   JsonObject,
+  PromptDepth,
   PromptType,
   ProviderName
 } from "../../../common/types/database.types.js";
@@ -9,14 +10,22 @@ export type ProviderExecutionRequest = {
   provider: ProviderName;
   model: string;
   promptText: string;
-  promptType: PromptType;
-  promptVersion: string;
+  promptType: PromptType | "domain_category_classification";
+  promptDepth: PromptDepth;
+  responseContractVersion: string;
+  structuredOutputMode: string;
+  maximumOutputTokens: number;
+  exactTargetName: string;
+  classificationCandidates?: Array<{
+    categoryId: string;
+    categoryName: string;
+  }>;
   timeoutMs: number;
 };
 
-export type ProviderExecutionResult = {
-  rawResponse: JsonObject;
-  parsedEvidence: JsonObject;
+export type ProviderGeneratedOutput = {
+  generatedContent: string;
+  sanitizedProviderMetadata: JsonObject;
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
@@ -29,7 +38,7 @@ export type ProviderExecutionResult = {
 export interface ProviderAdapter {
   readonly provider: ProviderName;
   supportsModel(model: string): boolean;
-  execute(request: ProviderExecutionRequest): Promise<ProviderExecutionResult>;
+  execute(request: ProviderExecutionRequest): Promise<ProviderGeneratedOutput>;
 }
 
 export type ProviderHttpRequest = {

@@ -20,6 +20,8 @@ import { ProviderScoreService } from "../../../src/modules/scoring/services/prov
 import { ProviderScoreWorker } from "../../../src/modules/scoring/workers/provider-score-worker.js";
 import type { ProviderResultCreatedPayload } from "../../../src/modules/scoring/messages/provider-score-worker.messages.js";
 import type { PromptType } from "../../../src/common/types/database.types.js";
+import { promptTypePolicy } from "../../../src/modules/prompts/policies/prompt-policy.registry.js";
+import { providerModelProfile } from "../../../src/modules/providers/registry/provider-model.registry.js";
 
 const enabled = process.env.RUN_SCORING_REPORTING_INTEGRATION_TESTS === "true";
 const lightPrompts: PromptType[] = ["visibility", "competitor", "ranking"];
@@ -97,20 +99,14 @@ describe(
       assert.ok(first.reportId);
       assert.equal(await count(pool, "reports"), 1);
 
-      const concurrentFinalScores = await Promise.all([
-        scoring.process(fixture.results[1]!),
-        scoring.process(fixture.results[2]!)
-      ]);
-      const completed = concurrentFinalScores.find(
-        (result) => result.reportId !== null
-      );
-      assert.ok(completed?.reportId);
-      assert.equal(await count(pool, "provider_scores"), 3);
-      assert.equal(await count(pool, "reports"), 3);
+      const completed = await scoring.process(fixture.results[1]!);
+      assert.ok(completed.reportId);
+      assert.equal(await count(pool, "provider_scores"), 2);
+      assert.equal(await count(pool, "reports"), 2);
 
       const report = await reportFor(pool, fixture.analysisRunId);
       assert.equal(report.report_data.reportType, "multi_provider_report");
-      assert.equal(report.report_data.breakdown.length, 3);
+      assert.equal(report.report_data.breakdown.length, 2);
       assert.equal(report.report_data.providerResults[0]?.model, "mock-fast");
       assert.equal(report.run_status, "completed");
       assert.ok(report.completed_at);
@@ -134,17 +130,15 @@ describe(
       const replay = await scoring.process(fixture.results.at(-1)!);
       assert.equal(replay.outcome, "noop");
       assert.ok(replay.reportId);
-      assert.equal(await count(pool, "provider_scores"), 3);
-      assert.equal(await count(pool, "reports"), 3);
+      assert.equal(await count(pool, "provider_scores"), 2);
+      assert.equal(await count(pool, "reports"), 2);
     });
 
-    it("revises logged-in and claimed reports through all five scores", async () => {
+    it("reports five prompt results with two GEO scoring metrics", async () => {
       for (const actor of ["user", "claimed"] as const) {
         const fixture = await seedRun(pool, actor, richPrompts);
         const scoring = new ProviderScoreService(pool);
-        for (const result of fixture.results.slice(0, 4)) {
-          assert.ok((await scoring.process(result)).reportId);
-        }
+        assert.ok((await scoring.process(fixture.results[0]!)).reportId);
         assert.equal(
           Number(
             (
@@ -154,12 +148,13 @@ describe(
               )
             ).rows[0]!.count
           ),
-          4
+          1
         );
-        const completed = await scoring.process(fixture.results[4]!);
+        const completed = await scoring.process(fixture.results[1]!);
         assert.ok(completed.reportId);
         const report = await reportFor(pool, fixture.analysisRunId);
-        assert.equal(report.report_data.breakdown.length, 5);
+        assert.equal(report.report_data.breakdown.length, 2);
+        assert.equal(report.report_data.providerResults.length, 5);
         assert.equal(
           report.report_data.providerResults[0]?.model,
           "mock-standard"
@@ -178,13 +173,11 @@ describe(
       await new ProviderScoreService(pool).process(fixture.results[0]!);
       const score = await pool.query<{
         score: string;
+        scoring_version: string;
         score_components: Record<string, unknown>;
-      }>("SELECT score, score_components FROM provider_scores");
+      }>("SELECT score, scoring_version, score_components FROM provider_scores");
       assert.equal(score.rows[0]?.score, "64.0000");
-      assert.equal(
-        score.rows[0]?.score_components.scoringVersion,
-        "backend-v1"
-      );
+      assert.equal(score.rows[0]?.scoring_version, "geo-backend-v1");
     });
 
     it("serves reports only to the owning anonymous session or workspace", async () => {
@@ -350,7 +343,7 @@ describe(
           FROM notifications
         `
       );
-      assert.equal(notifications.rows.length, 5);
+      assert.equal(notifications.rows.length, 2);
       assert.ok(
         notifications.rows.every(
           (notification) =>
@@ -433,14 +426,26 @@ async function seedRun(
       [`reporting-${unique}.example`]
     )
   ).rows[0]!.domain_id;
+  const categoryId = (
+    await pool.query<{ category_id: string }>(
+      `INSERT INTO categories (category_name, normalized_name)
+       VALUES ($1, $2) RETURNING category_id`,
+      [`Reporting category ${unique}`, `reporting-${unique}`]
+    )
+  ).rows[0]!.category_id;
+  await pool.query(
+    `INSERT INTO domain_categories (domain_id, category_id)
+     VALUES ($1, $2)`,
+    [domainId, categoryId]
+  );
   const pathId = (
     await pool.query<{ entity_path_id: string }>(
       `
-        INSERT INTO entity_paths (domain_id, path_type)
-        VALUES ($1, 'domain')
+        INSERT INTO entity_paths (domain_id, category_id, path_type)
+        VALUES ($1, $2, 'category')
         RETURNING entity_path_id
       `,
-      [domainId]
+      [domainId, categoryId]
     )
   ).rows[0]!.entity_path_id;
   const analysisRunId = (
@@ -448,10 +453,12 @@ async function seedRun(
       `
         INSERT INTO analysis_runs (
           idempotency_key, anonymous_session_id, user_id, workspace_id,
-          starting_entity_path_id, status, request_payload, started_at
+          starting_entity_path_id, category_selection_mode, prompt_depth,
+          prompt_policy_version, status, request_payload, started_at
         )
         VALUES (
-          $1, $2, $3, $4, $5, 'processing', '{}'::jsonb, now()
+          $1, $2, $3, $4, $5, 'selected', $6, 'geo-prompt-policy-v1',
+          'processing', jsonb_build_object('domain', $7::text), now()
         )
         RETURNING analysis_run_id
       `,
@@ -460,15 +467,26 @@ async function seedRun(
         anonymousSessionId,
         userId,
         workspaceId,
-        pathId
+        pathId,
+        actor === "anonymous" ? "weak" : "high",
+        `reporting-${unique}.example`
       ]
     )
   ).rows[0]!.analysis_run_id;
   await pool.query(
+    `INSERT INTO analysis_run_requested_categories (
+       analysis_run_id, category_id, ordinal
+     ) VALUES ($1, $2, 0)`,
+    [analysisRunId, categoryId]
+  );
+  const model = actor === "anonymous" ? "mock-fast" : "mock-standard";
+  const modelProfile = providerModelProfile("mock", model);
+  assert.ok(modelProfile);
+  await pool.query(
     `INSERT INTO analysis_run_provider_models
-       (analysis_run_id, provider, model, ordinal)
-     VALUES ($1, 'mock', $2, 0)`,
-    [analysisRunId, actor === "anonymous" ? "mock-fast" : "mock-standard"]
+       (analysis_run_id, provider, model, model_profile_version, ordinal)
+     VALUES ($1, 'mock', $2, $3, 0)`,
+    [analysisRunId, model, modelProfile.modelProfileVersion]
   );
   const itemId = (
     await pool.query<{ analysis_run_item_id: string }>(
@@ -499,41 +517,84 @@ async function seedRun(
 
   const results: ProviderResultCreatedPayload[] = [];
   for (const promptType of promptTypes) {
+    const promptPolicy = promptTypePolicy(promptType);
+    const promptDepth = actor === "anonymous" ? "weak" : "high";
     const promptJobId = (
       await pool.query<{ prompt_job_id: string }>(
         `
           INSERT INTO prompt_jobs (
-            idempotency_key, llm_run_id, prompt_type, prompt_version,
+            idempotency_key, llm_run_id, prompt_type, prompt_depth,
+            business_prompt_version, response_contract_version,
             status, prompt_text, started_at, completed_at
           )
-          VALUES ($1, $2, $3, $4, 'succeeded', $5, now(), now())
+          VALUES (
+            $1, $2, $3, $4, $5, $6, 'succeeded', $7, now(), now()
+          )
           RETURNING prompt_job_id
         `,
         [
           `reporting-prompt:${unique}:${promptType}`,
           llmRunId,
           promptType,
-          actor === "anonymous" ? "v1_light" : "v1",
+          promptDepth,
+          promptPolicy.businessPromptVersion,
+          promptPolicy.responseContractVersion,
           `Canonical ${promptType} prompt`
         ]
       )
     ).rows[0]!.prompt_job_id;
-    const model = actor === "anonymous" ? "mock-fast" : "mock-standard";
     const providerJobId = (
       await pool.query<{ provider_job_id: string }>(
         `
           INSERT INTO provider_jobs (
-            idempotency_key, prompt_job_id, provider, model, status,
+            idempotency_key, job_kind, prompt_job_id, provider, model,
+            response_contract_version, provider_instruction_profile,
+            model_profile_version, structured_output_mode, status,
             started_at, completed_at
           )
-          VALUES ($1, $2, 'mock', $3, 'succeeded', now(), now())
+          VALUES (
+            $1, 'normal_prompt', $2, 'mock', $3, $4,
+            'mock-json-schema-v1', $5, 'json_schema',
+            'succeeded', now(), now()
+          )
           RETURNING provider_job_id
         `,
-        [`reporting-provider:${unique}:${promptType}`, promptJobId, model]
+        [
+          `reporting-provider:${unique}:${promptType}`,
+          promptJobId,
+          model,
+          promptPolicy.responseContractVersion,
+          modelProfile.modelProfileVersion
+        ]
       )
     ).rows[0]!.provider_job_id;
-    const parsedResponse = {
-      score: evidence.providerScore ?? 0,
+    const validatedResponse = {
+      prompt_type: promptType,
+      contract_version: promptPolicy.responseContractVersion,
+      result:
+        promptType === "visibility"
+          ? {
+              target_mentioned: true,
+              mention_likelihood: 0.6,
+              recommendation_likelihood: 0.6,
+              competitive_prominence: 0.8,
+              query_intents: [],
+              strengths: [],
+              visibility_gaps: [],
+              confidence: evidence.confidence ?? 0.75
+            }
+          : promptType === "ranking"
+            ? {
+                requested_top_k: promptDepth === "weak" ? 5 : 20,
+                found: true,
+                rank_position: 1,
+                ordered_candidates: [
+                  { rank: 1, name: `Reporting category ${unique}` }
+                ],
+                mention_count: 1,
+                confidence: evidence.confidence ?? 0.75
+              }
+            : { confidence: evidence.confidence ?? 0.75 },
       evidence: [
         {
           claim: `Mock ${promptType} evidence`,
@@ -548,23 +609,26 @@ async function seedRun(
         `
           INSERT INTO provider_results (
             idempotency_key, provider_job_id, provider, status,
-            provider_request_id, model_version, raw_response,
-            parsed_response, validation_errors, finish_reason,
-            latency_ms, received_at
+            response_contract_version, provider_request_id, model_version,
+            raw_response, raw_response_original_bytes, provider_metadata,
+            validated_response, validation_errors, context_validation_status,
+            finish_reason, latency_ms, received_at
           )
           VALUES (
             $1, $2, 'mock', 'valid', $3, $4, $5, $6,
-            '[]'::jsonb, 'mock_complete', 0, now()
+            octet_length($6), '{}'::jsonb, $7, '[]'::jsonb, 'valid',
+            'mock_complete', 0, now()
           )
           RETURNING provider_result_id
         `,
         [
           `reporting-result:${unique}:${promptType}`,
           providerJobId,
+          promptPolicy.responseContractVersion,
           `reporting-request:${unique}:${promptType}`,
           model,
-          JSON.stringify(parsedResponse),
-          parsedResponse
+          JSON.stringify(validatedResponse),
+          validatedResponse
         ]
       )
     ).rows[0]!.provider_result_id;
@@ -578,9 +642,9 @@ async function seedRun(
       `,
       [`reporting-usage:${unique}:${promptType}`, providerJobId]
     );
-    results.push({
-      providerResultId
-    });
+    if (promptType === "visibility" || promptType === "ranking") {
+      results.push({ providerResultId });
+    }
   }
   return {
     analysisRunId,

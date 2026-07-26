@@ -1,21 +1,21 @@
 import type { QueueName } from "../../../common/messaging/queue-names.js";
 import type {
   EntityPathType,
+  PromptDepth,
   PromptType
 } from "../../../common/types/database.types.js";
 
 export type PromptPlanEntry = {
   promptType: PromptType;
-  promptVersion: "v1" | "v1_light";
+  promptDepth: PromptDepth;
+  businessPromptVersion: string;
+  responseContractVersion: string;
   queueName: QueueName;
 };
 
 export type PromptPlanPolicyContext = {
-  actorType: "anonymous" | "user";
-  userId: string | null;
-  workspaceId: string | null;
-  anonymousSessionId: string | null;
   pathLevel: EntityPathType;
+  promptDepth: PromptDepth;
 };
 
 export type PromptPlanningResult =

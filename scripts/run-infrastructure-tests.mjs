@@ -106,7 +106,11 @@ for (const suiteName of requestedSuites) {
     TEST_RABBITMQ_URL: rabbitMqUrl
   };
   for (const flag of enableFlags) environment[flag] = "true";
-  await run(process.execPath, [tsxCli, "--test", testFile], environment);
+  await run(
+    process.execPath,
+    [tsxCli, "--test", "--test-force-exit", testFile],
+    environment
+  );
 }
 
 function run(command, args, environment) {

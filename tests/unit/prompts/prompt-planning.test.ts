@@ -7,53 +7,51 @@ import {
 import { promptPlanFor } from "../../../src/modules/prompts/policies/prompt-plan.policy.js";
 
 describe("LLM-run prompt plan policy", () => {
-  it("returns a reduced light plan for anonymous work", () => {
-    const plan = promptPlanFor(policyContext("anonymous"));
+  it("returns no normal prompts for a domain-only target", () => {
+    const plan = promptPlanFor({
+      pathLevel: "domain",
+      promptDepth: "weak"
+    });
+    assert.deepEqual(plan, []);
+  });
+
+  it("returns the three category-level prompts at the frozen depth", () => {
+    const plan = promptPlanFor({
+      pathLevel: "category",
+      promptDepth: "weak"
+    });
     assert.deepEqual(
       plan.map((entry) => [
         entry.promptType,
-        entry.promptVersion,
+        entry.promptDepth,
         entry.queueName
       ]),
       [
-        ["visibility", "v1_light", "visibility_prompt_queue"],
-        ["competitor", "v1_light", "competitor_prompt_queue"],
-        ["ranking", "v1_light", "ranking_prompt_queue"]
+        ["visibility", "weak", "visibility_prompt_queue"],
+        ["ranking", "weak", "ranking_prompt_queue"],
+        ["competitor", "weak", "competitor_prompt_queue"]
       ]
     );
   });
 
-  it("returns the richer five-job plan for users and claimed sessions", () => {
+  it("returns all five prompts for deeper target paths", () => {
     const expected = [
       ["visibility", "visibility_prompt_queue"],
-      ["competitor", "competitor_prompt_queue"],
       ["ranking", "ranking_prompt_queue"],
+      ["competitor", "competitor_prompt_queue"],
       ["price_range", "price_range_prompt_queue"],
       ["pros_cons", "pros_cons_prompt_queue"]
     ];
-    for (const anonymousSessionId of [null, "9"]) {
-      const plan = promptPlanFor({
-        ...policyContext("user"),
-        anonymousSessionId
-      });
+    for (const pathLevel of ["brand", "product", "use_context"] as const) {
+      const plan = promptPlanFor({ pathLevel, promptDepth: "high" });
       assert.deepEqual(
         plan.map((entry) => [entry.promptType, entry.queueName]),
         expected
       );
-      assert.ok(plan.every((entry) => entry.promptVersion === "v1"));
+      assert.ok(plan.every((entry) => entry.promptDepth === "high"));
     }
   });
 });
-
-function policyContext(actorType: "anonymous" | "user") {
-  return {
-    actorType,
-    userId: actorType === "user" ? "1" : null,
-    workspaceId: actorType === "user" ? "2" : null,
-    anonymousSessionId: actorType === "anonymous" ? "3" : null,
-    pathLevel: "domain" as const
-  };
-}
 
 describe("llm_run.created message validation", () => {
   it("accepts a valid message", () => {

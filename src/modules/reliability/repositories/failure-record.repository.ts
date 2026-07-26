@@ -10,6 +10,7 @@ import type {
 import { ExecutionStateService } from "../../execution/services/execution-state.service.js";
 import { ReportAggregationService } from "../../reports/services/report-aggregation.service.js";
 import { ReportRepository } from "../../reports/repositories/report.repository.js";
+import { OutboxEventWriterRepository } from "../../outbox/repositories/outbox-event-writer.repository.js";
 
 export type RecordWorkerFailure = {
   queueName: string;
@@ -81,14 +82,24 @@ export class FailureRecordRepository {
     if (!input.aggregateId || !input.aggregateType) return;
     const message = input.errorMessage.slice(0, 1_000);
     if (input.aggregateType === "provider_job") {
-      const parent = await this.database.query<{ analysis_run_id: string }>(
+      const parent = await this.database.query<{
+        analysis_run_id: string;
+        classification_job_id: string | null;
+      }>(
         `
-          SELECT item.analysis_run_id
+          SELECT
+            COALESCE(item.analysis_run_id, classification.analysis_run_id)
+              AS analysis_run_id,
+            job.classification_job_id
           FROM provider_jobs AS job
-          JOIN prompt_jobs AS prompt ON prompt.prompt_job_id = job.prompt_job_id
-          JOIN llm_runs AS llm ON llm.llm_run_id = prompt.llm_run_id
-          JOIN analysis_run_items AS item
+          LEFT JOIN prompt_jobs AS prompt
+            ON prompt.prompt_job_id = job.prompt_job_id
+          LEFT JOIN llm_runs AS llm ON llm.llm_run_id = prompt.llm_run_id
+          LEFT JOIN analysis_run_items AS item
             ON item.analysis_run_item_id = llm.analysis_run_item_id
+          LEFT JOIN domain_category_classification_jobs AS classification
+            ON classification.domain_category_classification_job_id =
+               job.classification_job_id
           WHERE job.provider_job_id = $1
         `,
         [input.aggregateId]
@@ -112,6 +123,15 @@ export class FailureRecordRepository {
         `,
         [input.aggregateId, input.errorCode, message]
       );
+      if (parent.rows[0]?.classification_job_id) {
+        await this.terminalizeClassification(
+          parent.rows[0].classification_job_id,
+          parent.rows[0].analysis_run_id,
+          input.errorCode,
+          message
+        );
+        return;
+      }
       const summary =
         await new ExecutionStateService(this.database).recalculateForProviderJob(
         input.aggregateId
@@ -120,6 +140,80 @@ export class FailureRecordRepository {
         await new ReportAggregationService(
           new ReportRepository(this.database)
         ).createIfReady(summary.analysisRunId);
+      }
+      return;
+    }
+
+    if (input.aggregateType === "domain_category_classification") {
+      const classification = await this.database.query<{
+        analysis_run_id: string;
+      }>(
+        `
+          SELECT analysis_run_id
+          FROM domain_category_classification_jobs
+          WHERE domain_category_classification_job_id = $1
+        `,
+        [input.aggregateId]
+      );
+      if (classification.rows[0]) {
+        await this.terminalizeClassification(
+          input.aggregateId,
+          classification.rows[0].analysis_run_id,
+          input.errorCode,
+          message
+        );
+        return;
+      }
+      const normal = await this.database.query<{ analysis_run_id: string }>(
+        `
+          SELECT item.analysis_run_id
+          FROM provider_results AS result
+          JOIN provider_jobs AS job
+            ON job.provider_job_id = result.provider_job_id
+          JOIN prompt_jobs AS prompt
+            ON prompt.prompt_job_id = job.prompt_job_id
+          JOIN llm_runs AS llm ON llm.llm_run_id = prompt.llm_run_id
+          JOIN analysis_run_items AS item
+            ON item.analysis_run_item_id = llm.analysis_run_item_id
+          WHERE result.provider_result_id = $1
+        `,
+        [input.aggregateId]
+      );
+      if (normal.rows[0]) {
+        await new ReportAggregationService(
+          new ReportRepository(this.database)
+        ).createIfReady(normal.rows[0].analysis_run_id);
+      }
+      return;
+    }
+
+    if (input.aggregateType === "provider_result") {
+      const classification = await this.database.query<{
+        classification_job_id: string;
+        analysis_run_id: string;
+      }>(
+        `
+          SELECT
+            job.classification_job_id,
+            classification.analysis_run_id
+          FROM provider_results AS result
+          JOIN provider_jobs AS job
+            ON job.provider_job_id = result.provider_job_id
+           AND job.classification_job_id IS NOT NULL
+          JOIN domain_category_classification_jobs AS classification
+            ON classification.domain_category_classification_job_id =
+               job.classification_job_id
+          WHERE result.provider_result_id = $1
+        `,
+        [input.aggregateId]
+      );
+      if (classification.rows[0]) {
+        await this.terminalizeClassification(
+          classification.rows[0].classification_job_id,
+          classification.rows[0].analysis_run_id,
+          input.errorCode,
+          message
+        );
       }
       return;
     }
@@ -205,6 +299,37 @@ export class FailureRecordRepository {
         [input.aggregateId, input.errorCode, message]
       );
     }
+  }
+
+  private async terminalizeClassification(
+    classificationJobId: string,
+    analysisRunId: string,
+    errorCode: string | null,
+    errorMessage: string
+  ) {
+    await this.database.query(
+      `
+        UPDATE domain_category_classification_jobs
+        SET status = 'failed',
+            error_code = $2,
+            error_message = $3,
+            completed_at = COALESCE(completed_at, now()),
+            updated_at = now()
+        WHERE domain_category_classification_job_id = $1
+          AND status IN ('queued', 'processing')
+      `,
+      [classificationJobId, errorCode, errorMessage]
+    );
+    await new OutboxEventWriterRepository(this.database).createOrReuse({
+      eventKey:
+        `analysis_run.classification_failed:${analysisRunId}:${classificationJobId}`,
+      eventType: "analysis_run.created",
+      eventVersion: 1,
+      aggregateType: "analysis_run",
+      aggregateId: analysisRunId,
+      headers: { queueName: "analysis_run_queue" },
+      payload: { analysisRunId }
+    });
   }
 
   async createAndTerminalize(input: RecordWorkerFailure) {
