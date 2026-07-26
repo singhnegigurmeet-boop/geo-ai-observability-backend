@@ -159,6 +159,55 @@ export function resolveClassificationModel(input: {
   return selection(profile);
 }
 
+export function validateFrozenClassificationModel(
+  frozen: ProviderModelPair & {
+    modelProfileVersion: string;
+    providerInstructionProfile: string;
+    structuredOutputMode: string;
+  },
+  realProvidersEnabled = false
+): ProviderModelSelection {
+  const profile = classificationProfile(frozen.provider, frozen.model);
+  if (
+    !profile ||
+    !profile.enabled ||
+    !profile.eligibleForClassification ||
+    !profile.adapterSupported
+  ) {
+    throw new InvalidProviderModelSelectionError(
+      `Frozen classifier ${frozen.provider}/${frozen.model} is unavailable`
+    );
+  }
+  if (profile.provider !== "mock" && !realProvidersEnabled) {
+    throw new InvalidProviderModelSelectionError("Real providers are disabled");
+  }
+  if (profile.modelProfileVersion !== frozen.modelProfileVersion) {
+    throw new InvalidProviderModelSelectionError(
+      "Frozen classifier model-profile version is unavailable"
+    );
+  }
+  if (
+    profile.providerInstructionProfile !==
+    frozen.providerInstructionProfile
+  ) {
+    throw new InvalidProviderModelSelectionError(
+      "Frozen classifier instruction profile is unavailable"
+    );
+  }
+  if (
+    profile.preferredStructuredOutputMode !== frozen.structuredOutputMode ||
+    !profile.structuredOutputCapabilities.some(
+      (mode) => mode === frozen.structuredOutputMode
+    )
+  ) {
+    throw new InvalidProviderModelSelectionError(
+      "Frozen classifier structured-output mode is unavailable"
+    );
+  }
+  assertDepthSupported(profile, "weak");
+  return selection(profile);
+}
+
 export function providerModelPairs(
   selections: readonly ProviderModelPair[]
 ): ProviderModelPair[] {

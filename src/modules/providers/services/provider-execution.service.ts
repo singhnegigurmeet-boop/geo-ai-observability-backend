@@ -326,6 +326,29 @@ export class ProviderExecutionService {
     const classificationContext = parseClassificationContext(
       state.classification_input_payload
     );
+    const active = await client.query<{ category_id: string }>(
+      `SELECT category.category_id
+       FROM analysis_run_requested_categories AS requested
+       JOIN categories AS category
+         ON category.category_id = requested.category_id
+        AND category.is_active
+       WHERE requested.analysis_run_id = $1
+         AND category.category_id = ANY($2::bigint[])
+       ORDER BY requested.ordinal`,
+      [
+        state.analysis_run_id,
+        classificationContext.candidates.map(
+          (candidate) => candidate.categoryId
+        )
+      ]
+    );
+    if (active.rows.length !== classificationContext.candidates.length) {
+      throw new ProviderExecutionError(
+        "CLASSIFICATION_CATEGORY_INACTIVE",
+        "A frozen classification candidate is missing or inactive",
+        true
+      );
+    }
     const budget = await new BudgetCheckService(
       new BudgetRepository(client)
     ).checkAndReserve({
@@ -414,22 +437,6 @@ export class ProviderExecutionService {
         latencyMs: 0
       };
     }
-    const active = await client.query<{ category_id: string }>(
-      `
-        SELECT category.category_id
-        FROM analysis_run_requested_categories AS requested
-        JOIN categories AS category
-          ON category.category_id = requested.category_id AND category.is_active
-        WHERE requested.analysis_run_id = $1
-          AND category.category_id = ANY($2::bigint[])
-      `,
-      [
-        state.analysis_run_id,
-        classificationContext.candidates.map(
-          (candidate) => candidate.categoryId
-        )
-      ]
-    );
     const validation = validateClassificationOutput({
       generatedContent: execution.generatedContent,
       candidateIds: classificationContext.candidates.map(

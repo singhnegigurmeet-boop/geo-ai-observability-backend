@@ -13,7 +13,7 @@
     "test": "npm run test:unit",
     "test:unit": "node scripts/run-unit-tests.mjs",
     "test:schema": "node scripts/run-infrastructure-tests.mjs schema",
-    "test:integration": "node scripts/run-infrastructure-tests.mjs outbox identity analysis hierarchy expansion llm prompts providers reporting budgets realProviders operations",
+    "test:integration": "node scripts/run-infrastructure-tests.mjs outbox identity analysis hierarchy expansion classification llm prompts providers reporting budgets realProviders operations",
     "test:e2e": "node scripts/run-infrastructure-tests.mjs e2e",
     "test:e2e:full": "node scripts/run-infrastructure-tests.mjs budgets operations outbox full",
     "test:all": "npm run test:unit && npm run test:schema && npm run test:integration && npm run test:e2e",

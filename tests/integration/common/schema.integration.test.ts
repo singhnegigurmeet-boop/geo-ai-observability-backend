@@ -143,7 +143,7 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
       unique_constraints: "44",
       check_constraints: "112",
       indexes: "138",
-      triggers: "25"
+      triggers: "26"
     });
   });
 
@@ -304,6 +304,28 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
         "failure_records_open_queue_idx"
       ]
     );
+  });
+
+  it("protects the complete frozen classification execution identity", async () => {
+    const trigger = await pool.query<{
+      action_statement: string;
+      action_timing: string;
+      event_manipulation: string;
+    }>(
+      `SELECT action_statement, action_timing, event_manipulation
+       FROM information_schema.triggers
+       WHERE trigger_schema = 'public'
+         AND event_object_table =
+             'domain_category_classification_jobs'
+         AND trigger_name =
+             'domain_category_classification_jobs_identity_trigger'`
+    );
+    assert.deepEqual(trigger.rows, [{
+      action_statement:
+        "EXECUTE FUNCTION preserve_classification_job_execution_identity()",
+      action_timing: "BEFORE",
+      event_manipulation: "UPDATE"
+    }]);
   });
 
   it("is a no-op when the exact baseline is already applied", async () => {

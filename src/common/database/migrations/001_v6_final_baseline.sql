@@ -442,6 +442,35 @@ END;
 $$;
 
 
+CREATE FUNCTION public.preserve_classification_job_execution_identity() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
+     OR NEW.analysis_run_id IS DISTINCT FROM OLD.analysis_run_id
+     OR NEW.domain_id IS DISTINCT FROM OLD.domain_id
+     OR NEW.candidate_set_hash IS DISTINCT FROM OLD.candidate_set_hash
+     OR NEW.classifier_provider IS DISTINCT FROM OLD.classifier_provider
+     OR NEW.classifier_model IS DISTINCT FROM OLD.classifier_model
+     OR NEW.model_profile_version IS DISTINCT FROM OLD.model_profile_version
+     OR NEW.prompt_version IS DISTINCT FROM OLD.prompt_version
+     OR NEW.response_contract_version IS DISTINCT FROM OLD.response_contract_version
+     OR NEW.provider_instruction_profile IS DISTINCT FROM OLD.provider_instruction_profile
+     OR NEW.structured_output_mode IS DISTINCT FROM OLD.structured_output_mode
+     OR NEW.input_payload IS DISTINCT FROM OLD.input_payload
+     OR NEW.candidate_count IS DISTINCT FROM OLD.candidate_count
+     OR (
+       OLD.rendered_prompt IS NOT NULL
+       AND NEW.rendered_prompt IS DISTINCT FROM OLD.rendered_prompt
+     ) THEN
+    RAISE EXCEPTION 'classification execution identity is immutable'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
 CREATE FUNCTION public.notify_analysis_cancelled() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -1043,7 +1072,7 @@ CREATE TABLE public.domain_category_classification_jobs (
     CONSTRAINT classification_jobs_hash_check CHECK ((candidate_set_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT classification_jobs_input_object_check CHECK ((jsonb_typeof(input_payload) = 'object'::text)),
     CONSTRAINT classification_jobs_nonblank_check CHECK (((length(btrim(idempotency_key)) > 0) AND (length(btrim(classifier_model)) > 0) AND (length(btrim(model_profile_version)) > 0) AND (length(btrim(prompt_version)) > 0) AND (length(btrim(response_contract_version)) > 0) AND (length(btrim(provider_instruction_profile)) > 0) AND (length(btrim(structured_output_mode)) > 0))),
-    CONSTRAINT classification_jobs_rendered_state_check CHECK ((((status = 'queued'::public.classification_job_status) AND (rendered_prompt IS NULL)) OR ((status <> 'queued'::public.classification_job_status) AND (rendered_prompt IS NOT NULL) AND (length(btrim(rendered_prompt)) > 0))))
+    CONSTRAINT classification_jobs_rendered_state_check CHECK ((((status = 'queued'::public.classification_job_status) AND (rendered_prompt IS NULL)) OR ((status = ANY (ARRAY['failed'::public.classification_job_status, 'cancelled'::public.classification_job_status])) AND ((rendered_prompt IS NULL) OR (length(btrim(rendered_prompt)) > 0))) OR ((status = ANY (ARRAY['processing'::public.classification_job_status, 'completed'::public.classification_job_status, 'completed_empty'::public.classification_job_status, 'invalid'::public.classification_job_status])) AND (rendered_prompt IS NOT NULL) AND (length(btrim(rendered_prompt)) > 0))))
 );
 
 
@@ -2888,6 +2917,9 @@ CREATE TRIGGER analysis_run_provider_models_immutable_trigger BEFORE DELETE OR U
 
 
 CREATE TRIGGER analysis_run_requested_categories_immutable_trigger BEFORE DELETE OR UPDATE ON public.analysis_run_requested_categories FOR EACH ROW EXECUTE FUNCTION public.reject_immutable_evidence_mutation();
+
+
+CREATE TRIGGER domain_category_classification_jobs_identity_trigger BEFORE UPDATE ON public.domain_category_classification_jobs FOR EACH ROW EXECUTE FUNCTION public.preserve_classification_job_execution_identity();
 
 
 --

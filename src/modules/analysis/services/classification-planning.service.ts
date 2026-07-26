@@ -5,13 +5,21 @@ import type {
 } from "../../../common/database/database-executor.js";
 import { inTransaction } from "../../../common/database/database-executor.js";
 import type {
-  DomainCategoryClassificationJobRow,
-  JsonObject
+  DomainCategoryClassificationJobRow
 } from "../../../common/types/database.types.js";
 import { OutboxEventWriterRepository } from "../../outbox/repositories/outbox-event-writer.repository.js";
 import { ProviderJobRepository } from "../../providers/repositories/provider-job.repository.js";
-import { validateFrozenProviderModel } from "../../providers/policies/provider-model.policy.js";
+import { validateFrozenClassificationModel } from "../../providers/policies/provider-model.policy.js";
+import {
+  DOMAIN_CATEGORY_CLASSIFICATION_CONTRACT_VERSION,
+  DOMAIN_CATEGORY_CLASSIFICATION_PROMPT_VERSION
+} from "../../providers/contracts/provider-response.contracts.js";
 import type { ClassificationJobCreatedPayload } from "../messages/classification-worker.messages.js";
+import {
+  authoritativeClassificationContext,
+  ClassificationIntegrityError,
+  loadAuthoritativeClassificationState
+} from "./classification-authority.service.js";
 
 type ClassificationPlanningDatabase = DatabaseExecutor & TransactionPool;
 
@@ -40,22 +48,57 @@ export class ClassificationPlanningService {
       );
       if (job.status !== "queued") return { outcome: "noop" as const };
 
-      const renderedPrompt = renderClassificationPrompt(job.input_payload);
-      const selection = validateFrozenProviderModel(
+      const authority = await loadAuthoritativeClassificationState(
+        client,
+        job.analysis_run_id
+      );
+      let context;
+      try {
+        context = authoritativeClassificationContext({
+          job,
+          ...authority
+        });
+      } catch (error) {
+        if (error instanceof ClassificationIntegrityError) {
+          throw new PermanentClassificationError(error.code, error.message);
+        }
+        throw error;
+      }
+      if (
+        job.prompt_version !==
+          DOMAIN_CATEGORY_CLASSIFICATION_PROMPT_VERSION ||
+        job.response_contract_version !==
+          DOMAIN_CATEGORY_CLASSIFICATION_CONTRACT_VERSION
+      ) {
+        throw new PermanentClassificationError(
+          "CLASSIFICATION_CONTRACT_UNSUPPORTED",
+          "Frozen classification prompt or response contract is unsupported"
+        );
+      }
+      const selection = validateFrozenClassificationModel(
         {
           provider: job.classifier_provider,
           model: job.classifier_model,
-          modelProfileVersion: job.model_profile_version
+          modelProfileVersion: job.model_profile_version,
+          providerInstructionProfile:
+            job.provider_instruction_profile,
+          structuredOutputMode: job.structured_output_mode
         },
         this.realProvidersEnabled
       );
+      const renderedPrompt = renderClassificationPrompt({
+        normalizedDomain: authority.normalizedDomain!,
+        candidates: context.candidates,
+        promptVersion: job.prompt_version,
+        responseContractVersion: job.response_contract_version
+      });
       const requestPayload = {
         classificationJobId: job.domain_category_classification_job_id,
         promptType: "domain_category_classification",
         promptVersion: job.prompt_version,
         responseContractVersion: job.response_contract_version,
         renderedPrompt,
-        classificationContext: job.input_payload
+        classificationContext: context.inputPayload
       };
       const requestHash = createHash("sha256")
         .update(JSON.stringify(requestPayload))
@@ -80,9 +123,9 @@ export class ClassificationPlanningService {
           model: selection.model,
           responseContractVersion: job.response_contract_version,
           providerInstructionProfile:
-            selection.providerInstructionProfile,
-          modelProfileVersion: selection.modelProfileVersion,
-          structuredOutputMode: selection.preferredStructuredOutputMode,
+            job.provider_instruction_profile,
+          modelProfileVersion: job.model_profile_version,
+          structuredOutputMode: job.structured_output_mode,
           requestHash,
           requestPayload
         });
@@ -103,40 +146,21 @@ export class ClassificationPlanningService {
   }
 }
 
-function renderClassificationPrompt(payload: JsonObject) {
-  const domain = payload.domain;
-  const candidates = payload.candidates;
-  if (
-    !domain ||
-    typeof domain !== "object" ||
-    Array.isArray(domain) ||
-    typeof domain.name !== "string" ||
-    !Array.isArray(candidates) ||
-    candidates.length === 0
-  ) {
-    throw new PermanentClassificationError(
-      "CLASSIFICATION_CONTEXT_INVALID",
-      "Frozen classification context is invalid"
-    );
-  }
-  const candidateLines = candidates.map((candidate, index) => {
-    if (
-      !candidate ||
-      typeof candidate !== "object" ||
-      Array.isArray(candidate) ||
-      typeof candidate.categoryId !== "string" ||
-      typeof candidate.categoryName !== "string"
-    ) {
-      throw new PermanentClassificationError(
-        "CLASSIFICATION_CONTEXT_INVALID",
-        "Frozen classification candidate is invalid"
-      );
-    }
+export function renderClassificationPrompt(input: {
+  normalizedDomain: string;
+  candidates: readonly { categoryId: string; categoryName: string }[];
+  promptVersion: string;
+  responseContractVersion: string;
+}) {
+  const candidateLines = input.candidates.map((candidate, index) => {
     return `${index + 1}. id=${candidate.categoryId}; name=${candidate.categoryName}`;
   });
   return `You are a website taxonomy classification analyst.
 
-Website hostname: ${domain.name}
+Prompt type: domain_category_classification
+Prompt version: ${input.promptVersion}
+Response contract version: ${input.responseContractVersion}
+Website hostname: ${input.normalizedDomain}
 Candidate categories (authoritative database IDs):
 ${candidateLines.join("\n")}
 
@@ -149,7 +173,7 @@ Tasks:
 6. Do not claim live browsing, private data, invented URLs or citations.
 
 Return only strict JSON with no markdown or extra keys:
-{"prompt_type":"domain_category_classification","contract_version":"domain-category-classification-response-v1","matches":[{"category_id":"positive database ID","rank":1,"confidence":0.0,"reason":"bounded reason"}],"summary":"bounded summary"}`;
+{"prompt_type":"domain_category_classification","contract_version":"${input.responseContractVersion}","matches":[{"category_id":"positive database ID","rank":1,"confidence":0.0,"reason":"bounded reason"}],"summary":"bounded summary"}`;
 }
 
 export class PermanentClassificationError extends Error {

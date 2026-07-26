@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { DatabaseExecutor } from "../../../common/database/database-executor.js";
 import type {
   DomainCategoryClassificationJobRow,
@@ -9,6 +8,10 @@ import {
   DOMAIN_CATEGORY_CLASSIFICATION_CONTRACT_VERSION,
   DOMAIN_CATEGORY_CLASSIFICATION_PROMPT_VERSION
 } from "../../providers/contracts/provider-response.contracts.js";
+import {
+  classificationCandidateSetHash,
+  classificationIdempotencyKey
+} from "../services/classification-execution-identity.service.js";
 
 export type ClassificationCandidate = {
   categoryId: string;
@@ -21,27 +24,47 @@ export class DomainCategoryClassificationRepository {
   async unresolvedCandidates(analysisRunId: string, domainId: string) {
     const result = await this.database.query<{
       category_id: string;
-      category_name: string;
+      category_name: string | null;
+      category_active: boolean | null;
+      active_relationship_id: string | null;
     }>(
       `
-        SELECT category.category_id, category.category_name
+        SELECT requested.category_id,
+               category.category_name,
+               category.is_active AS category_active,
+               relationship.domain_category_id AS active_relationship_id
         FROM analysis_run_requested_categories AS requested
-        JOIN categories AS category
-          ON category.category_id = requested.category_id AND category.is_active
+        LEFT JOIN categories AS category
+          ON category.category_id = requested.category_id
         LEFT JOIN domain_categories AS relationship
           ON relationship.domain_id = $2
          AND relationship.category_id = requested.category_id
          AND relationship.is_active
         WHERE requested.analysis_run_id = $1
-          AND relationship.domain_category_id IS NULL
-        ORDER BY requested.ordinal
+        ORDER BY requested.ordinal, requested.category_id
       `,
       [analysisRunId, domainId]
     );
-    return result.rows.map((row) => ({
-      categoryId: row.category_id,
-      categoryName: row.category_name
-    }));
+    for (const row of result.rows) {
+      if (row.category_name === null || row.category_active === null) {
+        throw new ClassificationCandidateConfigurationError(
+          "CLASSIFICATION_CATEGORY_MISSING",
+          `Frozen requested category ${row.category_id} does not exist`
+        );
+      }
+      if (!row.category_active) {
+        throw new ClassificationCandidateConfigurationError(
+          "CLASSIFICATION_CATEGORY_INACTIVE",
+          `Frozen requested category ${row.category_id} is inactive`
+        );
+      }
+    }
+    return result.rows
+      .filter((row) => row.active_relationship_id === null)
+      .map((row) => ({
+        categoryId: row.category_id,
+        categoryName: row.category_name!
+      }));
   }
 
   async createOrReuse(input: {
@@ -51,11 +74,24 @@ export class DomainCategoryClassificationRepository {
     candidates: ClassificationCandidate[];
     classifier: ProviderModelSelection;
   }) {
-    const candidateSetHash = createHash("sha256")
-      .update(input.candidates.map((candidate) => candidate.categoryId).join(","))
-      .digest("hex");
-    const idempotencyKey =
-      `classification:${input.analysisRunId}:${candidateSetHash}`;
+    const candidateSetHash = classificationCandidateSetHash(
+      input.candidates.map((candidate) => candidate.categoryId)
+    );
+    const idempotencyKey = classificationIdempotencyKey({
+      analysisRunId: input.analysisRunId,
+      domainId: input.domainId,
+      candidateSetHash,
+      classifierProvider: input.classifier.provider,
+      classifierModel: input.classifier.model,
+      modelProfileVersion: input.classifier.modelProfileVersion,
+      promptVersion: DOMAIN_CATEGORY_CLASSIFICATION_PROMPT_VERSION,
+      responseContractVersion:
+        DOMAIN_CATEGORY_CLASSIFICATION_CONTRACT_VERSION,
+      providerInstructionProfile:
+        input.classifier.providerInstructionProfile,
+      structuredOutputMode:
+        input.classifier.preferredStructuredOutputMode
+    });
     const inputPayload = {
       domain: { id: input.domainId, name: input.normalizedDomain },
       candidates: input.candidates
@@ -109,6 +145,11 @@ export class DomainCategoryClassificationRepository {
     if (!existing.rows[0]) {
       throw new Error("Classification job could not be loaded");
     }
+    if (existing.rows[0].idempotency_key !== idempotencyKey) {
+      throw new Error(
+        "Existing classification decision has a different frozen execution identity"
+      );
+    }
     return { row: existing.rows[0], created: false };
   }
 }
@@ -118,4 +159,13 @@ export function configuredClassifier(input: {
   model: string;
 }) {
   return input;
+}
+
+export class ClassificationCandidateConfigurationError extends Error {
+  readonly permanent = true;
+
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "ClassificationCandidateConfigurationError";
+  }
 }
