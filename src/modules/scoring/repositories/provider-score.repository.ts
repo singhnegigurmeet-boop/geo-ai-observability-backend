@@ -12,29 +12,34 @@ import type {
 export type ProviderResultScoringState = {
   provider_result_id: string;
   provider_job_id: string;
-  prompt_job_id: string;
-  analysis_run_id: string;
+  prompt_job_id: string | null;
+  analysis_run_id: string | null;
   result_status: ProviderResultStatus;
   context_validation_status: "valid" | "invalid" | "not_applicable";
   validated_response: JsonObject | null;
   provider: ProviderName;
   model: string;
   provider_job_status: string;
-  prompt_job_status: string;
-  prompt_type: PromptType;
+  prompt_job_status: string | null;
+  prompt_type: PromptType | null;
+  job_kind: "normal_prompt" | "domain_category_classification";
+  provider_score_id: string | null;
 };
 
 export class ProviderScoreRepository {
   constructor(private readonly database: DatabaseExecutor) {}
 
-  async findForUpdate(providerResultId: string) {
+  async findForUpdate(providerResultId: string, scoringVersion: string) {
     const result = await this.database.query<ProviderResultScoringState>(
       `
         SELECT
           result.provider_result_id,
           result.provider_job_id,
           prompt.prompt_job_id,
-          item.analysis_run_id,
+          COALESCE(
+            item.analysis_run_id,
+            classification.analysis_run_id
+          ) AS analysis_run_id,
           result.status AS result_status,
           result.context_validation_status,
           result.validated_response,
@@ -43,20 +48,27 @@ export class ProviderScoreRepository {
           job.status AS provider_job_status,
           prompt.status AS prompt_job_status,
           prompt.prompt_type,
-          prompt.response_contract_version
+          job.job_kind,
+          score.provider_score_id
         FROM provider_results AS result
         JOIN provider_jobs AS job
           ON job.provider_job_id = result.provider_job_id
-        JOIN prompt_jobs AS prompt
+        LEFT JOIN prompt_jobs AS prompt
           ON prompt.prompt_job_id = job.prompt_job_id
-        JOIN llm_runs AS llm
+        LEFT JOIN llm_runs AS llm
           ON llm.llm_run_id = prompt.llm_run_id
-        JOIN analysis_run_items AS item
+        LEFT JOIN analysis_run_items AS item
           ON item.analysis_run_item_id = llm.analysis_run_item_id
+        LEFT JOIN domain_category_classification_jobs AS classification
+          ON classification.domain_category_classification_job_id =
+             job.classification_job_id
+        LEFT JOIN provider_scores AS score
+          ON score.provider_result_id = result.provider_result_id
+         AND score.scoring_version = $2
         WHERE result.provider_result_id = $1
         FOR UPDATE OF result
       `,
-      [providerResultId]
+      [providerResultId, scoringVersion]
     );
     return result.rows[0] ?? null;
   }

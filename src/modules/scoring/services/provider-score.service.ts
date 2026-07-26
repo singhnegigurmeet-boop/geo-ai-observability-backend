@@ -21,7 +21,7 @@ export type ProviderScoringResult =
     }
   | {
       outcome: "noop";
-      providerScoreId: string;
+      providerScoreId: string | null;
       reportId: string | null;
     };
 
@@ -43,7 +43,10 @@ export class ProviderScoreService {
   ): Promise<ProviderScoringResult> {
     return inTransaction(this.database, async (client) => {
       const scores = new ProviderScoreRepository(client);
-      const state = await scores.findForUpdate(payload.providerResultId);
+      const state = await scores.findForUpdate(
+        payload.providerResultId,
+        SCORING_VERSION
+      );
       if (!state) {
         throw new ProviderScoringError(
           "PROVIDER_RESULT_NOT_FOUND",
@@ -51,10 +54,46 @@ export class ProviderScoreService {
         );
       }
       if (
+        state.job_kind !== "normal_prompt" ||
+        state.prompt_type === null ||
+        state.analysis_run_id === null
+      ) {
+        return {
+          outcome: "noop",
+          providerScoreId: null,
+          reportId: null
+        };
+      }
+      if (
+        state.provider_score_id !== null
+      ) {
+        const report = await new ReportAggregationService(
+          new ReportRepository(client)
+        ).createIfReady(state.analysis_run_id);
+        return {
+          outcome: "noop",
+          providerScoreId: state.provider_score_id,
+          reportId:
+            report.outcome === "snapshot" ? report.reportId : null
+        };
+      }
+      if (
         state.result_status !== "valid" ||
         state.context_validation_status !== "valid" ||
         state.validated_response === null ||
-        !requiresScoring(state.prompt_type) ||
+        !requiresScoring(state.prompt_type)
+      ) {
+        const report = await new ReportAggregationService(
+          new ReportRepository(client)
+        ).createIfReady(state.analysis_run_id);
+        return {
+          outcome: "noop",
+          providerScoreId: null,
+          reportId:
+            report.outcome === "snapshot" ? report.reportId : null
+        };
+      }
+      if (
         state.provider_job_status !== "succeeded"
       ) {
         throw new ProviderScoringError(

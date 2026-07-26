@@ -2676,6 +2676,8 @@ CREATE INDEX failure_records_open_queue_idx ON public.failure_records USING btre
 
 CREATE INDEX failure_records_aggregate_status_idx ON public.failure_records USING btree (aggregate_type, aggregate_id, status, occurred_at DESC) WHERE (aggregate_type IS NOT NULL AND aggregate_id IS NOT NULL);
 
+CREATE INDEX failure_records_report_finality_idx ON public.failure_records USING btree (aggregate_type, aggregate_id, queue_name, attempt_number DESC) WHERE (aggregate_type IS NOT NULL AND aggregate_id IS NOT NULL);
+
 
 --
 -- Name: llm_runs_item_status_idx; Type: INDEX; Schema: public; Owner: -

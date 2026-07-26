@@ -282,6 +282,7 @@ export class ReportRepository {
           FROM failure_records AS failure
           WHERE failure.aggregate_type = 'provider_result'
             AND failure.aggregate_id = result.provider_result_id::text
+            AND failure.queue_name = 'scoring_queue'
             AND (
               failure.attempt_number >= 3
               OR failure.error_details @> '{"permanent":true}'::jsonb

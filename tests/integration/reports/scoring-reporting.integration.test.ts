@@ -330,6 +330,319 @@ describe(
       assert.equal(await count(pool, "reports"), 1);
     });
 
+    it("terminalizes exhausted normal scoring as a final gap without changing valid evidence", async () => {
+      const fixture = await seedRun(pool, "anonymous", lightPrompts, {
+        rankingFound: false
+      });
+      const scoring = new ProviderScoreService(pool);
+      await scoring.process(fixture.results[0]!);
+      const rankingResultId = fixture.resultIdsByPrompt.get("ranking")!;
+      const failure = scoringFailure(rankingResultId, "ranking-exhausted");
+      const channel = await rabbitMq.getConfirmChannel();
+      const runtime = new ProviderScoreWorkerRuntime(
+        channel,
+        {
+          async process() {
+            throw new Error("simulated score persistence failure");
+          }
+        },
+        new FailureRecordRepository(pool),
+        {
+          mainExchange: "geo.v6.test.main",
+          prefetch: 1
+        },
+        { info() {}, warn() {}, error() {} }
+      );
+      await runtime.start();
+      try {
+        await sendEnvelope(channel, "scoring_queue", {
+          messageId: failure.messageId,
+          eventType: "provider_result.created",
+          aggregateType: "provider_result",
+          aggregateId: rankingResultId,
+          occurredAt: new Date().toISOString(),
+          attempt: 1,
+          payload: { providerResultId: rankingResultId }
+        });
+        await pollUntil(
+          async () =>
+            (await failureCountFor(
+              pool,
+              "provider_result",
+              rankingResultId,
+              "scoring_queue"
+            )) === 3
+        );
+        const deadLetter = await pollMessage(
+          channel,
+          deadLetterQueueName("scoring_queue")
+        );
+        channel.ack(deadLetter);
+      } finally {
+        await runtime.stop();
+      }
+
+      const evidence = await pool.query<{
+        status: string;
+        context_validation_status: string;
+        found: boolean;
+        score: string | null;
+      }>(
+        `SELECT
+           result.status,
+           result.context_validation_status,
+           (result.validated_response #>> '{result,found}')::boolean AS found,
+           score.score
+         FROM provider_results AS result
+         LEFT JOIN provider_scores AS score
+           ON score.provider_result_id = result.provider_result_id
+         WHERE result.provider_result_id = $1`,
+        [rankingResultId]
+      );
+      assert.deepEqual(evidence.rows, [{
+        status: "valid",
+        context_validation_status: "valid",
+        found: false,
+        score: null
+      }]);
+      const report = await terminalizationReport(
+        pool,
+        fixture.analysisRunId
+      );
+      assert.equal(report.lifecycleState, "completed_with_gaps");
+      assert.equal(report.final, true);
+      assert.equal(report.coverage.validScored, 1);
+      assert.equal(report.coverage.validDiagnostic, 1);
+      assert.equal(report.coverage.permanentScoringFailure, 1);
+      assert.deepEqual(
+        report.providerResults
+          .filter((result) => result.promptType === "ranking")
+          .map((result) => ({
+            executionState: result.executionState,
+            score: result.score
+          })),
+        [{ executionState: "permanent_scoring_failure", score: null }]
+      );
+      assert.equal(
+        await failureCountFor(
+          pool,
+          "provider_result",
+          rankingResultId,
+          "scoring_queue"
+        ),
+        3
+      );
+      assert.equal(await reportCount(pool, fixture.analysisRunId), 2);
+
+      await Promise.all([
+        new FailureRecordRepository(pool).createAndTerminalize({
+          ...failure,
+          attemptNumber: 3
+        }),
+        new FailureRecordRepository(pool).createAndTerminalize({
+          ...failure,
+          attemptNumber: 3
+        })
+      ]);
+      assert.equal(await reportCount(pool, fixture.analysisRunId), 2);
+    });
+
+    it("creates failed_empty when all score-bearing evidence exhausts and diagnostics are invalid", async () => {
+      const fixture = await seedRun(pool, "anonymous", lightPrompts, {
+        rankingFound: false,
+        invalidPromptTypes: ["competitor"]
+      });
+      await new FailureRecordRepository(pool).createAndTerminalize(
+        scoringFailure(
+          fixture.resultIdsByPrompt.get("visibility")!,
+          "visibility-exhausted"
+        )
+      );
+      await new FailureRecordRepository(pool).createAndTerminalize(
+        scoringFailure(
+          fixture.resultIdsByPrompt.get("ranking")!,
+          "ranking-exhausted"
+        )
+      );
+
+      const report = await terminalizationReport(
+        pool,
+        fixture.analysisRunId
+      );
+      assert.equal(report.lifecycleState, "failed_empty");
+      assert.equal(report.final, true);
+      assert.equal(report.coverage.validScored, 0);
+      assert.equal(report.coverage.permanentScoringFailure, 2);
+      assert.equal(await count(pool, "provider_scores"), 0);
+    });
+
+    it("treats delayed diagnostic, invalid, and already-scored messages as idempotent scoring no-ops", async () => {
+      const diagnostic = await seedRun(pool, "anonymous", lightPrompts);
+      const scoring = new ProviderScoreService(pool);
+      const diagnosticOutcome = await scoring.process({
+        providerResultId:
+          diagnostic.resultIdsByPrompt.get("competitor")!
+      });
+      assert.equal(diagnosticOutcome.outcome, "noop");
+      assert.equal(diagnosticOutcome.providerScoreId, null);
+
+      const invalid = await seedRun(pool, "anonymous", ["visibility"], {
+        invalidPromptTypes: ["visibility"]
+      });
+      const invalidOutcome = await scoring.process(invalid.results[0]!);
+      assert.equal(invalidOutcome.outcome, "noop");
+      assert.equal(invalidOutcome.providerScoreId, null);
+
+      const scored = await seedRun(pool, "anonymous", ["visibility"]);
+      const first = await scoring.process(scored.results[0]!);
+      const replay = await scoring.process(scored.results[0]!);
+      assert.equal(first.outcome, "scored");
+      assert.equal(replay.outcome, "noop");
+      assert.equal(replay.providerScoreId, first.providerScoreId);
+      assert.equal(
+        Number(
+          (
+            await pool.query<{ count: string }>(
+              "SELECT count(*) FROM failure_records"
+            )
+          ).rows[0]!.count
+        ),
+        0
+      );
+    });
+
+    it("finalizes direct analysis-run exhaustion and preserves delayed terminal outcomes", async () => {
+      const failed = await seedExactCoverageRun(pool, {
+        zeroProviderJobs: true,
+        runStatus: "processing"
+      });
+      const runFailure = {
+        queueName: "analysis_run_queue",
+        messageId: `analysis-run-exhausted:${failed.analysisRunId}`,
+        aggregateType: "analysis_run",
+        aggregateId: failed.analysisRunId,
+        attemptNumber: 3,
+        errorCode: "ANALYSIS_EXPANSION_FAILED",
+        errorMessage: "internal database details must not be public"
+      };
+      await new FailureRecordRepository(pool).createAndTerminalize(runFailure);
+      const failedReport = await terminalizationReport(
+        pool,
+        failed.analysisRunId
+      );
+      assert.equal(failedReport.runStatus, "failed");
+      assert.equal(failedReport.lifecycleState, "failed_empty");
+      assert.equal(failedReport.final, true);
+      assert.equal(failedReport.coverage.expectedProviderJobs, 12);
+      assert.equal(failedReport.coverage.missingBeforeFanOut, 12);
+      assert.equal(await reportCount(pool, failed.analysisRunId), 1);
+      await new FailureRecordRepository(pool).createAndTerminalize(runFailure);
+      assert.equal(await runStatus(pool, failed.analysisRunId), "failed");
+      assert.equal(await reportCount(pool, failed.analysisRunId), 1);
+
+      await pool.query(
+        `UPDATE analysis_runs
+         SET status = 'cancelled', completed_at = now(),
+             error_code = NULL, error_message = NULL
+         WHERE analysis_run_id = $1`,
+        [failed.analysisRunId]
+      );
+      await new FailureRecordRepository(pool).createAndTerminalize({
+        queueName: "analysis_run_queue",
+        messageId: `analysis-run-delayed:${failed.analysisRunId}`,
+        aggregateType: "analysis_run",
+        aggregateId: failed.analysisRunId,
+        attemptNumber: 3,
+        errorCode: "DELAYED_FAILURE",
+        errorMessage: "delayed failure"
+      });
+      assert.equal(await runStatus(pool, failed.analysisRunId), "cancelled");
+
+      const emptyRunId = await seedNoMatchingCategoryRun(pool);
+      await pool.query(
+        `UPDATE analysis_runs
+         SET status = 'processing', completed_at = NULL
+         WHERE analysis_run_id = $1`,
+        [emptyRunId]
+      );
+      await new FailureRecordRepository(pool).createAndTerminalize({
+        queueName: "analysis_run_queue",
+        messageId: `analysis-run-empty-delayed:${emptyRunId}`,
+        aggregateType: "analysis_run",
+        aggregateId: emptyRunId,
+        attemptNumber: 3,
+        errorCode: "DELAYED_FAILURE",
+        errorMessage: "delayed failure"
+      });
+      const emptyReport = await terminalizationReport(pool, emptyRunId);
+      assert.equal(emptyReport.runStatus, "completed");
+      assert.equal(emptyReport.lifecycleState, "completed_empty");
+    });
+
+    it("retains exact missing-before-fan-out coverage after prompt exhaustion", async () => {
+      const fixture = await seedExactCoverageRun(pool, {
+        zeroProviderJobs: true,
+        runStatus: "processing"
+      });
+      const prompt = await pool.query<{
+        prompt_job_id: string;
+        llm_run_id: string;
+        analysis_run_item_id: string;
+      }>(
+        `SELECT prompt.prompt_job_id, llm.llm_run_id,
+                item.analysis_run_item_id
+         FROM prompt_jobs AS prompt
+         JOIN llm_runs AS llm ON llm.llm_run_id = prompt.llm_run_id
+         JOIN analysis_run_items AS item
+           ON item.analysis_run_item_id = llm.analysis_run_item_id
+         WHERE item.analysis_run_id = $1
+         ORDER BY item.item_ordinal, prompt.prompt_job_id
+         LIMIT 1`,
+        [fixture.analysisRunId]
+      );
+      const target = prompt.rows[0]!;
+      await pool.query(
+        `UPDATE prompt_jobs
+         SET status = 'processing', completed_at = NULL
+         WHERE prompt_job_id = $1`,
+        [target.prompt_job_id]
+      );
+      await pool.query(
+        `UPDATE llm_runs SET status = 'processing', completed_at = NULL
+         WHERE llm_run_id = $1`,
+        [target.llm_run_id]
+      );
+      await pool.query(
+        `UPDATE analysis_run_items
+         SET status = 'processing', completed_at = NULL
+         WHERE analysis_run_item_id = $1`,
+        [target.analysis_run_item_id]
+      );
+      await new FailureRecordRepository(pool).createAndTerminalize({
+        queueName: "visibility_prompt_queue",
+        messageId: `prompt-exhausted:${target.prompt_job_id}`,
+        aggregateType: "prompt_job",
+        aggregateId: target.prompt_job_id,
+        attemptNumber: 3,
+        errorCode: "PROMPT_RENDER_FAILED",
+        errorMessage: "internal rendering details"
+      });
+
+      const report = await terminalizationReport(
+        pool,
+        fixture.analysisRunId
+      );
+      assert.equal(report.lifecycleState, "failed_empty");
+      assert.equal(report.final, true);
+      assert.equal(report.coverage.expectedProviderJobs, 12);
+      assert.equal(report.coverage.missingBeforeFanOut, 12);
+      assert.ok(
+        report.missingExpectedExecutions.executions.every(
+          (execution) => execution.missingStage === "provider_job"
+        )
+      );
+    });
+
     it("creates one report notification per immutable report revision", async () => {
       const fixture = await seedRun(pool, "user", richPrompts);
       for (const result of fixture.results) {
@@ -464,7 +777,12 @@ async function seedRun(
   pool: pg.Pool,
   actor: Actor,
   promptTypes: PromptType[],
-  evidence: { providerScore?: number; confidence?: number } = {}
+  evidence: {
+    providerScore?: number;
+    confidence?: number;
+    rankingFound?: boolean;
+    invalidPromptTypes?: readonly PromptType[];
+  } = {}
 ) {
   const unique = crypto.randomUUID();
   let userId: string | null = null;
@@ -658,6 +976,7 @@ async function seedRun(
   ).rows[0]!.llm_run_id;
 
   const results: ProviderResultCreatedPayload[] = [];
+  const resultIdsByPrompt = new Map<PromptType, string>();
   for (const promptType of promptTypes) {
     const promptPolicy = promptTypePolicy(promptType);
     const promptDepth = actor === "anonymous" ? "weak" : "high";
@@ -728,12 +1047,19 @@ async function seedRun(
           : promptType === "ranking"
             ? {
                 requested_top_k: promptDepth === "weak" ? 5 : 20,
-                found: true,
-                rank_position: 1,
-                ordered_candidates: [
-                  { rank: 1, name: `Reporting category ${unique}` }
-                ],
-                mention_count: 1,
+                found: evidence.rankingFound ?? true,
+                rank_position:
+                  evidence.rankingFound === false ? null : 1,
+                ordered_candidates:
+                  evidence.rankingFound === false
+                    ? []
+                    : [
+                        {
+                          rank: 1,
+                          name: `Reporting category ${unique}`
+                        }
+                      ],
+                mention_count: evidence.rankingFound === false ? 0 : 1,
                 confidence: evidence.confidence ?? 0.75
               }
             : { confidence: evidence.confidence ?? 0.75 },
@@ -757,8 +1083,8 @@ async function seedRun(
             finish_reason, latency_ms, received_at
           )
           VALUES (
-            $1, $2, 'mock', 'valid', $3, $4, $5, $6,
-            octet_length($6), '{}'::jsonb, $7, '[]'::jsonb, 'valid',
+            $1, $2, 'mock', $8, $3, $4, $5, $6,
+            octet_length($6), '{}'::jsonb, $7, $9, $10,
             'mock_complete', 0, now()
           )
           RETURNING provider_result_id
@@ -770,10 +1096,22 @@ async function seedRun(
           `reporting-request:${unique}:${promptType}`,
           model,
           JSON.stringify(validatedResponse),
-          validatedResponse
+          evidence.invalidPromptTypes?.includes(promptType)
+            ? null
+            : validatedResponse,
+          evidence.invalidPromptTypes?.includes(promptType)
+            ? "invalid"
+            : "valid",
+          evidence.invalidPromptTypes?.includes(promptType)
+            ? JSON.stringify([{ code: "TEST_INVALID_EVIDENCE" }])
+            : JSON.stringify([]),
+          evidence.invalidPromptTypes?.includes(promptType)
+            ? "invalid"
+            : "valid"
         ]
       )
     ).rows[0]!.provider_result_id;
+    resultIdsByPrompt.set(promptType, providerResultId);
     await pool.query(
       `
         INSERT INTO token_usage (
@@ -793,7 +1131,8 @@ async function seedRun(
     anonymousSessionId,
     userId,
     workspaceId,
-    results
+    results,
+    resultIdsByPrompt
   };
 }
 
@@ -807,7 +1146,7 @@ async function seedExactCoverageRun(
     };
     onlyModel?: string;
     zeroProviderJobs?: boolean;
-    runStatus?: "completed" | "failed";
+    runStatus?: "processing" | "completed" | "failed";
   } = {}
 ) {
   const unique = crypto.randomUUID();
@@ -862,7 +1201,14 @@ async function seedExactCoverageRun(
         )
         VALUES (
           $1, $2, $3, 'selected', 'medium', 'geo-prompt-policy-v1',
-          $4, jsonb_build_object('domain', $5::text), now(), now()
+          $4, jsonb_build_object('domain', $5::text), now(),
+          CASE
+            WHEN $4::analysis_execution_status IN (
+              'completed', 'partial_success', 'failed', 'cancelled'
+            )
+            THEN now()
+            ELSE NULL
+          END
         )
         RETURNING analysis_run_id AS id
       `,
@@ -1137,6 +1483,89 @@ async function exactCoverageReport(pool: pg.Pool, analysisRunId: string) {
   ).rows[0]!.report_data;
 }
 
+function scoringFailure(providerResultId: string, messageId: string) {
+  return {
+    queueName: "scoring_queue",
+    messageId,
+    aggregateType: "provider_result",
+    aggregateId: providerResultId,
+    attemptNumber: 3,
+    errorCode: "SCORING_PERSISTENCE_FAILED",
+    errorMessage: "internal score persistence details"
+  };
+}
+
+async function terminalizationReport(
+  pool: pg.Pool,
+  analysisRunId: string
+) {
+  const row = (
+    await pool.query<{
+      run_status: string;
+      report_data: {
+        lifecycleState: string;
+        final: boolean;
+        coverage: {
+          expectedProviderJobs: number;
+          validScored: number;
+          validDiagnostic: number;
+          permanentScoringFailure: number;
+          missingBeforeFanOut: number;
+        };
+        providerResults: Array<{
+          promptType: PromptType;
+          executionState: string;
+          score: number | null;
+        }>;
+        missingExpectedExecutions: {
+          executions: Array<{ missingStage: string }>;
+        };
+      };
+    }>(
+      `SELECT run.status AS run_status, report.report_data
+       FROM reports AS report
+       JOIN analysis_runs AS run
+         ON run.analysis_run_id = report.analysis_run_id
+       WHERE report.analysis_run_id = $1
+       ORDER BY report.revision DESC
+       LIMIT 1`,
+      [analysisRunId]
+    )
+  ).rows[0]!;
+  return {
+    runStatus: row.run_status,
+    ...row.report_data
+  };
+}
+
+async function failureCountFor(
+  pool: pg.Pool,
+  aggregateType: string,
+  aggregateId: string,
+  queueName: string
+) {
+  return Number(
+    (
+      await pool.query<{ count: string }>(
+        `SELECT count(*) FROM failure_records
+         WHERE aggregate_type = $1
+           AND aggregate_id = $2
+           AND queue_name = $3`,
+        [aggregateType, aggregateId, queueName]
+      )
+    ).rows[0]!.count
+  );
+}
+
+async function runStatus(pool: pg.Pool, analysisRunId: string) {
+  return (
+    await pool.query<{ status: string }>(
+      "SELECT status FROM analysis_runs WHERE analysis_run_id = $1",
+      [analysisRunId]
+    )
+  ).rows[0]!.status;
+}
+
 async function reportCount(pool: pg.Pool, analysisRunId: string) {
   return Number(
     (
@@ -1221,7 +1650,15 @@ async function sendEnvelope(
       {
         persistent: true,
         contentType: "application/json",
-        messageId: value.messageId
+        messageId: value.messageId,
+        headers: {
+          ...(typeof value.aggregateType === "string"
+            ? { aggregateType: value.aggregateType }
+            : {}),
+          ...(typeof value.aggregateId === "string"
+            ? { aggregateId: value.aggregateId }
+            : {})
+        }
       },
       (error) => (error ? reject(error) : resolve())
     );

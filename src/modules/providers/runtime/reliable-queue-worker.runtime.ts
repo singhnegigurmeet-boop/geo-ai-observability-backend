@@ -105,6 +105,7 @@ export class ReliableQueueWorkerRuntime {
         ) {
           try {
             await this.failures.terminalizeBusinessFailure({
+              queueName: this.options.queueName,
               aggregateType: identity.aggregateType,
               aggregateId: identity.aggregateId,
               errorCode: normalized.code,

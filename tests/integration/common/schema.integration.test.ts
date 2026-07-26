@@ -142,7 +142,7 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
       foreign_keys: "57",
       unique_constraints: "44",
       check_constraints: "112",
-      indexes: "137",
+      indexes: "138",
       triggers: "25"
     });
   });
@@ -264,6 +264,46 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
       ]]
     );
     assert.equal(constraints.rows.length, 5);
+  });
+
+  it("indexes exact failure-record report-finality lookups", async () => {
+    const index = await pool.query<{
+      indexdef: string;
+    }>(
+      `SELECT indexdef
+       FROM pg_indexes
+       WHERE schemaname = 'public'
+         AND tablename = 'failure_records'
+         AND indexname = 'failure_records_report_finality_idx'`
+    );
+    assert.equal(index.rows.length, 1);
+    assert.match(
+      index.rows[0]!.indexdef,
+      /\(aggregate_type, aggregate_id, queue_name, attempt_number DESC\)/
+    );
+    assert.match(
+      index.rows[0]!.indexdef,
+      /WHERE \(\(aggregate_type IS NOT NULL\) AND \(aggregate_id IS NOT NULL\)\)/
+    );
+    const existing = await pool.query<{ indexname: string }>(
+      `SELECT indexname
+       FROM pg_indexes
+       WHERE schemaname = 'public'
+         AND tablename = 'failure_records'
+         AND indexname = ANY($1::text[])
+       ORDER BY indexname`,
+      [[
+        "failure_records_aggregate_status_idx",
+        "failure_records_open_queue_idx"
+      ]]
+    );
+    assert.deepEqual(
+      existing.rows.map((row) => row.indexname),
+      [
+        "failure_records_aggregate_status_idx",
+        "failure_records_open_queue_idx"
+      ]
+    );
   });
 
   it("is a no-op when the exact baseline is already applied", async () => {
