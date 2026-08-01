@@ -11,23 +11,23 @@ const owner: OwnershipContext = {
 };
 
 describe("canonical analysis planner", () => {
-  it("plans only from hierarchy-ready targets without writes", async () => {
+  it("plans the exact selected target without child reads or writes", async () => {
     const statements: string[] = [];
     const database = fakeDatabase(statements, 10);
     const planner = new CanonicalAnalysisPlannerService(database as never, fakeHierarchy() as never);
     const plan = await planner.plan({ domain: "New.Example." }, owner);
 
     assert.deepEqual(plan.estimatedEligibleCategories, {
-      minimum: 3,
-      maximum: 3
+      minimum: 1,
+      maximum: 1
     });
     assert.deepEqual(
       plan.expectedExecutions.normalProviderJobCountEstimate,
-      { minimum: 9, maximum: 9 }
+      { minimum: 1, maximum: 1 }
     );
     assert.deepEqual(
       plan.expectedExecutions.totalProviderJobCountEstimate,
-      { minimum: 9, maximum: 9 }
+      { minimum: 1, maximum: 1 }
     );
     assert.equal(plan.discoveryRequired, false);
     assert.equal(
@@ -109,7 +109,8 @@ function fakeHierarchy() {
           category_id: null, brand_id: null, product_id: null,
           use_context_id: null, path_key: "domain:1", is_active: true,
           validation_status: "valid", created_at: new Date(0), updated_at: new Date(0)
-        }
+        },
+        pathType: "domain"
       };
     }
   };

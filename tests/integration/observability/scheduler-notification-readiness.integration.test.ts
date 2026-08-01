@@ -49,7 +49,7 @@ describe("Scheduler, notifications, and readiness integration", {
         )
         VALUES (
                 $1, $2, $3, $4, 'selected', 'medium',
-                'geo-prompt-policy-v1', 'daily visibility', 'interval:3600',
+                'geo-prompt-policy-v2-exact-target', 'daily visibility', 'interval:3600',
                 '{"providerModels":[{"provider":"mock","model":"mock-standard"}]}',
                 $5)
         RETURNING scheduler_job_id

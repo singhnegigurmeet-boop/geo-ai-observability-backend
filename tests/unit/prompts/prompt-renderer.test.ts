@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { PromptRendererService } from "../../../src/modules/prompts/services/prompt-renderer.service.js";
 import type { PromptRenderingContext } from "../../../src/modules/prompts/types/prompt-rendering.types.js";
 import type { PromptType } from "../../../src/common/types/database.types.js";
+import { promptTypePolicy } from "../../../src/modules/prompts/policies/prompt-policy.registry.js";
 
 const promptTypes: PromptType[] = [
   "competitor",
@@ -37,6 +38,32 @@ describe("Prompt renderer", () => {
     assert.match(weak, /visibility-response-v1/);
     assert.match(high, /visibility-response-v1/);
   });
+
+  it("renders each exact hierarchy level without child-target leakage", () => {
+    const renderer = new PromptRendererService();
+    for (const level of ["domain", "category", "brand", "product", "use_context"] as const) {
+      const entityPathContext = pathContext(level);
+      const rendered = renderer.render({
+        ...renderingContext("visibility", "weak"),
+        entityPathContext
+      });
+      assert.match(rendered, new RegExp(`target level: ${level}`));
+      assert.match(rendered, new RegExp(`exact target: ${entityPathContext.canonicalPath.split(" > ").at(-1)}`));
+      if (level === "category") assert.doesNotMatch(rendered, /Example Brand/);
+      if (level === "brand") assert.doesNotMatch(rendered, /Example Product/);
+      if (level === "product") assert.doesNotMatch(rendered, /Travel Planning/);
+    }
+  });
+
+  it("rejects a prompt identity not in the active registry", () => {
+    assert.throws(
+      () => new PromptRendererService().render({
+        ...renderingContext("visibility", "weak"),
+        businessPromptVersion: "visibility-v0"
+      }),
+      /Unsupported prompt template/
+    );
+  });
 });
 
 function renderingContext(
@@ -46,13 +73,8 @@ function renderingContext(
   return {
     promptType,
     promptDepth,
-    businessPromptVersion: `${promptType}-v1`,
-    responseContractVersion:
-      promptType === "price_range"
-        ? "price-range-response-v1"
-        : promptType === "pros_cons"
-          ? "pros-cons-response-v1"
-          : `${promptType}-response-v1`,
+    businessPromptVersion: promptTypePolicy(promptType).businessPromptVersion,
+    responseContractVersion: promptTypePolicy(promptType).responseContractVersion,
     entityPathContext: {
       domain: { id: "1", name: "example.com" },
       category: { id: "2", name: "Software" },
@@ -62,4 +84,22 @@ function renderingContext(
       canonicalPath: "example.com > Software > Example Brand"
     }
   };
+}
+
+function pathContext(level: "domain" | "category" | "brand" | "product" | "use_context") {
+  const context: PromptRenderingContext["entityPathContext"] = {
+    domain: { id: "1", name: "example.com" },
+    startingLevel: level,
+    targetLevel: level,
+    canonicalPath: "example.com"
+  };
+  if (level !== "domain") context.category = { id: "2", name: "Software" };
+  if (["brand", "product", "use_context"].includes(level)) context.brand = { id: "3", name: "Example Brand" };
+  if (["product", "use_context"].includes(level)) context.product = { id: "4", name: "Example Product" };
+  if (level === "use_context") context.useContext = { id: "5", name: "Travel Planning" };
+  context.canonicalPath = [context.domain, context.category, context.brand, context.product, context.useContext]
+    .filter((entity): entity is { id: string; name: string } => entity !== undefined)
+    .map((entity) => entity.name)
+    .join(" > ");
+  return context;
 }

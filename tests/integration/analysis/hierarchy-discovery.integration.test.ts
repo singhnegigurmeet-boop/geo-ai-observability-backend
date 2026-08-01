@@ -9,7 +9,6 @@ import { ProviderExecutionService } from "../../../src/modules/providers/service
 import type { ProviderAdapter, ProviderExecutionRequest, ProviderGeneratedOutput } from "../../../src/modules/providers/types/provider-adapter.types.js";
 import { PreAnalysisRequestRepository } from "../../../src/modules/discovery/repositories/pre-analysis-request.repository.js";
 import { HierarchyDiscoveryService } from "../../../src/modules/discovery/services/hierarchy-discovery.service.js";
-import { MockProviderService } from "../../../src/modules/providers/services/mock-provider.service.js";
 import { ReportRepository } from "../../../src/modules/reports/repositories/report.repository.js";
 
 const enabled = process.env.RUN_HIERARCHY_DISCOVERY_INTEGRATION_TESTS === "true";
@@ -85,7 +84,7 @@ describe("pre-analysis hierarchy discovery schema", { skip: !enabled }, () => {
     }
   });
 
-  it("executes discovery across forbidden boundaries while reusing global hierarchy rows", async () => {
+  it("reuses global hierarchy across owner boundaries without reusing or repeating execution", async () => {
     const boundaries: Array<{ name: string; prior: ScopeOwner; current: ScopeOwner }> = [
       { name: "workspace", prior: "user-1-workspace-1", current: "user-1-workspace-2" },
       { name: "different user and workspace", prior: "user-1-workspace-1", current: "user-2-workspace-2" },
@@ -99,12 +98,12 @@ describe("pre-analysis hierarchy discovery schema", { skip: !enabled }, () => {
       const fixture = await seedReuseFixture(pool);
       const prior = await insertRequest(pool, fixture, boundary.prior, true);
       await seedCompletedDiscoveryJob(pool, fixture, prior.pre_analysis_request_id);
-      const current = await insertRequest(pool, fixture, boundary.current, false);
+      const current = await insertRequest(pool, fixture, boundary.current, false, true);
 
       const progress = await new HierarchyDiscoveryService(pool).progress({
         preAnalysisRequestId: current.pre_analysis_request_id
       });
-      assert.equal(progress.outcome, "discovering", boundary.name);
+      assert.equal(progress.outcome, "navigation_completed", boundary.name);
       const reuseState = await pool.query<{ reused_from_pre_analysis_request_id: string | null }>(
         "SELECT reused_from_pre_analysis_request_id FROM pre_analysis_requests WHERE pre_analysis_request_id=$1",
         [current.pre_analysis_request_id]
@@ -117,18 +116,9 @@ describe("pre-analysis hierarchy discovery schema", { skip: !enabled }, () => {
          WHERE discovery.pre_analysis_request_id=$1`,
         [current.pre_analysis_request_id]
       );
-      assert.equal(execution.rowCount, 1, boundary.name);
-      const outcome = await new MockProviderService(pool).execute({
-        providerJobId: execution.rows[0]!.provider_job_id
-      });
-      assert.equal(outcome.outcome, "completed", boundary.name);
-      assert.equal((await pool.query("SELECT 1 FROM token_usage WHERE provider_job_id=$1 AND usage_kind='actual'", [execution.rows[0]!.provider_job_id])).rowCount, 1, boundary.name);
+      assert.equal(execution.rowCount, 0, boundary.name);
+      assert.equal((await pool.query("SELECT 1 FROM token_usage")).rowCount, 0, boundary.name);
       assert.equal((await pool.query("SELECT 1 FROM domain_categories WHERE domain_id=$1 AND category_id=$2", [fixture.domainId, fixture.categoryId])).rowCount, 1, boundary.name);
-      const relationship = await pool.query<{ action: string }>(
-        "SELECT action FROM hierarchy_discovery_relationships WHERE hierarchy_discovery_job_id=$1",
-        [execution.rows[0]!.hierarchy_discovery_job_id]
-      );
-      assert.equal(relationship.rows[0]?.action, "reused", boundary.name);
     }
   });
 
@@ -191,7 +181,7 @@ async function seedReuseFixture(pool: pg.Pool) {
   return { userIds: users.rows.map((row) => row.user_id), workspaceIds: workspaces.rows.map((row) => row.workspace_id), sessionIds: sessions.rows.map((row) => row.anonymous_session_id), domainId: domain.rows[0]!.domain_id, categoryId: category.rows[0]!.category_id, pathId: path.rows[0]!.entity_path_id };
 }
 
-async function insertRequest(pool: pg.Pool, fixture: Awaited<ReturnType<typeof seedReuseFixture>>, owner: ScopeOwner, completed: boolean) {
+async function insertRequest(pool: pg.Pool, fixture: Awaited<ReturnType<typeof seedReuseFixture>>, owner: ScopeOwner, completed: boolean, navigation = false) {
   const ownership = owner.startsWith("anonymous")
     ? [fixture.sessionIds[Number(owner.endsWith("2"))], null, null]
     : [null, fixture.userIds[owner.startsWith("user-2") ? 1 : 0], fixture.workspaceIds[owner.endsWith("2") ? 1 : 0]];
@@ -201,7 +191,7 @@ async function insertRequest(pool: pg.Pool, fixture: Awaited<ReturnType<typeof s
     const request = await client.query<{ pre_analysis_request_id: string }>(
       `INSERT INTO pre_analysis_requests(idempotency_key,anonymous_session_id,user_id,workspace_id,domain_id,starting_entity_path_id,category_selection_mode,prompt_depth,source,status,request_payload,canonical_request_hash,discovery_compatibility_hash,discovery_status,started_at)
        VALUES($1,$2,$3,$4,$5,$6,'selected','medium','manual','accepted',$7,$8,$8,$9,now()) RETURNING *`,
-      [`reuse-request-${crypto.randomUUID()}`, ...ownership, fixture.domainId, fixture.pathId, { domain: "reuse.example", categorySelection: { mode: "selected", categoryIds: [fixture.categoryId] }, promptDepth: "medium", providerModels: [{ provider: "mock", model: "mock-standard" }], discoveryProfile: { provider: "mock", model: "mock-fast", fallback: null } }, "a".repeat(64), completed ? "completed" : null]
+       [`reuse-request-${crypto.randomUUID()}`, ...ownership, fixture.domainId, fixture.pathId, { domain: "reuse.example", ...(navigation ? { operation: "navigate", requestedStage: "category" } : {}), categorySelection: { mode: "selected", categoryIds: [fixture.categoryId] }, promptDepth: "medium", providerModels: [{ provider: "mock", model: "mock-standard" }], discoveryProfile: { provider: "mock", model: "mock-fast", fallback: null } }, "a".repeat(64), completed ? "completed" : null]
     );
     await client.query("INSERT INTO analysis_run_requested_categories(pre_analysis_request_id,category_id,ordinal) VALUES($1,$2,0)", [request.rows[0]!.pre_analysis_request_id, fixture.categoryId]);
     if (completed) {

@@ -95,6 +95,7 @@ describe("Production Core shell routes", () => {
       "/health",
       "/ready",
       "/v1/analysis",
+      "/v1/analysis/hierarchy/children",
       "/v1/analysis/preview",
       "/v1/analysis/requests/{preAnalysisRequestId}",
       "/v1/analysis/runs/{analysisRunId}",

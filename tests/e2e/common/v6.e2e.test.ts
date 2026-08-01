@@ -128,7 +128,9 @@ describe("GEO V6 final end-to-end runtime", {
           sessionTokenPepper: tokenPepper,
           userSessionTtlSeconds: 3_600,
           anonymousSessionTtlSeconds: 3_600,
-          realProvidersEnabled: true
+          realProvidersEnabled: true,
+          discoveryProvider: "openai",
+          discoveryModel: "gpt-4o-mini"
         })
       })
     );
@@ -174,9 +176,9 @@ describe("GEO V6 final end-to-end runtime", {
     );
     assert.match(frozenIdentity.rows[0]?.canonical_hash ?? "", /^[0-9a-f]{64}$/);
     assert.match(preview.body.canonicalRequestHash, /^[0-9a-f]{64}$/);
-    assert.equal(preview.body.hierarchyReady, false);
-    assert.equal(preview.body.discoveryRequired, true);
-    assert.equal(preview.body.normalProviderJobCountEstimate.minimum, 0);
+    assert.equal(preview.body.hierarchyReady, true);
+    assert.equal(preview.body.discoveryRequired, false);
+    assert.equal(preview.body.normalProviderJobCountEstimate.minimum, 2);
 
     await driveUntil(
       dispatcher,
@@ -191,11 +193,11 @@ describe("GEO V6 final end-to-end runtime", {
 
     const shape = await executionShape(pool, created.body.analysisRunId);
     assert.deepEqual(shape, {
-      prompts: 3,
-      providerJobs: 6,
-      providerResults: 6,
-      providerScores: 4,
-      actualUsage: 6
+      prompts: 1,
+      providerJobs: 2,
+      providerResults: 2,
+      providerScores: 2,
+      actualUsage: 2
     });
     assert.ok(
       (
@@ -271,13 +273,14 @@ describe("GEO V6 final end-to-end runtime", {
   it("terminalizes exhausted provider failure without losing successful sibling evidence", async () => {
     adapter.set("failure.example", "retry_failure");
     const owner = await createUserOwner(pool, "failure");
-    await seedHierarchy(pool, "failure.example");
+    const categoryId = await seedCategoryOnly(pool, "failure.example");
     const created = await postAnalysis(
       server.url,
       owner,
       "failure-e2e",
       "failure.example",
-      multiProviderSet()
+      multiProviderSet(),
+      { categoryId }
     );
 
     await driveUntil(
@@ -314,13 +317,14 @@ describe("GEO V6 final end-to-end runtime", {
 
   it("creates a budget-paused partial report without technical failure or DLQ", async () => {
     const owner = await createUserOwner(pool, "budget");
-    await seedHierarchy(pool, "budget.example");
+    const categoryId = await seedCategoryOnly(pool, "budget.example");
     const created = await postAnalysis(
       server.url,
       owner,
       "budget-e2e",
       "budget.example",
-      [{ provider: "mock", model: "mock-standard" }]
+      [{ provider: "mock", model: "mock-standard" }],
+      { categoryId }
     );
     await pool.query(
        `INSERT INTO budget_policies (
@@ -356,13 +360,14 @@ describe("GEO V6 final end-to-end runtime", {
   it("retains malformed successful evidence as invalid and unscored coverage", async () => {
     adapter.set("invalid.example", "invalid");
     const owner = await createUserOwner(pool, "invalid");
-    await seedHierarchy(pool, "invalid.example");
+    const categoryId = await seedCategoryOnly(pool, "invalid.example");
     const created = await postAnalysis(
       server.url,
       owner,
       "invalid-e2e",
       "invalid.example",
-      multiProviderSet()
+      multiProviderSet(),
+      { categoryId }
     );
 
     await driveUntil(
@@ -503,7 +508,7 @@ describe("GEO V6 final end-to-end runtime", {
   it("creates one valid scheduled run and safely pauses invalid owner and hierarchy schedules", async () => {
     const dueAt = new Date("2026-07-25T00:00:00.000Z");
     const validOwner = await createUserOwner(pool, "schedule-valid");
-    const validPath = await seedHierarchy(pool, "schedule-valid.example");
+    const validPath = await seedBrandHierarchy(pool, "schedule-valid.example");
     await insertSchedule(pool, validOwner, validPath, dueAt, "valid");
     const scheduler = new SchedulerService(pool, true);
     assert.equal((await scheduler.tick(dueAt)).outcome, "enqueued");
@@ -516,6 +521,22 @@ describe("GEO V6 final end-to-end runtime", {
           )
         ).rows[0]?.count === "1",
       "scheduled run creation"
+    );
+    await driveUntil(
+      dispatcher,
+      async () => {
+        const item = await pool.query<{ path_type: string; entity_path_id: string }>(
+          `SELECT path.path_type::text,item.entity_path_id
+           FROM analysis_run_items item
+           JOIN entity_paths path ON path.entity_path_id=item.entity_path_id
+           JOIN analysis_runs run ON run.analysis_run_id=item.analysis_run_id
+           WHERE run.source='scheduled'`
+        );
+        return item.rowCount === 1 &&
+          item.rows[0]!.path_type === "brand" &&
+          item.rows[0]!.entity_path_id === validPath;
+      },
+      "scheduled exact brand item"
     );
 
     const invalidOwner = await createUserOwner(pool, "schedule-owner-invalid");
@@ -567,7 +588,7 @@ describe("GEO V6 final end-to-end runtime", {
     );
   });
 
-  it("discovers a missing selected hierarchy before normal analysis", async () => {
+  it("analyzes an exact selected category without deeper discovery", async () => {
     const owner = await createUserOwner(pool, "empty");
     const emptyCategoryId = await seedCategoryOnly(
       pool,
@@ -584,11 +605,11 @@ describe("GEO V6 final end-to-end runtime", {
     await driveUntil(
       dispatcher,
       async () => (await runStatus(pool, created.body.analysisRunId)) === "completed",
-      "discovery-backed completion"
+      "exact category completion"
     );
     const emptyReport = await latestReport(pool, created.body.analysisRunId);
     assert.equal(emptyReport.report_data.lifecycleState, "completed");
-    assert.equal(emptyReport.report_data.hierarchyDiscovery.status, "completed");
+    assert.equal(emptyReport.report_data.hierarchyDiscovery.status, "not_required");
     assert.equal(await failureCount(pool), 0);
     assert.equal(
       await channel.get(deadLetterQueueName("analysis_run_queue"), {
@@ -596,6 +617,71 @@ describe("GEO V6 final end-to-end runtime", {
       }),
       false
     );
+  });
+
+  it("keeps a brand analyzable and its report clean after optional product discovery fails", async () => {
+    const owner = await createUserOwner(pool, "optional-navigation-failure");
+    const domain = "optional-navigation-failure.example";
+    const brandPathId = await seedBrandHierarchy(pool, domain);
+    const brandPath = await pool.query<{ category_id: string; brand_id: string }>(
+      "SELECT category_id,brand_id FROM entity_paths WHERE entity_path_id=$1",
+      [brandPathId]
+    );
+    adapter.set(domain, "retry_failure");
+    const navigationResponse = await fetch(
+      `${server.url}/v1/analysis/hierarchy/children`,
+      {
+        method: "POST",
+        headers: { ...owner.headers, "idempotency-key": "optional-navigation-failure" },
+        body: JSON.stringify({
+          domain,
+          categoryId: brandPath.rows[0]!.category_id,
+          brandId: brandPath.rows[0]!.brand_id
+        })
+      }
+    );
+    const navigation = await navigationResponse.json() as { preAnalysisRequestId: string };
+    assert.equal(navigationResponse.status, 202);
+    await driveUntil(
+      dispatcher,
+      async () => {
+        const request = await pool.query<{ status: string }>(
+          "SELECT status::text FROM pre_analysis_requests WHERE pre_analysis_request_id=$1",
+          [navigation.preAnalysisRequestId]
+        );
+        return request.rows[0]?.status === "failed";
+      },
+      "optional product discovery failure"
+    );
+
+    adapter.reset();
+    const analysis = await postAnalysis(
+      server.url,
+      owner,
+      "brand-after-navigation-failure",
+      domain,
+      [{ provider: "mock", model: "mock-standard" }],
+      {
+        categoryId: brandPath.rows[0]!.category_id,
+        brandId: brandPath.rows[0]!.brand_id
+      }
+    );
+    await driveUntil(
+      dispatcher,
+      async () => (await runStatus(pool, analysis.body.analysisRunId)) === "completed",
+      "brand completion after optional discovery failure"
+    );
+    const item = await pool.query<{ entity_path_id: string; path_type: string }>(
+      `SELECT item.entity_path_id,path.path_type::text
+       FROM analysis_run_items item
+       JOIN entity_paths path ON path.entity_path_id=item.entity_path_id
+       WHERE item.analysis_run_id=$1`,
+      [analysis.body.analysisRunId]
+    );
+    const report = await latestReport(pool, analysis.body.analysisRunId);
+    assert.deepEqual(item.rows, [{ entity_path_id: brandPathId, path_type: "brand" }]);
+    assert.equal(report.report_data.lifecycleState, "completed");
+    assert.equal(report.report_data.hierarchyDiscovery.status, "not_required");
   });
 
   it("preserves canonical idempotency and uniqueness under concurrent requests and provider completion", async () => {
@@ -627,11 +713,11 @@ describe("GEO V6 final end-to-end runtime", {
       "concurrent provider completion"
     );
     assert.deepEqual(await executionShape(pool, runId), {
-      prompts: 3,
-      providerJobs: 6,
-      providerResults: 6,
-      providerScores: 4,
-      actualUsage: 6
+      prompts: 1,
+      providerJobs: 2,
+      providerResults: 2,
+      providerScores: 2,
+      actualUsage: 2
     });
     const revisions = await pool.query<{
       revision: number;
@@ -690,11 +776,11 @@ describe("GEO V6 final end-to-end runtime", {
         `full contention repetition ${repetition}`
       );
       assert.deepEqual(await executionShape(pool, runId), {
-        prompts: 3,
-        providerJobs: 6,
-        providerResults: 6,
-        providerScores: 4,
-        actualUsage: 6
+        prompts: 1,
+        providerJobs: 2,
+        providerResults: 2,
+        providerScores: 2,
+        actualUsage: 2
       });
       const duplicates = await pool.query(
         `SELECT idempotency_key
@@ -745,11 +831,11 @@ describe("GEO V6 final end-to-end runtime", {
       "process restart recovery"
     );
     assert.deepEqual(await executionShape(pool, created.body.analysisRunId), {
-      prompts: 3,
-      providerJobs: 6,
-      providerResults: 6,
-      providerScores: 4,
-      actualUsage: 6
+      prompts: 1,
+      providerJobs: 2,
+      providerResults: 2,
+      providerScores: 2,
+      actualUsage: 2
     });
   });
 
@@ -800,11 +886,11 @@ describe("GEO V6 final end-to-end runtime", {
       "RabbitMQ outage recovery"
     );
     assert.deepEqual(await executionShape(pool, created.body.analysisRunId), {
-      prompts: 3,
-      providerJobs: 6,
-      providerResults: 6,
-      providerScores: 4,
-      actualUsage: 6
+      prompts: 1,
+      providerJobs: 2,
+      providerResults: 2,
+      providerScores: 2,
+      actualUsage: 2
     });
   });
   }
@@ -1012,6 +1098,36 @@ async function seedHierarchy(pool: pg.Pool, domainName: string) {
        SET domain_id = EXCLUDED.domain_id
      RETURNING entity_path_id`,
     [domainId]
+  );
+  return path.rows[0]!.entity_path_id;
+}
+
+async function seedBrandHierarchy(pool: pg.Pool, domainName: string) {
+  const domainPathId = await seedHierarchy(pool, domainName);
+  const parent = await pool.query<{ domain_id: string; category_id: string; domain_category_id: string }>(
+    `SELECT path.domain_id,relationship.category_id,relationship.domain_category_id
+     FROM entity_paths path
+     JOIN domain_categories relationship ON relationship.domain_id=path.domain_id
+     WHERE path.entity_path_id=$1 AND relationship.is_active
+     ORDER BY relationship.sort_order NULLS LAST,relationship.domain_category_id
+     LIMIT 1`,
+    [domainPathId]
+  );
+  const unique = crypto.randomUUID();
+  const brand = await pool.query<{ brand_id: string }>(
+    `INSERT INTO brands(brand_name,normalized_name)
+     VALUES($1,$2) RETURNING brand_id`,
+    [`Scheduled brand ${unique}`, `scheduled-brand-${unique}`]
+  );
+  await pool.query(
+    `INSERT INTO category_brands(domain_category_id,brand_id,source)
+     VALUES($1,$2,'hierarchy')`,
+    [parent.rows[0]!.domain_category_id, brand.rows[0]!.brand_id]
+  );
+  const path = await pool.query<{ entity_path_id: string }>(
+    `INSERT INTO entity_paths(domain_id,category_id,brand_id,path_type)
+     VALUES($1,$2,$3,'brand') RETURNING entity_path_id`,
+    [parent.rows[0]!.domain_id, parent.rows[0]!.category_id, brand.rows[0]!.brand_id]
   );
   return path.rows[0]!.entity_path_id;
 }
@@ -1323,7 +1439,7 @@ async function insertSchedule(
        request_payload, next_run_at
      ) VALUES (
                $1, $2, $3, $4, 'selected', 'high',
-               'geo-prompt-policy-v1', $5, 'interval:3600',
+               'geo-prompt-policy-v2-exact-target', $5, 'interval:3600',
                '{"providerModels":[{"provider":"mock","model":"mock-standard"}]}',
                $6)
      RETURNING scheduler_job_id`,

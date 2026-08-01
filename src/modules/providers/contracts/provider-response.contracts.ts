@@ -5,6 +5,8 @@ import type {
 } from "../../../common/types/database.types.js";
 
 export const HIERARCHY_DISCOVERY_POLICY_VERSION = "hierarchy-discovery-policy-v1";
+export const ANONYMOUS_HIERARCHY_BREADTH = 3;
+export const AUTHENTICATED_HIERARCHY_BREADTH = 5;
 export const HIERARCHY_DISCOVERY_PROMPT_VERSIONS = {
   category: "hierarchy-discovery-category-v1",
   brand: "hierarchy-discovery-brand-v1",
@@ -377,7 +379,7 @@ export function hierarchyDiscoveryResponseJsonSchema(stage: keyof typeof HIERARC
       },
       [field]: {
         type: "array",
-        maxItems: controlled ? 50 : 5,
+        maxItems: controlled ? 50 : AUTHENTICATED_HIERARCHY_BREADTH,
         items: {
           type: "object",
           additionalProperties: false,

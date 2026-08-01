@@ -260,6 +260,62 @@ describe("provider output validation boundary", () => {
     );
   });
 
+  it("enforces anonymous breadth for controlled discovery and accepts empty evidence", () => {
+    const selections = ["1", "2", "3", "4"].map((category_id, index) => ({
+      category_id,
+      rank: index + 1,
+      confidence: 0.8,
+      reason: "Relevant"
+    }));
+    const tooMany = validateDiscoveryOutput({
+      stage: "category",
+      generatedContent: JSON.stringify({
+        prompt_type: "hierarchy_discovery_category",
+        contract_version: "hierarchy-discovery-category-response-v1",
+        selections,
+        summary: "Four matches"
+      }),
+      candidateIds: ["1", "2", "3", "4"],
+      activeFrozenCandidateIds: new Set(["1", "2", "3", "4"]),
+      maximumDiscoveredNames: 3
+    });
+    assert.equal(tooMany.valid, false);
+    assert.equal(errorCode(tooMany.validationErrors[0]), "DISCOVERY_BREADTH_EXCEEDED");
+
+    const empty = validateDiscoveryOutput({
+      stage: "use_context",
+      generatedContent: JSON.stringify({
+        prompt_type: "hierarchy_discovery_use_context",
+        contract_version: "hierarchy-discovery-use-context-response-v1",
+        selections: [],
+        summary: "No supported match"
+      }),
+      candidateIds: ["1"],
+      activeFrozenCandidateIds: new Set(["1"]),
+      maximumDiscoveredNames: 3
+    });
+    assert.equal(empty.valid, true);
+  });
+
+  it("rejects duplicate discovery identities and non-contiguous ranks", () => {
+    const result = validateDiscoveryOutput({
+      stage: "brand",
+      generatedContent: JSON.stringify({
+        prompt_type: "hierarchy_discovery_brand",
+        contract_version: "hierarchy-discovery-brand-response-v1",
+        items: [
+          { name: "Example", rank: 1, confidence: 0.8, reason: "Relevant" },
+          { name: " example ", rank: 3, confidence: 0.7, reason: "Duplicate" }
+        ],
+        summary: "Invalid duplicates"
+      }),
+      candidateIds: [],
+      activeFrozenCandidateIds: new Set(),
+      maximumDiscoveredNames: 5
+    });
+    assert.equal(result.valid, false);
+  });
+
   it("retains a valid UTF-8 prefix within the 256 KiB evidence cap", () => {
     const generated = `${"a".repeat(
       MAX_RETAINED_GENERATED_CONTENT_BYTES - 1

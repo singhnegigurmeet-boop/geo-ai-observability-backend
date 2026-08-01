@@ -65,6 +65,7 @@ describe(
     let fixture: Fixture;
     let analyses: AnalysisService;
     let owner: OwnershipContext;
+    let authenticatedOwner: OwnershipContext;
 
     before(async () => {
       const databaseUrl =
@@ -105,6 +106,24 @@ describe(
         anonymousSessionId: anonymous.session.anonymous_session_id,
         userId: null,
         workspaceId: null
+      };
+      const user = await pool.query<{ user_id: string }>(
+        "INSERT INTO users(email) VALUES('hierarchy-auth@example.com') RETURNING user_id"
+      );
+      const workspace = await pool.query<{ workspace_id: string }>(
+        "INSERT INTO workspaces(workspace_name,created_by_user_id) VALUES('Hierarchy Auth',$1) RETURNING workspace_id",
+        [user.rows[0]!.user_id]
+      );
+      await pool.query(
+        "INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')",
+        [workspace.rows[0]!.workspace_id, user.rows[0]!.user_id]
+      );
+      authenticatedOwner = {
+        actorType: "user",
+        anonymousSessionId: null,
+        userId: user.rows[0]!.user_id,
+        workspaceId: workspace.rows[0]!.workspace_id,
+        workspaceRole: "owner"
       };
     });
 
@@ -442,9 +461,9 @@ describe(
 
       for (const [index, request] of requests.entries()) {
         const result = await analyses.create(
-          request,
+          { ...request, promptDepth: "medium" },
           `hierarchy-valid-${index}`,
-          owner
+          authenticatedOwner
         );
         assert.equal(result.status, "accepted");
       }
@@ -501,9 +520,9 @@ describe(
       for (const [index, request] of invalidRequests.entries()) {
         await assert.rejects(
           analyses.create(
-            request,
+            { ...request, promptDepth: "medium" },
             `hierarchy-invalid-${index}`,
-            owner
+            authenticatedOwner
           ),
           hasCategory("VALIDATION_ERROR")
         );

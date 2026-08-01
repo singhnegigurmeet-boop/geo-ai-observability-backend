@@ -2,17 +2,16 @@ import { createHash } from "node:crypto";
 import type { DatabaseExecutor } from "../../../common/database/database-executor.js";
 import { ApplicationError } from "../../../common/errors/application-error.js";
 import type { OwnershipContext } from "../../../common/ownership/ownership-context.types.js";
-import type { EntityPathRow, EntityPathType, JsonObject, PromptDepth } from "../../../common/types/database.types.js";
+import type { JsonObject, PromptDepth } from "../../../common/types/database.types.js";
 import { TokenEstimatorService } from "../../budgets/services/token-estimator.service.js";
 import { HierarchyService } from "../../hierarchy/services/hierarchy.service.js";
 import { applicablePromptTypes, InvalidPromptDepthError, PROMPT_POLICY_VERSION, promptTypePolicy, resolvePromptDepth } from "../../prompts/policies/prompt-policy.registry.js";
 import { InvalidProviderModelSelectionError, resolveProviderModelSet } from "../../providers/policies/provider-model.policy.js";
-import { AnalysisRunExpansionRepository } from "../repositories/analysis-run-expansion.repository.js";
 import { AnalysisRunRequestedCategoryRepository, InactiveRequestedCategoryError } from "../repositories/analysis-run-requested-category.repository.js";
 import type { CreateAnalysisRequest } from "../schemas/analysis.schemas.js";
 import type { CanonicalAnalysisPlan, CanonicalAnalysisRequest, PlanningEstimateRange } from "../types/analysis.types.js";
 
-export const ANALYSIS_PLANNER_VERSION = "canonical-analysis-planner-v2";
+export const ANALYSIS_PLANNER_VERSION = "canonical-analysis-planner-v3-exact-target";
 export const MAX_ESTIMATED_PROVIDER_JOBS = 5_000;
 export const MAX_ESTIMATED_TOTAL_TOKENS = 20_000_000;
 export const MAX_ESTIMATED_COST_MICROS = 1_000_000_000_000;
@@ -42,11 +41,15 @@ export class CanonicalAnalysisPlannerService {
 
     const startingSelection = { domain: request.domain, categoryId: request.categoryId ?? null, brandId: request.brandId ?? null, productId: request.productId ?? null, useContextId: request.useContextId ?? null };
     const validated = await this.hierarchy.validateStartingPath(this.database, startingSelection);
-    if (!validated.domain || !validated.path) throw new ApplicationError("CONFLICT", "Hierarchy discovery must complete before canonical analysis planning");
-    const breadth = owner.actorType === "anonymous" ? 3 : 5;
-    const plannedEntityPaths = await knownTargets(this.database, validated.path, frozenCategories.map((row) => row.category_id), breadth);
-    if (plannedEntityPaths.length === 0) throw new ApplicationError("CONFLICT", "No hierarchy-ready analysis target exists");
-    const targetLevel = targetLevelFor(validated.path.path_type);
+    if (!validated.domain && validated.pathType !== "domain") throw new ApplicationError("CONFLICT", "The selected hierarchy path is not ready for analysis");
+    const plannedEntityPaths = [{
+      pathType: validated.pathType,
+      categoryId: startingSelection.categoryId,
+      brandId: startingSelection.brandId,
+      productId: startingSelection.productId,
+      useContextId: startingSelection.useContextId
+    }];
+    const targetLevel = validated.pathType;
     const promptTypes = applicablePromptTypes(targetLevel);
     const pathRange = exactRange(plannedEntityPaths.length);
     const promptRange = multiplyRange(pathRange, promptTypes.length);
@@ -74,17 +77,6 @@ export class CanonicalAnalysisPlannerService {
   }
 }
 
-async function knownTargets(database: DatabaseExecutor, path: EntityPathRow, categoryIds: string[], breadth: number) {
-  const expansion = new AnalysisRunExpansionRepository(database);
-  if (path.path_type === "domain") {
-    const rows = await database.query<{ category_id: string }>(`SELECT category_id FROM domain_categories WHERE domain_id=$1 AND category_id=ANY($2::bigint[]) AND is_active ORDER BY discovery_rank NULLS LAST, sort_order NULLS LAST, domain_category_id LIMIT $3`, [path.domain_id, categoryIds, breadth]);
-    return rows.rows.map((row) => ({ pathType: "category" as const, categoryId: row.category_id }));
-  }
-  if (path.path_type === "use_context") return [{ pathType: path.path_type, categoryId: path.category_id, brandId: path.brand_id, productId: path.product_id, useContextId: path.use_context_id }];
-  const rows = path.path_type === "category" ? await expansion.listActiveBrandChildren(path, breadth) : path.path_type === "brand" ? await expansion.listActiveProductChildren(path, breadth) : await expansion.listActiveUseContextChildren(path, breadth);
-  return rows.map((row) => ({ pathType: row.pathType, categoryId: row.categoryId, brandId: row.brandId, productId: row.productId, useContextId: row.useContextId }));
-}
-function targetLevelFor(pathType: EntityPathType): EntityPathType { if (pathType === "domain") return "category"; if (pathType === "category") return "brand"; if (pathType === "brand") return "product"; return "use_context"; }
 function exactRange(value: number): PlanningEstimateRange { return { minimum: value, maximum: value }; }
 function multiplyRange(range: PlanningEstimateRange, multiplier: number) { return { minimum: range.minimum * multiplier, maximum: range.maximum * multiplier }; }
 export function hashCanonical(value: JsonObject) { return createHash("sha256").update(stableStringify(value)).digest("hex"); }

@@ -6,6 +6,7 @@ import {
   analysisRunParamsSchema,
   preAnalysisRequestParamsSchema,
   createAnalysisRequestSchema,
+  hierarchyNavigationRequestSchema,
   validateIdempotencyKeyHeader
 } from "../schemas/analysis.schemas.js";
 
@@ -16,6 +17,12 @@ export function createAnalysisRouter(
   const router = Router();
   router.use(ownershipMiddleware);
 
+  router.post(
+    "/hierarchy/children",
+    validateIdempotencyKeyHeader,
+    validateBody(hierarchyNavigationRequestSchema),
+    asyncApiHandler(controller.continueHierarchy)
+  );
   router.post(
     "/preview",
     validateBody(createAnalysisRequestSchema),

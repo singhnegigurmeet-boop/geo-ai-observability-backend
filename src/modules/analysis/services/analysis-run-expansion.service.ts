@@ -5,11 +5,8 @@ import type {
 import { inTransaction } from "../../../common/database/database-executor.js";
 import { EntityPathRepository } from "../../hierarchy/repositories/entity-path.repository.js";
 import { OutboxEventWriterRepository } from "../../outbox/repositories/outbox-event-writer.repository.js";
-import type { EntityPathRow } from "../../../common/types/database.types.js";
 import { AnalysisRunExpansionRepository } from "../repositories/analysis-run-expansion.repository.js";
 import { AnalysisRunItemRepository } from "../repositories/analysis-run-item.repository.js";
-import { ReportRepository } from "../../reports/repositories/report.repository.js";
-import { ReportOutcomeService } from "../../reports/services/report-outcome.service.js";
 import type { AnalysisRunCreatedPayload } from "../messages/analysis-run-worker.messages.js";
 
 type ExpansionDatabase = DatabaseExecutor & TransactionPool;
@@ -64,43 +61,13 @@ export class AnalysisRunExpansionService {
         );
       }
 
-      const breadth = run.user_id && run.workspace_id ? 5 : 3;
-      const selections =
-        startingPath.path_type === "domain"
-          ? await expansion.listRequestedCategoryChildren(
-              run.analysis_run_id,
-              startingPath.domain_id,
-              breadth
-            )
-          : await selectChildren(expansion, startingPath, breadth);
-      if (selections.length === 0) {
-        await expansion.markNoExpansionChildren(
-          run.analysis_run_id,
-          `No active ${nextHierarchyLevel(startingPath.path_type)} relationships exist for the starting path`
-        );
-        await new ReportOutcomeService(
-          new ReportRepository(client)
-        ).createCompletedEmpty({
-          analysisRunId: run.analysis_run_id,
-          startingEntityPathId: run.starting_entity_path_id,
-          reason: "no_applicable_analysis_item",
-          summary: "No eligible analysis targets were configured for this path.",
-          nextAction: "Run hierarchy discovery or configure an active child relationship for the selected hierarchy path."
-        });
-        return { outcome: "empty", itemCount: 0 };
-      }
-
-      const paths = new EntityPathRepository(client);
+      const selections = [startingPath];
       const items = new AnalysisRunItemRepository(client);
       const outbox = new OutboxEventWriterRepository(client);
       for (const [ordinal, selection] of selections.entries()) {
-        const path =
-          startingPath.path_type === "use_context"
-            ? startingPath
-            : await paths.findOrCreate(selection);
         const item = await items.createOrReuse({
           analysisRunId: run.analysis_run_id,
-          entityPathId: path.entity_path_id,
+          entityPathId: selection.entity_path_id,
           ordinal
         });
         await outbox.createOrReuse({
@@ -120,48 +87,5 @@ export class AnalysisRunExpansionService {
       await expansion.markProcessing(run.analysis_run_id);
       return { outcome: "expanded", itemCount: selections.length };
     });
-  }
-}
-
-async function selectChildren(
-  repository: AnalysisRunExpansionRepository,
-  path: EntityPathRow,
-  breadth: number
-) {
-  switch (path.path_type) {
-    case "domain":
-      return repository.listActiveCategoryChildren(path.domain_id, breadth);
-    case "category":
-      return repository.listActiveBrandChildren(path, breadth);
-    case "brand":
-      return repository.listActiveProductChildren(path, breadth);
-    case "product":
-      return repository.listActiveUseContextChildren(path, breadth);
-    case "use_context":
-      return [
-        {
-          domainId: path.domain_id,
-          categoryId: path.category_id,
-          brandId: path.brand_id,
-          productId: path.product_id,
-          useContextId: path.use_context_id,
-          pathType: path.path_type
-        }
-      ];
-  }
-}
-
-function nextHierarchyLevel(pathType: EntityPathRow["path_type"]) {
-  switch (pathType) {
-    case "domain":
-      return "domain-category";
-    case "category":
-      return "category-brand";
-    case "brand":
-      return "brand-product";
-    case "product":
-      return "product-use-context";
-    case "use_context":
-      return "deeper";
   }
 }

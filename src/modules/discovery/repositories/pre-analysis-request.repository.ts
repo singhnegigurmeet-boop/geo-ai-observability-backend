@@ -68,6 +68,35 @@ export class PreAnalysisRequestRepository {
     return result.rows[0] ?? null;
   }
 
+  async findReusableNavigation(input: {
+    owner: OwnershipContext;
+    domainId: string;
+    discoveryCompatibilityHash: string;
+  }) {
+    const authenticated = input.owner.actorType === "user";
+    const result = await this.database.query<PreAnalysisRequestRow>(
+      `SELECT * FROM pre_analysis_requests
+       WHERE domain_id=$1 AND discovery_compatibility_hash=$2
+         AND request_payload->>'operation'='navigate'
+         AND status='completed_without_analysis'
+         AND discovery_status IN ('completed','completed_empty','partial_success')
+         AND (
+           ($3::boolean AND user_id IS NOT NULL AND workspace_id=$4)
+           OR
+           (NOT $3::boolean AND user_id IS NULL AND workspace_id IS NULL AND anonymous_session_id=$5)
+         )
+       ORDER BY completed_at DESC,pre_analysis_request_id DESC LIMIT 1`,
+      [
+        input.domainId,
+        input.discoveryCompatibilityHash,
+        authenticated,
+        input.owner.actorType === "user" ? input.owner.workspaceId : null,
+        input.owner.anonymousSessionId
+      ]
+    );
+    return result.rows[0] ?? null;
+  }
+
   async hasCompletedCompatibleExecution(request: PreAnalysisRequestRow) {
     const result = await this.database.query<{ exists: boolean }>(
       `SELECT EXISTS (

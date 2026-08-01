@@ -6,6 +6,7 @@ import {
   hierarchyDiscoveryResponseSchemas
 } from "../../../src/modules/providers/contracts/provider-response.contracts.js";
 import { renderDiscoveryPrompt } from "../../../src/modules/discovery/services/hierarchy-discovery.service.js";
+import type { HierarchyDiscoveryStage, JsonObject } from "../../../src/common/types/database.types.js";
 
 describe("pre-analysis hierarchy discovery", () => {
   it("defines a strict, versioned response contract for every stage", () => {
@@ -26,13 +27,30 @@ describe("pre-analysis hierarchy discovery", () => {
     }).success, false);
   });
 
-  it("renders only frozen stage context and version identities", () => {
-    const prompt = renderDiscoveryPrompt("use_context", {
-      product: { id: "3", name: "Example Product" },
-      candidates: [{ id: "7", name: "Travel" }]
-    }, HIERARCHY_DISCOVERY_PROMPT_VERSIONS.use_context, HIERARCHY_DISCOVERY_CONTRACT_VERSIONS.use_context);
-    assert.match(prompt, /Return strict JSON only/);
-    assert.match(prompt, /Do not invent controlled IDs/);
-    assert.match(prompt, /Example Product/);
+  it("renders each immediate-child task from only its exact frozen ancestry", () => {
+    const cases: Array<[HierarchyDiscoveryStage, JsonObject, RegExp, RegExp]> = [
+      ["category", { domain: { id: "1", name: "example.com" }, candidates: [{ id: "7", name: "Software" }], maximumResults: 3 }, /categories/, /Do not return brands, products, or use contexts/],
+      ["brand", { domain: { id: "1", name: "example.com" }, category: { id: "7", name: "Software" }, maximumResults: 3 }, /brand names/, /Do not return products or use contexts/],
+      ["product", { domain: { id: "1", name: "example.com" }, category: { id: "7", name: "Software" }, brand: { id: "8", name: "Example Brand" }, maximumResults: 5 }, /product names/, /Do not return use contexts/],
+      ["use_context", { domain: { id: "1", name: "example.com" }, category: { id: "7", name: "Software" }, brand: { id: "8", name: "Example Brand" }, product: { id: "9", name: "Example Product" }, candidates: [{ id: "10", name: "Travel" }], maximumResults: 5 }, /use contexts/, /using only use_context_id/]
+    ];
+    for (const [stage, context, task, exclusion] of cases) {
+      const prompt = renderDiscoveryPrompt(stage, context, HIERARCHY_DISCOVERY_PROMPT_VERSIONS[stage], HIERARCHY_DISCOVERY_CONTRACT_VERSIONS[stage]);
+      assert.match(prompt, task);
+      assert.match(prompt, exclusion);
+      assert.match(prompt, new RegExp(`Return at most ${context.maximumResults} results`));
+      assert.match(prompt, /Backend candidate IDs and hierarchy context are authoritative/);
+      assert.ok(prompt.endsWith(`Authoritative context: ${JSON.stringify(context)}`));
+    }
+  });
+
+  it("rejects unsupported frozen discovery identity and breadth", () => {
+    const context = {
+      domain: { id: "1", name: "example.com" },
+      category: { id: "2", name: "Software" },
+      maximumResults: 3
+    };
+    assert.throws(() => renderDiscoveryPrompt("brand", { ...context, maximumResults: 6 }, HIERARCHY_DISCOVERY_PROMPT_VERSIONS.brand, HIERARCHY_DISCOVERY_CONTRACT_VERSIONS.brand), /breadth is invalid/);
+    assert.throws(() => renderDiscoveryPrompt("brand", context, "hierarchy-discovery-brand-v0", HIERARCHY_DISCOVERY_CONTRACT_VERSIONS.brand), /identity is unsupported/);
   });
 });

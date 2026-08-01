@@ -1,4 +1,7 @@
-import { PROMPT_DEPTH_LIMITS } from "../policies/prompt-policy.registry.js";
+import {
+  PROMPT_DEPTH_LIMITS,
+  promptTypePolicy
+} from "../policies/prompt-policy.registry.js";
 import type { PromptRenderingContext } from "../types/prompt-rendering.types.js";
 
 const TASKS = {
@@ -29,6 +32,16 @@ const RESULT_SHAPES = {
 
 export class PromptRendererService {
   render(context: PromptRenderingContext) {
+    const policy = promptTypePolicy(context.promptType);
+    if (
+      context.businessPromptVersion !== policy.businessPromptVersion ||
+      context.responseContractVersion !== policy.responseContractVersion
+    ) {
+      throw new UnsupportedPromptTemplateError(
+        context.promptType,
+        context.businessPromptVersion
+      );
+    }
     const limits = PROMPT_DEPTH_LIMITS[context.promptDepth];
     const path = context.entityPathContext;
     const target =
@@ -81,15 +94,6 @@ Output rules:
 Required envelope:
 {"prompt_type":"${context.promptType}","contract_version":"${context.responseContractVersion}","result":${RESULT_SHAPES[context.promptType]},"evidence":[],"summary":string}`;
 
-    if (
-      context.businessPromptVersion.length === 0 ||
-      context.responseContractVersion.length === 0
-    ) {
-      throw new UnsupportedPromptTemplateError(
-        context.promptType,
-        context.businessPromptVersion
-      );
-    }
     return rendered;
   }
 }

@@ -10,7 +10,6 @@ import type { OwnershipContext } from "../../../common/ownership/ownership-conte
 import { InvalidProviderModelSelectionError, resolveDiscoveryModel, resolveProviderModelSet } from "../../providers/policies/provider-model.policy.js";
 import { InvalidPromptDepthError, resolvePromptDepth } from "../../prompts/policies/prompt-policy.registry.js";
 import { PreAnalysisRequestRepository } from "../../discovery/repositories/pre-analysis-request.repository.js";
-import { HierarchyReadinessService } from "../../discovery/services/hierarchy-readiness.service.js";
 import { HIERARCHY_DISCOVERY_CONTRACT_VERSIONS, HIERARCHY_DISCOVERY_POLICY_VERSION, HIERARCHY_DISCOVERY_PROMPT_VERSIONS } from "../../providers/contracts/provider-response.contracts.js";
 import { hashCanonical } from "./canonical-analysis-planner.service.js";
 import { ReportAggregationService } from "../../reports/services/report-aggregation.service.js";
@@ -18,6 +17,7 @@ import { ReportOutcomeService } from "../../reports/services/report-outcome.serv
 import { ReportRepository } from "../../reports/repositories/report.repository.js";
 import type { PreAnalysisRequestRow, ProviderName } from "../../../common/types/database.types.js";
 import type { CreateAnalysisRequest } from "../schemas/analysis.schemas.js";
+import type { HierarchyNavigationRequest } from "../schemas/analysis.schemas.js";
 import { AnalysisRepository } from "../repositories/analysis.repository.js";
 import {
   AnalysisRunRequestedCategoryRepository
@@ -33,6 +33,13 @@ import {
   CanonicalAnalysisPlannerService
 } from "./canonical-analysis-planner.service.js";
 import { requireWorkspaceMutationRole } from "../../workspaces/services/workspace-authorization.service.js";
+import {
+  HierarchyNavigationService,
+  listImmediateChildren,
+  navigationStatus,
+  type HierarchyChild
+} from "../../discovery/services/hierarchy-navigation.service.js";
+import { EntityPathRepository } from "../../hierarchy/repositories/entity-path.repository.js";
 
 type AnalysisDatabase = DatabaseExecutor & TransactionPool;
 
@@ -56,10 +63,23 @@ export class AnalysisService {
     }
   ) {}
 
+  async continueHierarchy(
+    request: HierarchyNavigationRequest,
+    clientIdempotencyKey: string,
+    owner: OwnershipContext
+  ) {
+    return new HierarchyNavigationService(
+      this.database,
+      this.hierarchy,
+      this.discovery
+    ).continue(request, clientIdempotencyKey, owner);
+  }
+
   async preview(
     request: CreateAnalysisRequest,
     owner: OwnershipContext
   ): Promise<AnalysisPreviewResponse> {
+    enforceHierarchyAccess(request, owner, "analyze");
     const selection = request.categorySelection ?? { mode: "all" as const };
     const categories = await new AnalysisRunRequestedCategoryRepository(this.database).resolveActive(selection);
     const hierarchy = await this.hierarchy.validateStartingPath(this.database, {
@@ -67,7 +87,7 @@ export class AnalysisService {
       brandId: request.brandId ?? null, productId: request.productId ?? null,
       useContextId: request.useContextId ?? null
     });
-    const hierarchyReady = Boolean(hierarchy.path && await new HierarchyReadinessService(this.database).isReady(hierarchy.path, categories.map((row) => row.category_id)));
+    const hierarchyReady = Boolean(hierarchy.domain || hierarchy.pathType === "domain");
     if (!hierarchyReady) {
       return {
         normalizedDomain: hierarchy.normalizedDomain,
@@ -121,6 +141,7 @@ export class AnalysisService {
     clientIdempotencyKey: string,
     owner: OwnershipContext
   ): Promise<CreateAnalysisResponse> {
+    enforceHierarchyAccess(request, owner, "analyze");
     if (owner.actorType === "user") {
       requireWorkspaceMutationRole(owner.workspaceRole);
     }
@@ -236,10 +257,30 @@ export class AnalysisService {
   async getRequestStatus(preAnalysisRequestId: string, owner: OwnershipContext) {
     const record = await new PreAnalysisRequestRepository(this.database).findOwned(preAnalysisRequestId, owner);
     if (!record) throw new ApplicationError("NOT_FOUND", "Pre-analysis request was not found");
+    const isNavigation = record.request_payload.operation === "navigate";
+    let children: HierarchyChild[] = [];
+    if (isNavigation && record.status === "completed_without_analysis") {
+      const path = await new EntityPathRepository(this.database).findActiveValidated(record.starting_entity_path_id);
+      if (path) {
+        children = await listImmediateChildren(this.database, {
+          normalizedDomain: record.request_payload.domain as string,
+          domainId: path.domain_id,
+          categoryId: path.category_id,
+          brandId: path.brand_id,
+          productId: path.product_id,
+          pathType: path.path_type
+        }, owner.actorType);
+      }
+    }
     return {
       preAnalysisRequestId: record.pre_analysis_request_id,
+      operation: isNavigation ? "navigate" : "analyze",
       status: record.status,
       discoveryStatus: record.discovery_status,
+      navigationStatus: isNavigation ? navigationStatus(record) : null,
+      requestedStage: isNavigation ? record.request_payload.requestedStage : null,
+      children,
+      selectionLimit: isNavigation ? (owner.actorType === "anonymous" ? 3 : 5) : null,
       analysisRunId: record.analysis_run_id,
       errorCode: record.error_code,
       errorMessage: publicPreAnalysisErrorMessage(record.error_code),
@@ -393,6 +434,20 @@ export class AnalysisService {
       renderedText: record.rendered_text,
       generatedAt: record.generated_at.toISOString()
     };
+  }
+}
+
+function enforceHierarchyAccess(
+  request: Pick<CreateAnalysisRequest, "productId" | "useContextId">,
+  owner: OwnershipContext,
+  operation: "analyze" | "continue"
+) {
+  if (owner.actorType !== "anonymous") return;
+  if (request.productId || request.useContextId) {
+    throw new ApplicationError(
+      "FORBIDDEN",
+      `Anonymous actors may not ${operation} beyond brand level`
+    );
   }
 }
 

@@ -165,8 +165,8 @@ export function validateDiscoveryOutput(input: {
   }
   const data = contract.data as unknown as JsonObject;
   const rows = (data.selections ?? data.items) as JsonObject[];
-  if ((input.stage === "brand" || input.stage === "product") && rows.length > input.maximumDiscoveredNames) {
-    return invalid("DISCOVERY_BREADTH_EXCEEDED", "Discovered name count exceeds the actor breadth limit");
+  if (rows.length > input.maximumDiscoveredNames) {
+    return invalid("DISCOVERY_BREADTH_EXCEEDED", "Discovery result count exceeds the actor breadth limit");
   }
   if (input.stage === "category" || input.stage === "use_context") {
     const candidates = new Set(input.candidateIds);

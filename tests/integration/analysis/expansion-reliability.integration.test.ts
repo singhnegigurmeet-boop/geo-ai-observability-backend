@@ -68,7 +68,7 @@ describe(
     await pool?.end();
   });
 
-  it("expands anonymous domain runs to the deterministic top three and is idempotent", async () => {
+  it("creates exactly the selected anonymous domain item and is idempotent", async () => {
     const fixture = await seedHierarchy(pool, 6);
     const owner = await anonymousOwner(pool);
     const run = await createRun(pool, fixture.paths.domain, owner);
@@ -77,14 +77,12 @@ describe(
 
     assert.deepEqual(await service.expand(payload(run)), {
       outcome: "expanded",
-      itemCount: 3
+      itemCount: 1
     });
     const items = await runItems(pool, run.runId);
-    assert.deepEqual(items.map((item) => item.item_ordinal), [0, 1, 2]);
-    assert.deepEqual(
-      items.map((item) => item.category_id),
-      [fixture.categories[1], fixture.categories[0], fixture.categories[3]]
-    );
+    assert.deepEqual(items.map((item) => item.item_ordinal), [0]);
+    assert.equal(items[0]?.entity_path_id, fixture.paths.domain);
+    assert.equal(items[0]?.path_type, "domain");
     assert.ok(items.every((item) => item.status === "queued"));
     assert.equal((await runState(pool, run.runId)).status, "processing");
     assert.ok((await runState(pool, run.runId)).started_at);
@@ -94,25 +92,25 @@ describe(
       outcome: "noop",
       itemCount: 0
     });
-    assert.equal((await runItems(pool, run.runId)).length, 3);
-    assert.equal(await itemOutboxCount(pool, run.runId), 3);
+    assert.equal((await runItems(pool, run.runId)).length, 1);
+    assert.equal(await itemOutboxCount(pool, run.runId), 1);
     await assertIdOnlyEvents(pool, run.runId);
   });
 
-  it("uses top five for logged-in and claimed runs while preserving claim origin", async () => {
+  it("uses one exact item for logged-in and claimed runs while preserving claim origin", async () => {
     const fixture = await seedHierarchy(pool, 6);
     const user = await userOwner(pool);
     const userRun = await createRun(pool, fixture.paths.domain, user);
     assert.equal(
       (await new AnalysisRunExpansionService(pool).expand(payload(userRun))).itemCount,
-      5
+      1
     );
 
     const claimed = await claimedOwner(pool);
     const claimedRun = await createRun(pool, fixture.paths.domain, claimed);
     assert.equal(
       (await new AnalysisRunExpansionService(pool).expand(payload(claimedRun))).itemCount,
-      5
+      1
     );
     const events = await pool.query<{ payload: Record<string, unknown> }>(
       `
@@ -149,13 +147,13 @@ describe(
     );
   });
 
-  it("expands category, brand, product, and full paths exactly one level", async () => {
+  it("creates the exact selected category, brand, product, and use-context item", async () => {
     const fixture = await seedHierarchy(pool, 4);
     const owner = await anonymousOwner(pool);
     const cases: Array<[string, number, EntityPathType]> = [
-      [fixture.paths.category, 3, "brand"],
-      [fixture.paths.brand, 3, "product"],
-      [fixture.paths.product, 3, "use_context"],
+      [fixture.paths.category, 1, "category"],
+      [fixture.paths.brand, 1, "brand"],
+      [fixture.paths.product, 1, "product"],
       [fixture.paths.useContext, 1, "use_context"]
     ];
     for (const [pathId, expected, expectedType] of cases) {
@@ -170,7 +168,7 @@ describe(
     }
   });
 
-  it("excludes inactive relationships and does not infer children from entity_paths", async () => {
+  it("does not require active children for an exact domain target", async () => {
     const fixture = await seedHierarchy(pool, 1);
     const phantomCategory = await master(pool, "categories", "category", "phantom");
     await entityPath(pool, {
@@ -184,15 +182,15 @@ describe(
 
     assert.deepEqual(
       await new AnalysisRunExpansionService(pool).expand(payload(run)),
-      { outcome: "empty", itemCount: 0 }
+      { outcome: "expanded", itemCount: 1 }
     );
     const state = await runState(pool, run.runId);
-    assert.equal(state.status, "completed");
+    assert.equal(state.status, "processing");
     assert.equal(state.error_code, null);
     assert.ok(state.started_at);
-    assert.ok(state.completed_at);
-    assert.equal((await runItems(pool, run.runId)).length, 0);
-    assert.equal(await itemOutboxCount(pool, run.runId), 0);
+    assert.equal(state.completed_at, null);
+    assert.equal((await runItems(pool, run.runId)).length, 1);
+    assert.equal(await itemOutboxCount(pool, run.runId), 1);
     assert.equal((await pool.query("SELECT 1 FROM hierarchy_discovery_jobs")).rowCount, 0);
     assert.equal(await countFailureRecords(pool), 0);
     assert.deepEqual(
@@ -201,7 +199,7 @@ describe(
     );
   });
 
-  it("reuses child paths without mutating the starting path", async () => {
+  it("uses the immutable starting path itself as the target", async () => {
     const fixture = await seedHierarchy(pool, 3);
     const existing = await entityPath(pool, {
       domainId: fixture.domainId,
@@ -216,7 +214,8 @@ describe(
     const run = await createRun(pool, fixture.paths.domain, owner);
     await new AnalysisRunExpansionService(pool).expand(payload(run));
     const items = await runItems(pool, run.runId);
-    assert.equal(items[0]?.entity_path_id, existing);
+    assert.notEqual(existing, fixture.paths.domain);
+    assert.equal(items[0]?.entity_path_id, fixture.paths.domain);
     const after = await pool.query(
       "SELECT * FROM entity_paths WHERE entity_path_id = $1",
       [fixture.paths.domain]

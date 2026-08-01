@@ -76,7 +76,7 @@ export const openApiDocument = {
         tags: ["Analysis"],
         summary: "Submit an analysis run",
         description:
-          "Creates or replays a queued analysis run with an immutable normalized provider/model set. Anonymous requests use mock/mock-fast. User and claimed requests default to mock/mock-standard or may provide an explicit set. Provider-set order and duplicates do not change idempotency identity; a different normalized set conflicts under the same owner-scoped key.",
+          "Analyzes exactly the supplied terminal hierarchy path; it never expands the selected node into children. Anonymous requests may target at most brand. Provider/model selection is immutable and owner-scoped idempotency is preserved.",
         security: ownershipSecurity,
         parameters: [
           {
@@ -116,12 +116,40 @@ export const openApiDocument = {
         }
       }
     },
+    "/v1/analysis/hierarchy/children": {
+      post: {
+        tags: ["Analysis"],
+        summary: "Resolve immediate children of one selected hierarchy path",
+        description:
+          "Queries authoritative PostgreSQL first. A hit returns all persisted immediate children synchronously with no outbox, RabbitMQ, provider, budget reservation, or token usage; selectionLimit separately reports the actor's 3/5 processing breadth. A miss accepts one asynchronous discovery stage on the existing discovery/provider queues. Anonymous actors may continue only domain-to-category and category-to-brand.",
+        security: ownershipSecurity,
+        parameters: [{
+          name: "Idempotency-Key",
+          in: "header",
+          required: true,
+          schema: { type: "string", minLength: 1, maxLength: 255 }
+        }],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/HierarchyNavigationRequest" } } }
+        },
+        responses: {
+          "200": { description: "Persisted immediate children", content: { "application/json": { schema: { $ref: "#/components/schemas/HierarchyNavigationResponse" } } } },
+          "202": { description: "One-stage discovery accepted or replayed", content: { "application/json": { schema: { $ref: "#/components/schemas/HierarchyNavigationResponse" } } } },
+          "400": publicErrorResponse("Invalid or terminal parent path"),
+          "401": publicErrorResponse("Missing or invalid session"),
+          "403": publicErrorResponse("Hierarchy access or workspace mutation denied"),
+          "404": publicErrorResponse("Selected hierarchy record not found"),
+          "409": publicErrorResponse("Idempotency key reused for different navigation intent")
+        }
+      }
+    },
     "/v1/analysis/preview": {
       post: {
         tags: ["Analysis"],
         summary: "Preview canonical analysis fan-out and estimated cost",
         description:
-          "Checks hierarchy readiness first. Ready hierarchy receives the canonical analysis estimate; incomplete hierarchy returns bounded discovery-required estimates without creating business rows.",
+          "Returns a write-free estimate for exactly one supplied target path, its applicable prompts, and provider/model set. Child breadth is not multiplied into analysis estimates.",
         security: ownershipSecurity,
         requestBody: {
           required: true,
@@ -407,6 +435,44 @@ export const openApiDocument = {
           status: { type: "string", enum: ["accepted", "checking_hierarchy", "discovering", "planning", "analysis_created", "completed_without_analysis", "failed", "paused_budget", "cancelled"] },
           idempotentReplay: { type: "boolean" },
           createdAt: { type: "string", format: "date-time" }
+        }
+      },
+      HierarchyNavigationRequest: {
+        type: "object",
+        additionalProperties: false,
+        required: ["domain"],
+        properties: {
+          domain: { type: "string" },
+          categoryId: { $ref: "#/components/schemas/DatabaseId" },
+          brandId: { $ref: "#/components/schemas/DatabaseId" },
+          productId: { $ref: "#/components/schemas/DatabaseId" }
+        }
+      },
+      HierarchyNavigationResponse: {
+        type: "object",
+        required: ["source", "requestedStage", "status", "preAnalysisRequestId", "children", "selectionLimit"],
+        properties: {
+          source: { type: "string", enum: ["database", "discovery"] },
+          requestedStage: { type: "string", enum: ["category", "brand", "product", "use_context"] },
+          status: { type: "string", enum: ["pending", "completed", "completed_empty", "partial", "paused_budget", "failed"] },
+          preAnalysisRequestId: { allOf: [{ $ref: "#/components/schemas/DatabaseId" }], nullable: true },
+          selectionLimit: { type: "integer", enum: [3, 5] },
+          idempotentReplay: { type: "boolean" },
+          children: {
+            type: "array",
+            items: {
+              type: "object",
+              required: ["entityType", "entityId", "name", "path", "canAnalyze", "canContinue"],
+              properties: {
+                entityType: { type: "string", enum: ["category", "brand", "product", "use_context"] },
+                entityId: { $ref: "#/components/schemas/DatabaseId" },
+                name: { type: "string" },
+                path: { type: "object" },
+                canAnalyze: { type: "boolean", enum: [true] },
+                canContinue: { type: "boolean" }
+              }
+            }
+          }
         }
       },
       AnalysisRunStatusResponse: {

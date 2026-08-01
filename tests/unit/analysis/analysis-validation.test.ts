@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { ApplicationError } from "../../../src/common/errors/application-error.js";
 import {
   createAnalysisRequestSchema,
+  hierarchyNavigationRequestSchema,
   parseIdempotencyKey
 } from "../../../src/modules/analysis/schemas/analysis.schemas.js";
 
@@ -43,6 +44,21 @@ describe("analysis submission validation", () => {
     ]) {
       assert.equal(createAnalysisRequestSchema.safeParse(body).success, false);
     }
+  });
+
+  it("accepts one complete navigation parent and rejects gaps", () => {
+    for (const body of [
+      { domain: "example.com" },
+      { domain: "example.com", categoryId: "1" },
+      { domain: "example.com", categoryId: "1", brandId: "2" },
+      { domain: "example.com", categoryId: "1", brandId: "2", productId: "3" }
+    ]) {
+      assert.equal(hierarchyNavigationRequestSchema.safeParse(body).success, true);
+    }
+    assert.equal(
+      hierarchyNavigationRequestSchema.safeParse({ domain: "example.com", brandId: "2" }).success,
+      false
+    );
   });
 
   it("accepts only the bounded final providerModels contract", () => {

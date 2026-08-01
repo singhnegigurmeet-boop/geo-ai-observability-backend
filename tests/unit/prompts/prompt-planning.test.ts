@@ -7,12 +7,15 @@ import {
 import { promptPlanFor } from "../../../src/modules/prompts/policies/prompt-plan.policy.js";
 
 describe("LLM-run prompt plan policy", () => {
-  it("returns no normal prompts for a domain-only target", () => {
+  it("returns the domain visibility prompt for a domain target", () => {
     const plan = promptPlanFor({
       pathLevel: "domain",
       promptDepth: "weak"
     });
-    assert.deepEqual(plan, []);
+    assert.deepEqual(
+      plan.map((entry) => entry.promptType),
+      ["visibility"]
+    );
   });
 
   it("returns the three category-level prompts at the frozen depth", () => {

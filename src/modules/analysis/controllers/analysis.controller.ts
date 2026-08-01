@@ -1,13 +1,13 @@
 import type { Request } from "express";
 import { requireOwnershipContext } from "../../../common/ownership/ownership-context.middleware.js";
 import { apiResult } from "../../../utils/api-response.js";
-import type { CreateAnalysisRequest } from "../schemas/analysis.schemas.js";
+import type { CreateAnalysisRequest, HierarchyNavigationRequest } from "../schemas/analysis.schemas.js";
 import { parseIdempotencyKey } from "../schemas/analysis.schemas.js";
 import type { AnalysisService } from "../services/analysis.service.js";
 
 type AnalysisServiceContract = Pick<
   AnalysisService,
-  "create" | "preview" | "getStatus" | "getRequestStatus" | "getReport" | "cancel"
+  "create" | "continueHierarchy" | "preview" | "getStatus" | "getRequestStatus" | "getReport" | "cancel"
 >;
 
 export class AnalysisController {
@@ -24,6 +24,17 @@ export class AnalysisController {
       owner
     );
     return apiResult(202, result);
+  };
+
+  continueHierarchy = async (request: Request) => {
+    const owner = requireOwnershipContext(request);
+    const idempotencyKey = parseIdempotencyKey(request.get("idempotency-key"));
+    const result = await this.analyses.continueHierarchy(
+      request.body as HierarchyNavigationRequest,
+      idempotencyKey,
+      owner
+    );
+    return apiResult(result.source === "database" ? 200 : 202, result);
   };
 
   preview = async (request: Request) => {

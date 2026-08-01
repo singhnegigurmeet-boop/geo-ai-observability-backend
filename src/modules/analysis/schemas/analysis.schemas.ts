@@ -62,6 +62,23 @@ export const createAnalysisRequestSchema = z
     }
   });
 
+export const hierarchyNavigationRequestSchema = z
+  .object({
+    domain: z.string().trim().min(1),
+    categoryId: databaseId.optional(),
+    brandId: databaseId.optional(),
+    productId: databaseId.optional()
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.brandId && !value.categoryId) {
+      addDependencyIssue(context, "brandId", "categoryId");
+    }
+    if (value.productId && !value.brandId) {
+      addDependencyIssue(context, "productId", "brandId");
+    }
+  });
+
 export const analysisRunParamsSchema = z.object({
   analysisRunId: databaseId
 });
@@ -116,3 +133,4 @@ export type CreateAnalysisRequest = Omit<
 > & {
   categorySelection?: ParsedCreateAnalysisRequest["categorySelection"];
 };
+export type HierarchyNavigationRequest = z.infer<typeof hierarchyNavigationRequestSchema>;

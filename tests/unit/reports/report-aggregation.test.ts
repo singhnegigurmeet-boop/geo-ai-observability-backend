@@ -45,8 +45,18 @@ describe("exact expected provider execution planning", () => {
     );
   });
 
-  it("creates no normal expected work for domain-only items", () => {
+  it("preserves the frozen v1 domain plan with no normal work", () => {
     assert.deepEqual(planFor([item("1", "domain")], models(2)), []);
+  });
+
+  it("expects domain visibility work under the exact-target v2 policy", () => {
+    const expected = buildExpectedProviderExecutionPlan({
+      run: { ...run("processing"), promptPolicyVersion: "geo-prompt-policy-v2-exact-target" },
+      items: [item("1", "domain")],
+      providerModels: models(2)
+    });
+    assert.equal(expected.length, 2);
+    assert.ok(expected.every((entry) => entry.promptType === "visibility"));
   });
 
   it("deduplicates repeated provider/model rows", () => {

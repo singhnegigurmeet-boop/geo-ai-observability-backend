@@ -4,7 +4,7 @@ import type {
   PromptType
 } from "../../../common/types/database.types.js";
 
-export const PROMPT_POLICY_VERSION = "geo-prompt-policy-v1";
+export const PROMPT_POLICY_VERSION = "geo-prompt-policy-v2-exact-target";
 
 export const PROMPT_TYPE_POLICY = {
   visibility: {
@@ -80,6 +80,10 @@ const CATEGORY_PROMPTS = [
   "competitor"
 ] as const satisfies readonly PromptType[];
 
+const DOMAIN_PROMPTS = [
+  "visibility"
+] as const satisfies readonly PromptType[];
+
 const DEEP_PROMPTS = [
   ...CATEGORY_PROMPTS,
   "price_range",
@@ -89,7 +93,7 @@ const DEEP_PROMPTS = [
 export function applicablePromptTypes(
   targetLevel: EntityPathType
 ): readonly PromptType[] {
-  if (targetLevel === "domain") return [];
+  if (targetLevel === "domain") return DOMAIN_PROMPTS;
   return targetLevel === "category" ? CATEGORY_PROMPTS : DEEP_PROMPTS;
 }
 
@@ -97,6 +101,10 @@ export function applicablePromptTypesForPolicy(
   promptPolicyVersion: string,
   targetLevel: EntityPathType
 ): readonly PromptType[] {
+  if (promptPolicyVersion === "geo-prompt-policy-v1") {
+    if (targetLevel === "domain") return [];
+    return targetLevel === "category" ? CATEGORY_PROMPTS : DEEP_PROMPTS;
+  }
   if (promptPolicyVersion !== PROMPT_POLICY_VERSION) {
     throw new UnsupportedPromptPolicyVersionError(promptPolicyVersion);
   }
