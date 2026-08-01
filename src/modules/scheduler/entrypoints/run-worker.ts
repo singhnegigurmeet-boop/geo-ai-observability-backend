@@ -3,9 +3,10 @@ import { pool } from "../../../common/database/postgres.js";
 import { SchedulerService } from "../services/scheduler.service.js";
 
 const scheduler = new SchedulerService(pool, env.ENABLE_REAL_PROVIDERS, {
-  provider: env.CLASSIFICATION_PROVIDER,
-  model: env.CLASSIFICATION_MODEL,
-  realProvidersEnabled: env.ENABLE_REAL_PROVIDERS
+  provider: env.DISCOVERY_PROVIDER,
+  model: env.DISCOVERY_MODEL,
+  fallbackProvider: env.DISCOVERY_FALLBACK_PROVIDER ?? null,
+  fallbackModel: env.DISCOVERY_FALLBACK_MODEL ?? null
 });
 let stopping = false;
 let timer: NodeJS.Timeout | null = null;

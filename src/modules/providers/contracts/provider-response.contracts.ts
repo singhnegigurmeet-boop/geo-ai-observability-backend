@@ -4,10 +4,19 @@ import type {
   PromptType
 } from "../../../common/types/database.types.js";
 
-export const DOMAIN_CATEGORY_CLASSIFICATION_PROMPT_VERSION =
-  "domain-category-classification-v1";
-export const DOMAIN_CATEGORY_CLASSIFICATION_CONTRACT_VERSION =
-  "domain-category-classification-response-v1";
+export const HIERARCHY_DISCOVERY_POLICY_VERSION = "hierarchy-discovery-policy-v1";
+export const HIERARCHY_DISCOVERY_PROMPT_VERSIONS = {
+  category: "hierarchy-discovery-category-v1",
+  brand: "hierarchy-discovery-brand-v1",
+  product: "hierarchy-discovery-product-v1",
+  use_context: "hierarchy-discovery-use-context-v1"
+} as const;
+export const HIERARCHY_DISCOVERY_CONTRACT_VERSIONS = {
+  category: "hierarchy-discovery-category-response-v1",
+  brand: "hierarchy-discovery-brand-response-v1",
+  product: "hierarchy-discovery-product-response-v1",
+  use_context: "hierarchy-discovery-use-context-response-v1"
+} as const;
 
 const positiveDatabaseId = z.string().regex(/^[1-9]\d*$/);
 const boundedText = (maximum: number) => z.string().trim().min(1).max(maximum);
@@ -23,57 +32,46 @@ export const evidenceItemSchema = z
   })
   .strict();
 
-export const domainCategoryClassificationResponseSchema = z
-  .object({
-    prompt_type: z.literal("domain_category_classification"),
-    contract_version: z.literal(
-      DOMAIN_CATEGORY_CLASSIFICATION_CONTRACT_VERSION
-    ),
-    matches: z
-      .array(
-        z
-          .object({
-            category_id: positiveDatabaseId,
-            rank: z.number().int().positive(),
-            confidence,
-            reason: boundedText(1_000)
-          })
-          .strict()
-      )
-      .max(50),
+const rankedSelection = z.object({
+  category_id: positiveDatabaseId,
+  rank: z.number().int().positive(),
+  confidence,
+  reason: boundedText(1_000)
+}).strict();
+const rankedName = z.object({
+  name: boundedText(500),
+  rank: z.number().int().positive(),
+  confidence,
+  reason: boundedText(1_000)
+}).strict();
+const useContextSelection = z.object({
+  use_context_id: positiveDatabaseId,
+  rank: z.number().int().positive(),
+  confidence,
+  reason: boundedText(1_000)
+}).strict();
+
+export const hierarchyDiscoveryResponseSchemas = {
+  category: discoverySchema("hierarchy_discovery_category", HIERARCHY_DISCOVERY_CONTRACT_VERSIONS.category, "selections", rankedSelection, 50),
+  brand: discoverySchema("hierarchy_discovery_brand", HIERARCHY_DISCOVERY_CONTRACT_VERSIONS.brand, "items", rankedName, 5),
+  product: discoverySchema("hierarchy_discovery_product", HIERARCHY_DISCOVERY_CONTRACT_VERSIONS.product, "items", rankedName, 5),
+  use_context: discoverySchema("hierarchy_discovery_use_context", HIERARCHY_DISCOVERY_CONTRACT_VERSIONS.use_context, "selections", useContextSelection, 50)
+} as const;
+
+function discoverySchema(promptType: string, contractVersion: string, field: "items" | "selections", item: z.ZodTypeAny, maximum: number) {
+  return z.object({
+    prompt_type: z.literal(promptType),
+    contract_version: z.literal(contractVersion),
+    [field]: z.array(item).max(maximum),
     summary: z.string().trim().max(2_000)
-  })
-  .strict()
-  .superRefine((value, context) => {
-    const categoryIds = new Set<string>();
-    const ranks = new Set<number>();
-    for (const [index, match] of value.matches.entries()) {
-      if (categoryIds.has(match.category_id)) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["matches", index, "category_id"],
-          message: "Classification category IDs must be unique"
-        });
-      }
-      categoryIds.add(match.category_id);
-      if (ranks.has(match.rank)) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["matches", index, "rank"],
-          message: "Classification ranks must be unique"
-        });
-      }
-      ranks.add(match.rank);
-    }
-    const orderedRanks = [...ranks].sort((left, right) => left - right);
-    if (orderedRanks.some((rank, index) => rank !== index + 1)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["matches"],
-        message: "Classification ranks must be contiguous starting at 1"
-      });
-    }
+  }).strict().superRefine((value, context) => {
+    const rows = value[field] as Array<{ rank: number; name?: string; category_id?: string; use_context_id?: string }>;
+    const identities = rows.map((row) => row.name?.trim().toLowerCase() ?? row.category_id ?? row.use_context_id);
+    const ranks = rows.map((row) => row.rank);
+    if (new Set(identities).size !== identities.length) context.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: "Discovery identities must be unique" });
+    if (new Set(ranks).size !== ranks.length || [...ranks].sort((a,b)=>a-b).some((rank,index)=>rank!==index+1)) context.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: "Discovery ranks must be contiguous from 1" });
   });
+}
 
 const commonEnvelope = {
   evidence: z.array(evidenceItemSchema).max(20),
@@ -250,10 +248,6 @@ export const NORMAL_RESPONSE_SCHEMAS = {
   pros_cons: prosConsResponseSchema
 } as const;
 
-export type DomainCategoryClassificationResponse = z.infer<
-  typeof domainCategoryClassificationResponseSchema
->;
-
 export function parseGeneratedJson(generatedContent: string): unknown {
   return JSON.parse(generatedContent) as unknown;
 }
@@ -365,37 +359,42 @@ export function normalResponseJsonSchema(
   }) as JsonObject;
 }
 
-export function classificationResponseJsonSchema(): JsonObject {
+export function hierarchyDiscoveryResponseJsonSchema(stage: keyof typeof HIERARCHY_DISCOVERY_CONTRACT_VERSIONS): JsonObject {
+  const controlled = stage === "category" || stage === "use_context";
+  const field = stage === "brand" || stage === "product" ? "items" : "selections";
+  const identityField = stage === "category" ? "category_id" : stage === "use_context" ? "use_context_id" : "name";
   return {
     type: "object",
     additionalProperties: false,
     properties: {
       prompt_type: {
         type: "string",
-        const: "domain_category_classification"
+        const: `hierarchy_discovery_${stage}`
       },
       contract_version: {
         type: "string",
-        const: DOMAIN_CATEGORY_CLASSIFICATION_CONTRACT_VERSION
+        const: HIERARCHY_DISCOVERY_CONTRACT_VERSIONS[stage]
       },
-      matches: {
+      [field]: {
         type: "array",
-        maxItems: 50,
+        maxItems: controlled ? 50 : 5,
         items: {
           type: "object",
           additionalProperties: false,
           properties: {
-            category_id: { type: "string", pattern: "^[1-9][0-9]*$" },
+            [identityField]: controlled
+              ? { type: "string", pattern: "^[1-9][0-9]*$" }
+              : { type: "string", minLength: 1, maxLength: 500 },
             rank: { type: "integer", minimum: 1 },
             confidence: { type: "number", minimum: 0, maximum: 1 },
             reason: { type: "string", minLength: 1, maxLength: 1_000 }
           },
-          required: ["category_id", "rank", "confidence", "reason"]
+          required: [identityField, "rank", "confidence", "reason"]
         }
       },
       summary: { type: "string", maxLength: 2_000 }
     },
-    required: ["prompt_type", "contract_version", "matches", "summary"]
+    required: ["prompt_type", "contract_version", field, "summary"]
   };
 }
 

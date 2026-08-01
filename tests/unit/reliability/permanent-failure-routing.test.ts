@@ -13,27 +13,20 @@ describe("permanent failure aggregate/queue routing", () => {
     );
   });
 
-  it("routes classification planning and result processing separately", () => {
+  it("routes pre-analysis discovery separately", () => {
     assert.equal(
       resolvePermanentFailureRoute(
-        "domain_category_classification",
-        "domain_category_classification_queue"
+        "pre_analysis_request",
+        "domain_hierarchy_discovery_queue"
       ),
-      "classification_job"
-    );
-    assert.equal(
-      resolvePermanentFailureRoute(
-        "provider_result",
-        "domain_category_classification_result_queue"
-      ),
-      "classification_result"
+      "pre_analysis_request"
     );
   });
 
-  it("does not route a normal scoring result through classification", () => {
+  it("does not route a normal scoring result through discovery", () => {
     assert.notEqual(
       resolvePermanentFailureRoute("provider_result", "scoring_queue"),
-      "classification_result"
+      "pre_analysis_request"
     );
   });
 

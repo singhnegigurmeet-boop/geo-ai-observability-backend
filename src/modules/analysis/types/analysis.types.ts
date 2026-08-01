@@ -27,7 +27,6 @@ export type CanonicalAnalysisRequest = JsonObject & {
     providerInstructionProfile: string;
     structuredOutputMode: string;
   }>;
-  classificationProfile: JsonObject | null;
   canonicalPlannerVersion: string;
   canonicalRequestHash: string;
   planningEstimate: JsonObject;
@@ -45,9 +44,8 @@ export type CanonicalAnalysisPlan = {
     categoryIds: string[];
   };
   frozenRequestedCategoryCount: number;
-  reusedCategories: JsonObject[];
-  unresolvedCategoryIds: string[];
-  classificationRequired: boolean;
+  hierarchyReady: boolean;
+  discoveryRequired: boolean;
   estimatedEligibleCategories: PlanningEstimateRange;
   plannedEntityPaths: JsonObject[];
   applicablePromptsByPath: readonly PromptType[];
@@ -62,16 +60,13 @@ export type CanonicalAnalysisPlan = {
   }>;
   expectedExecutions: {
     normalProviderJobCountEstimate: PlanningEstimateRange;
-    classificationProviderJobCount: number;
     totalProviderJobCountEstimate: PlanningEstimateRange;
   };
   promptDepth: PromptDepth;
   promptPolicyVersion: string;
-  classificationExecutionProfile: JsonObject | null;
   tokenEstimate: JsonObject;
   costEstimate: JsonObject;
   normalAnalysisEstimate: JsonObject;
-  classificationEstimate: JsonObject;
   byProviderModel: JsonObject[];
   safetyLimits: JsonObject;
   canonicalRequestPayload: CanonicalAnalysisRequest;
@@ -83,21 +78,18 @@ export type AnalysisPreviewResponse = {
   categorySelectionMode: "all" | "selected";
   frozenCategoryIds: string[];
   frozenRequestedCategoryCount: number;
-  reusedMatchedCategoryCount: number;
-  unresolvedCandidateCount: number;
-  classificationRequired: boolean;
+  hierarchyReady: boolean;
+  discoveryRequired: boolean;
   estimatedSelectedPathCount: PlanningEstimateRange;
   applicablePromptCountEstimate: PlanningEstimateRange;
   applicablePromptTypes: PromptType[];
   resolvedModelCount: number;
   resolvedProviderModels: JsonObject[];
   normalProviderJobCountEstimate: PlanningEstimateRange;
-  classificationProviderJobCount: number;
   totalProviderJobCountEstimate: PlanningEstimateRange;
   tokenEstimate: JsonObject;
   costEstimate: JsonObject;
   normalAnalysisEstimate: JsonObject;
-  classificationEstimate: JsonObject;
   byProviderModel: JsonObject[];
   safetyLimits: JsonObject;
   canonicalPlannerVersion: string;
@@ -106,9 +98,9 @@ export type AnalysisPreviewResponse = {
 };
 
 export type CreateAnalysisResponse = {
-  analysisRunId: string;
-  startingEntityPathId: string;
-  status: "queued";
+  preAnalysisRequestId: string;
+  analysisRunId: string | null;
+  status: "accepted" | "checking_hierarchy" | "discovering" | "planning" | "analysis_created" | "completed_without_analysis" | "failed" | "paused_budget" | "cancelled";
   idempotentReplay: boolean;
   createdAt: string;
 };

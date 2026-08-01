@@ -4,6 +4,7 @@ import { sendApiResult } from "../../../utils/api-response.js";
 import { AnalysisController } from "../controllers/analysis.controller.js";
 import {
   analysisRunParamsSchema,
+  preAnalysisRequestParamsSchema,
   createAnalysisRequestSchema,
   validateIdempotencyKeyHeader
 } from "../schemas/analysis.schemas.js";
@@ -25,6 +26,11 @@ export function createAnalysisRouter(
     validateIdempotencyKeyHeader,
     validateBody(createAnalysisRequestSchema),
     asyncApiHandler(controller.create)
+  );
+  router.get(
+    "/requests/:preAnalysisRequestId",
+    validateParams(preAnalysisRequestParamsSchema),
+    asyncApiHandler(controller.requestStatus)
   );
   router.get(
     "/runs/:analysisRunId",

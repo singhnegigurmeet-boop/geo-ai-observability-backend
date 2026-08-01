@@ -68,9 +68,9 @@ export class ReportOutcomeService {
   }
 
   private async createEmpty(input: EmptyOutcomeInput) {
-    const [methodology, classification] = await Promise.all([
+    const [methodology, discovery] = await Promise.all([
       this.reports.methodologyContext(input.analysisRunId),
-      this.reports.classificationRecord(input.analysisRunId)
+      this.reports.discoveryRecord(input.analysisRunId)
     ]);
     const counts = {
       expectedProviderJobs: 0,
@@ -120,15 +120,8 @@ export class ReportOutcomeService {
         promptPolicyVersion: methodology?.prompt_policy_version ?? null,
         selectedProviderModels:
           methodology?.selected_provider_models ?? [],
-        classificationProvider:
-          classification?.classifier_provider ?? null,
-        classificationModel: classification?.classifier_model ?? null,
-        classificationModelProfileVersion:
-          classification?.model_profile_version ?? null,
-        classificationPromptVersion:
-          classification?.prompt_version ?? null,
-        classificationResponseContractVersion:
-          classification?.response_contract_version ?? null,
+        discoveryStatus: discovery?.discovery_status ?? null,
+        discoveryCoverage: discovery?.discovery_coverage ?? null,
         scoringVersion: SCORING_VERSION,
         reportVersion: MULTI_PROVIDER_REPORT_VERSION,
         createdAt: methodology?.created_at ?? null,

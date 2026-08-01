@@ -534,9 +534,6 @@ function fakeResponse(request: ProviderExecutionRequest) {
     ],
     summary: "Provider evidence"
   };
-  if (request.promptType === "domain_category_classification") {
-    return { ...common, matches: [] };
-  }
   const result =
     request.promptType === "visibility"
       ? {

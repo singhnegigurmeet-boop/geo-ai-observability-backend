@@ -29,9 +29,9 @@ export class BudgetCheckService {
     workspaceId: string | null;
     userId: string | null;
     anonymousSessionId: string | null;
-    analysisRunId: string;
+    analysisRunId: string | null;
     promptText: string;
-    promptType: PromptType | "domain_category_classification";
+    promptType: PromptType | `hierarchy_discovery_${"category" | "brand" | "product" | "use_context"}`;
     promptDepth: PromptDepth;
   }): Promise<BudgetCheckResult> {
     const estimate = this.estimator.estimate(input);

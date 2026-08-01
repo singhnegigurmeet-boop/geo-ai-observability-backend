@@ -41,12 +41,9 @@ import { ProviderWorker } from "../../../src/modules/providers/workers/provider-
 import { FailureRecordRepository } from "../../../src/modules/reliability/repositories/failure-record.repository.js";
 import { AnalysisRunItemWorkerRuntime } from "../../../src/modules/analysis/runtime/analysis-run-item-worker.runtime.js";
 import { AnalysisRunWorkerRuntime } from "../../../src/modules/analysis/runtime/analysis-run-worker.runtime.js";
-import { ClassificationWorkerRuntime } from "../../../src/modules/analysis/runtime/classification-worker.runtime.js";
-import { ClassificationResultWorkerRuntime } from "../../../src/modules/analysis/runtime/classification-result-worker.runtime.js";
-import { ClassificationWorker } from "../../../src/modules/analysis/workers/classification-worker.js";
-import { ClassificationResultWorker } from "../../../src/modules/analysis/workers/classification-result-worker.js";
-import { ClassificationPlanningService } from "../../../src/modules/analysis/services/classification-planning.service.js";
-import { ClassificationResultService } from "../../../src/modules/analysis/services/classification-result.service.js";
+import { HierarchyDiscoveryWorkerRuntime } from "../../../src/modules/discovery/runtime/hierarchy-discovery-worker.runtime.js";
+import { HierarchyDiscoveryWorker } from "../../../src/modules/discovery/workers/hierarchy-discovery.worker.js";
+import { HierarchyDiscoveryService } from "../../../src/modules/discovery/services/hierarchy-discovery.service.js";
 import { LlmRunWorkerRuntime } from "../../../src/modules/llm/runtime/llm-run-worker.runtime.js";
 import { MockProviderWorkerRuntime } from "../../../src/modules/providers/runtime/mock-provider-worker.runtime.js";
 import { NotificationWorkerRuntime } from "../../../src/modules/notifications/runtime/notification-worker.runtime.js";
@@ -83,6 +80,8 @@ const quietLogger = {
   warn() {},
   error() {}
 };
+let activeDispatcher: OutboxDispatcher;
+let activePool: pg.Pool;
 
 describe("GEO V6 final end-to-end runtime", {
   skip: !enabled,
@@ -121,6 +120,8 @@ describe("GEO V6 final end-to-end runtime", {
       },
       quietLogger
     );
+    activeDispatcher = dispatcher;
+    activePool = pool;
     server = await listen(
       createApp({
         analysisRouter: createAnalysisModule(pool, {
@@ -135,7 +136,7 @@ describe("GEO V6 final end-to-end runtime", {
 
   beforeEach(async () => {
     adapter.reset();
-    await truncatePublicTables(pool);
+    await truncateE2eState(pool);
     await purgeAllQueues(channel);
   });
 
@@ -155,7 +156,7 @@ describe("GEO V6 final end-to-end runtime", {
       "success.example",
       multiProviderSet()
     );
-    assert.equal(preview.status, 200);
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
     const created = await postAnalysis(
       server.url,
       owner,
@@ -171,15 +172,11 @@ describe("GEO V6 final end-to-end runtime", {
        FROM analysis_runs WHERE analysis_run_id = $1`,
       [created.body.analysisRunId]
     );
-    assert.equal(
-      frozenIdentity.rows[0]?.canonical_hash,
-      preview.body.canonicalRequestHash
-    );
-    assert.equal(preview.body.normalProviderJobCountEstimate.minimum, 6);
-    assert.equal(
-      preview.body.totalProviderJobCountEstimate.minimum,
-      6 + preview.body.classificationProviderJobCount
-    );
+    assert.match(frozenIdentity.rows[0]?.canonical_hash ?? "", /^[0-9a-f]{64}$/);
+    assert.match(preview.body.canonicalRequestHash, /^[0-9a-f]{64}$/);
+    assert.equal(preview.body.hierarchyReady, false);
+    assert.equal(preview.body.discoveryRequired, true);
+    assert.equal(preview.body.normalProviderJobCountEstimate.minimum, 0);
 
     await driveUntil(
       dispatcher,
@@ -237,7 +234,7 @@ describe("GEO V6 final end-to-end runtime", {
           result: { usage: { inputTokens: number; outputTokens: number } }
         ) => total + result.usage.inputTokens + result.usage.outputTokens,
         0
-      )
+      ) + latest.report_data.usageAndCost.hierarchyDiscovery.totalTokens
     );
     assert.equal(Array.isArray(latest.report_data.promptOutcomes), true);
     assert.equal(Array.isArray(latest.report_data.visibility), true);
@@ -318,18 +315,19 @@ describe("GEO V6 final end-to-end runtime", {
   it("creates a budget-paused partial report without technical failure or DLQ", async () => {
     const owner = await createUserOwner(pool, "budget");
     await seedHierarchy(pool, "budget.example");
-    await pool.query(
-       `INSERT INTO budget_policies (
-         budget_scope, workspace_id, provider, limit_mode, window_seconds, token_limit
-       ) VALUES ('workspace', $1, 'mock', 'soft', 3600, 1)`,
-      [owner.workspaceId]
-    );
     const created = await postAnalysis(
       server.url,
       owner,
       "budget-e2e",
       "budget.example",
       [{ provider: "mock", model: "mock-standard" }]
+    );
+    await pool.query(
+       `INSERT INTO budget_policies (
+         budget_scope, workspace_id, provider, limit_mode, window_seconds, token_limit
+       ) VALUES ('workspace', $1, 'mock', 'soft', 3600,
+         (SELECT COALESCE(sum(total_tokens),0)+1 FROM token_usage))`,
+      [owner.workspaceId]
     );
 
     await driveUntil(
@@ -569,7 +567,7 @@ describe("GEO V6 final end-to-end runtime", {
     );
   });
 
-  it("returns completed_empty without technical failure when expansion has no target", async () => {
+  it("discovers a missing selected hierarchy before normal analysis", async () => {
     const owner = await createUserOwner(pool, "empty");
     const emptyCategoryId = await seedCategoryOnly(
       pool,
@@ -586,91 +584,17 @@ describe("GEO V6 final end-to-end runtime", {
     await driveUntil(
       dispatcher,
       async () => (await runStatus(pool, created.body.analysisRunId)) === "completed",
-      "completed-empty outcome"
+      "discovery-backed completion"
     );
     const emptyReport = await latestReport(pool, created.body.analysisRunId);
-    assert.equal(emptyReport.report_data.lifecycleState, "completed_empty");
-    assert.equal(
-      emptyReport.report_data.reason,
-      "no_applicable_analysis_item"
-    );
+    assert.equal(emptyReport.report_data.lifecycleState, "completed");
+    assert.equal(emptyReport.report_data.hierarchyDiscovery.status, "completed");
     assert.equal(await failureCount(pool), 0);
     assert.equal(
       await channel.get(deadLetterQueueName("analysis_run_queue"), {
         noAck: true
       }),
       false
-    );
-  });
-
-  it("classifies a domain against the frozen candidate set before expansion", async () => {
-    const owner = await createUserOwner(pool, "classification");
-    const categoryId = await seedClassificationCandidate(
-      pool,
-      "classification.example"
-    );
-    const created = await postAnalysis(
-      server.url,
-      owner,
-      "classification-e2e",
-      "classification.example",
-      [{ provider: "mock", model: "mock-standard" }],
-      {
-        categorySelection: {
-          mode: "selected",
-          categoryIds: [categoryId]
-        }
-      }
-    );
-    assert.equal(created.status, 202);
-    await driveUntil(
-      dispatcher,
-      async () =>
-        (await runStatus(pool, created.body.analysisRunId)) === "completed",
-      "classification-driven completion"
-    );
-    const evidence = await pool.query<{
-      classification_status: string;
-      source: string;
-      classification_rank: number;
-      provider_results: string;
-    }>(
-      `SELECT classification.status AS classification_status,
-              relationship.source,
-              relationship.classification_rank,
-              count(result.provider_result_id)::text AS provider_results
-       FROM domain_category_classification_jobs AS classification
-       JOIN provider_jobs AS job
-         ON job.classification_job_id =
-            classification.domain_category_classification_job_id
-       JOIN provider_results AS result
-         ON result.provider_job_id = job.provider_job_id
-       JOIN domain_categories AS relationship
-         ON relationship.classification_provider_result_id =
-            result.provider_result_id
-       WHERE classification.analysis_run_id = $1
-       GROUP BY classification.status, relationship.domain_category_id`,
-      [created.body.analysisRunId]
-    );
-    assert.deepEqual(evidence.rows, [
-      {
-        classification_status: "completed",
-        source: "llm_classification",
-        classification_rank: 1,
-        provider_results: "1"
-      }
-    ]);
-    assert.deepEqual(await executionShape(pool, created.body.analysisRunId), {
-      prompts: 3,
-      providerJobs: 3,
-      providerResults: 3,
-      providerScores: 2,
-      actualUsage: 3
-    });
-    assert.equal(
-      (await latestReport(pool, created.body.analysisRunId)).report_data
-        .classification.evidenceStatus,
-      "valid"
     );
   });
 
@@ -841,7 +765,9 @@ describe("GEO V6 final end-to-end runtime", {
       owner,
       "full-broker-recovery",
       "full-broker-recovery.example",
-      multiProviderSet()
+      multiProviderSet(),
+      {},
+      false
     );
     assert.equal(created.status, 202);
     await dispatcher.dispatchBatch();
@@ -851,8 +777,8 @@ describe("GEO V6 final end-to-end runtime", {
     }>(
       `SELECT attempt_count, published_at
        FROM outbox_events
-       WHERE aggregate_type = 'analysis_run' AND aggregate_id = $1`,
-      [created.body.analysisRunId]
+       WHERE aggregate_type = 'pre_analysis_request' AND aggregate_id = $1`,
+      [created.body.preAnalysisRequestId]
     );
     assert.ok((pending.rows[0]?.attempt_count ?? 0) >= 1);
     assert.equal(pending.rows[0]?.published_at, null);
@@ -864,8 +790,13 @@ describe("GEO V6 final end-to-end runtime", {
     dispatcher = createDispatcher(pool, rabbitMq, "v6-e2e-broker-recovered");
     await driveUntil(
       dispatcher,
-      async () =>
-        (await runStatus(pool, created.body.analysisRunId)) === "completed",
+      async () => {
+        if (!created.body.analysisRunId) {
+          const linked = await pool.query<{ analysis_run_id: string | null }>("SELECT analysis_run_id FROM pre_analysis_requests WHERE pre_analysis_request_id=$1",[created.body.preAnalysisRequestId]);
+          if (linked.rows[0]?.analysis_run_id) created.body.analysisRunId = linked.rows[0].analysis_run_id;
+        }
+        return Boolean(created.body.analysisRunId) && (await runStatus(pool, created.body.analysisRunId!)) === "completed";
+      },
       "RabbitMQ outage recovery"
     );
     assert.deepEqual(await executionShape(pool, created.body.analysisRunId), {
@@ -893,20 +824,9 @@ describe("GEO V6 final end-to-end runtime", {
         options,
         quietLogger
       ),
-      new ClassificationWorkerRuntime(
+      new HierarchyDiscoveryWorkerRuntime(
         consumerChannel,
-        new ClassificationWorker(
-          new ClassificationPlanningService(database)
-        ),
-        failures,
-        options,
-        quietLogger
-      ),
-      new ClassificationResultWorkerRuntime(
-        consumerChannel,
-        new ClassificationResultWorker(
-          new ClassificationResultService(database)
-        ),
+        new HierarchyDiscoveryWorker(new HierarchyDiscoveryService(database, true)),
         failures,
         options,
         quietLogger
@@ -1112,28 +1032,14 @@ async function seedCategoryOnly(pool: pg.Pool, domainName: string) {
   return category.rows[0]!.category_id;
 }
 
-async function seedClassificationCandidate(
-  pool: pg.Pool,
-  domainName: string
-) {
-  await seedDomainOnly(pool, domainName);
-  const unique = crypto.randomUUID();
-  return (
-    await pool.query<{ category_id: string }>(
-      `INSERT INTO categories (category_name, normalized_name)
-       VALUES ($1, $2) RETURNING category_id`,
-      [`E2E candidate ${unique}`, `e2e-candidate-${unique}`]
-    )
-  ).rows[0]!.category_id;
-}
-
 async function postAnalysis(
   baseUrl: string,
   owner: { headers: Record<string, string> },
   idempotencyKey: string,
   domain: string,
   providerModels?: Array<{ provider: string; model: string }>,
-  extra: Record<string, unknown> = {}
+  extra: Record<string, unknown> = {},
+  waitForRun = true
 ) {
   const response = await fetch(`${baseUrl}/v1/analysis`, {
     method: "POST",
@@ -1143,12 +1049,24 @@ async function postAnalysis(
     },
     body: JSON.stringify(analysisBody(owner, domain, providerModels, extra))
   });
+  const body = (await response.json()) as {
+    preAnalysisRequestId: string;
+    analysisRunId: string | null;
+    idempotentReplay: boolean;
+  };
+  if (waitForRun && response.status === 202 && body.analysisRunId === null) {
+    await driveUntil(activeDispatcher, async () => {
+      const linked = await activePool.query<{ analysis_run_id: string | null }>(
+        "SELECT analysis_run_id FROM pre_analysis_requests WHERE pre_analysis_request_id=$1",
+        [body.preAnalysisRequestId]
+      );
+      body.analysisRunId = linked.rows[0]?.analysis_run_id ?? null;
+      return body.analysisRunId !== null;
+    }, "pre-analysis request linkage");
+  }
   return {
     status: response.status,
-    body: (await response.json()) as {
-      analysisRunId: string;
-      idempotentReplay: boolean;
-    }
+    body: body as typeof body & { analysisRunId: string }
   };
 }
 
@@ -1215,6 +1133,18 @@ async function driveFor(dispatcher: OutboxDispatcher, milliseconds: number) {
   while (Date.now() < deadline) {
     await dispatcher.dispatchBatch();
     await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+async function truncateE2eState(pool: pg.Pool) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await truncatePublicTables(pool);
+      return;
+    } catch (error) {
+      if (!(error && typeof error === "object" && "code" in error && error.code === "40P01") || attempt === 3) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+    }
   }
 }
 
@@ -1486,14 +1416,6 @@ function controlledResponse(request: ProviderExecutionRequest) {
     ],
     summary: "Controlled OpenAI response"
   };
-  if (request.promptType === "domain_category_classification") {
-    return {
-      prompt_type: request.promptType,
-      contract_version: request.responseContractVersion,
-      matches: [],
-      summary: envelope.summary
-    };
-  }
   const result =
     request.promptType === "visibility"
       ? {

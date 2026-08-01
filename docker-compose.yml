@@ -105,40 +105,20 @@ services:
       rabbitmq:
         condition: service_healthy
 
-  classification-worker:
+  discovery-worker:
     build: .
-    container_name: geo-classification-worker
-    command: node dist/modules/analysis/entrypoints/run-classification-worker.js
+    container_name: geo-discovery-worker
+    command: node dist/modules/discovery/entrypoints/run-worker.js
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
       RABBITMQ_EXCHANGE: geo.v6.main
       RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
-      CLASSIFICATION_WORKER_PREFETCH: 5
-      CLASSIFICATION_PROVIDER: ${CLASSIFICATION_PROVIDER:-mock}
-      CLASSIFICATION_MODEL: ${CLASSIFICATION_MODEL:-mock-fast}
+      DISCOVERY_WORKER_PREFETCH: 5
+      DISCOVERY_PROVIDER: ${DISCOVERY_PROVIDER:-mock}
+      DISCOVERY_MODEL: ${DISCOVERY_MODEL:-mock-fast}
       ENABLE_REAL_PROVIDERS: ${ENABLE_REAL_PROVIDERS:-false}
-      SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-
-  classification-result-worker:
-    build: .
-    container_name: geo-classification-result-worker
-    command: node dist/modules/analysis/entrypoints/run-classification-result-worker.js
-    environment:
-      NODE_ENV: development
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/geo_observability
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672?heartbeat=30
-      RABBITMQ_EXCHANGE: geo.v6.main
-      RABBITMQ_DEAD_LETTER_EXCHANGE: geo.v6.dlx
-      CLASSIFICATION_WORKER_PREFETCH: 5
       SESSION_TOKEN_PEPPER: local-development-session-pepper-change-me
     depends_on:
       migrate:

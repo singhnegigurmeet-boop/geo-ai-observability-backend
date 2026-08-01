@@ -12,10 +12,11 @@ import {
   stringAt
 } from "../../../utils/provider-response.js";
 import {
-  classificationResponseJsonSchema,
+  hierarchyDiscoveryResponseJsonSchema,
   normalResponseJsonSchema
 } from "../contracts/provider-response.contracts.js";
 import { providerModelProfile } from "../registry/provider-model.registry.js";
+import type { PromptType } from "../../../common/types/database.types.js";
 
 export class OpenAiProviderAdapter implements ProviderAdapter {
   readonly provider = "openai" as const;
@@ -63,10 +64,10 @@ export class OpenAiProviderAdapter implements ProviderAdapter {
             name: request.responseContractVersion.replaceAll("-", "_"),
             strict: true,
             schema:
-              request.promptType === "domain_category_classification"
-                ? classificationResponseJsonSchema()
+              request.discoveryStage
+                ? hierarchyDiscoveryResponseJsonSchema(request.discoveryStage)
                 : normalResponseJsonSchema(
-                    request.promptType,
+                    request.promptType as PromptType,
                     request.responseContractVersion
                   )
           }

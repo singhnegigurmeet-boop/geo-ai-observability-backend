@@ -8,6 +8,7 @@ import { EntityPathRepository } from "../../hierarchy/repositories/entity-path.r
 import { OutboxEventWriterRepository } from "../../outbox/repositories/outbox-event-writer.repository.js";
 import {
   parseProviderModels,
+  resolveDiscoveryModel,
   resolveProviderModelSet,
 } from "../../providers/policies/provider-model.policy.js";
 import { FailureRecordRepository } from "../../reliability/repositories/failure-record.repository.js";
@@ -15,13 +16,20 @@ import { SchedulerRepository } from "../repositories/scheduler.repository.js";
 import { WorkspaceAuthorizationService } from "../../workspaces/services/workspace-authorization.service.js";
 import { WorkspaceMemberRepository } from "../../workspaces/repositories/workspace-member.repository.js";
 import { PROMPT_POLICY_VERSION } from "../../prompts/policies/prompt-policy.registry.js";
-import { CanonicalAnalysisPlannerService } from "../../analysis/services/canonical-analysis-planner.service.js";
+import { PreAnalysisRequestRepository } from "../../discovery/repositories/pre-analysis-request.repository.js";
+import { AnalysisRunRequestedCategoryRepository } from "../../analysis/repositories/analysis-run-requested-category.repository.js";
+import { hashCanonical } from "../../analysis/services/canonical-analysis-planner.service.js";
+import {
+  HIERARCHY_DISCOVERY_CONTRACT_VERSIONS,
+  HIERARCHY_DISCOVERY_POLICY_VERSION,
+  HIERARCHY_DISCOVERY_PROMPT_VERSIONS
+} from "../../providers/contracts/provider-response.contracts.js";
 import type { ProviderName } from "../../../common/types/database.types.js";
 
 type SchedulerDatabase = DatabaseExecutor & TransactionPool;
 
 export type SchedulerTickResult =
-  | { outcome: "enqueued"; schedulerJobId: string; analysisRunId: string }
+  | { outcome: "enqueued"; schedulerJobId: string; preAnalysisRequestId: string; analysisRunId: null }
   | { outcome: "failed"; schedulerJobId: string }
   | { outcome: "idle"; schedulerJobId: null };
 
@@ -29,15 +37,12 @@ export class SchedulerService {
   constructor(
     private readonly database: SchedulerDatabase,
     private readonly realProvidersEnabled = false,
-    private readonly classifier: {
+    private readonly discovery: {
       provider: ProviderName;
       model: string;
-      realProvidersEnabled: boolean;
-    } = {
-      provider: "mock",
-      model: "mock-fast",
-      realProvidersEnabled: false
-    }
+      fallbackProvider: ProviderName | null;
+      fallbackModel: string | null;
+    } = { provider: "mock", model: "mock-fast", fallbackProvider: null, fallbackModel: null }
   ) {}
 
   async tick(now = new Date()): Promise<SchedulerTickResult> {
@@ -117,53 +122,63 @@ export class SchedulerService {
           job.category_selection_mode === "selected"
             ? { mode: "selected" as const, categoryIds }
             : { mode: "all" as const };
-        const plan = await new CanonicalAnalysisPlannerService(
-          client,
-          undefined,
-          this.realProvidersEnabled,
-          this.classifier
-        ).plan(
-          {
-            domain: job.normalized_domain,
-            categoryId: job.category_id ?? undefined,
-            brandId: job.brand_id ?? undefined,
-            productId: job.product_id ?? undefined,
-            useContextId: job.use_context_id ?? undefined,
-            categorySelection,
-            promptDepth: job.prompt_depth,
-            providerModels: selection.map(({ provider, model }) => ({
-              provider,
-              model
-            }))
-          },
-          {
-            actorType: "user",
-            anonymousSessionId: null,
-            userId: job.created_by_user_id,
-            workspaceId: job.workspace_id,
-            workspaceRole: "owner"
-          },
-          { frozenCategoryIds: categoryIds }
-        );
-        const run = await schedules.createOrReuseRun({
-          job,
-          idempotencyKey: tickKey,
-          policy: {
-            providerModels: selection,
-            categoryIds,
-            canonicalRequestPayload: plan.canonicalRequestPayload
-          }
+        const primary = resolveDiscoveryModel({
+          provider: this.discovery.provider,
+          model: this.discovery.model,
+          realProvidersEnabled: this.realProvidersEnabled
         });
-        await new OutboxEventWriterRepository(client).createOrReuse({
-          eventKey: `analysis_run.created:${run.analysis_run_id}`,
-          eventType: "analysis_run.created",
-          eventVersion: 1,
-          aggregateType: "analysis_run",
-          aggregateId: run.analysis_run_id,
-          headers: { queueName: "analysis_run_queue" },
-          payload: {
-            analysisRunId: run.analysis_run_id
+        const fallback = this.discovery.fallbackProvider && this.discovery.fallbackModel
+          ? resolveDiscoveryModel({ provider: this.discovery.fallbackProvider, model: this.discovery.fallbackModel, realProvidersEnabled: this.realProvidersEnabled })
+          : null;
+        const canonicalRequest = {
+          domain: job.normalized_domain,
+          categoryId: job.category_id,
+          brandId: job.brand_id,
+          productId: job.product_id,
+          useContextId: job.use_context_id,
+          categorySelection: { mode: categorySelection.mode, categoryIds },
+          promptDepth: job.prompt_depth,
+          providerModels: selection.map(({ provider, model }) => ({ provider, model })),
+          schedulerJobId: job.scheduler_job_id,
+          scheduledDueAt: dueAt.toISOString(),
+          discoveryProfile: {
+            ...primary,
+            fallback: fallback ? { provider: fallback.provider, model: fallback.model, modelProfileVersion: fallback.modelProfileVersion } : null,
+            policyVersion: HIERARCHY_DISCOVERY_POLICY_VERSION,
+            promptVersions: HIERARCHY_DISCOVERY_PROMPT_VERSIONS,
+            contractVersions: HIERARCHY_DISCOVERY_CONTRACT_VERSIONS
           }
+        };
+        const canonicalRequestHash = hashCanonical(canonicalRequest);
+        const requests = new PreAnalysisRequestRepository(client);
+        const owner = { actorType: "user" as const, anonymousSessionId: null, userId: job.created_by_user_id, workspaceId: job.workspace_id, workspaceRole: "owner" as const };
+        let preAnalysisRequest = await requests.findByIdempotencyKey(tickKey);
+        if (!preAnalysisRequest) {
+          preAnalysisRequest = await requests.create({
+            idempotencyKey: tickKey,
+            owner,
+            domainId: job.domain_id,
+            startingEntityPathId: job.starting_entity_path_id,
+            categorySelectionMode: job.category_selection_mode,
+            promptDepth: job.prompt_depth,
+            source: "scheduled",
+            requestPayload: canonicalRequest,
+            canonicalRequestHash,
+            discoveryCompatibilityHash: hashCanonical({ domain: job.normalized_domain, categoryIds, profile: canonicalRequest.discoveryProfile })
+          }) ?? await requests.findByIdempotencyKey(tickKey);
+        }
+        if (!preAnalysisRequest || preAnalysisRequest.canonical_request_hash !== canonicalRequestHash) {
+          throw new Error("Existing scheduled request violates stable tick identity");
+        }
+        await new AnalysisRunRequestedCategoryRepository(client).createOrReuseForRequest(preAnalysisRequest.pre_analysis_request_id, categoryIds);
+        await new OutboxEventWriterRepository(client).createOrReuse({
+          eventKey: `pre_analysis_request.accepted:${preAnalysisRequest.pre_analysis_request_id}`,
+          eventType: "pre_analysis_request.accepted",
+          eventVersion: 1,
+          aggregateType: "pre_analysis_request",
+          aggregateId: preAnalysisRequest.pre_analysis_request_id,
+          headers: { queueName: "domain_hierarchy_discovery_queue" },
+          payload: { preAnalysisRequestId: preAnalysisRequest.pre_analysis_request_id }
         });
         const nextRunAt = new Date(
           dueAt.getTime() + intervalSeconds * 1_000
@@ -173,7 +188,7 @@ export class SchedulerService {
             schedulerJobId: job.scheduler_job_id,
             dueAt,
             nextRunAt,
-            analysisRunId: run.analysis_run_id
+            preAnalysisRequestId: preAnalysisRequest.pre_analysis_request_id
           }))
         ) {
           throw new Error("Scheduled tick could not advance");
@@ -182,7 +197,8 @@ export class SchedulerService {
         return {
           outcome: "enqueued",
           schedulerJobId: job.scheduler_job_id,
-          analysisRunId: run.analysis_run_id
+          preAnalysisRequestId: preAnalysisRequest.pre_analysis_request_id,
+          analysisRunId: null
         };
       } catch (error) {
         await client.query("ROLLBACK TO SAVEPOINT scheduler_tick_work");

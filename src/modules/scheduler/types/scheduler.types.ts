@@ -19,6 +19,7 @@ export type DueSchedulerJob = {
   request_payload: JsonObject;
   next_run_at: Date;
   normalized_domain: string;
+  domain_id: string;
   category_id: string | null;
   brand_id: string | null;
   product_id: string | null;

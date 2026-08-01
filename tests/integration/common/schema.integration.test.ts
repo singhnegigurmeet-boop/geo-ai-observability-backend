@@ -23,13 +23,15 @@ const expectedTables = [
   "categories",
   "category_brands",
   "domain_categories",
-  "domain_category_classification_jobs",
   "domains",
   "entity_paths",
   "failure_records",
+  "hierarchy_discovery_jobs",
+  "hierarchy_discovery_relationships",
   "llm_runs",
   "notifications",
   "outbox_events",
+  "pre_analysis_requests",
   "product_use_contexts",
   "products",
   "prompt_jobs",
@@ -62,8 +64,10 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
         user_sessions, users, anonymous_sessions, scheduler_jobs,
         notifications, failure_records, outbox_events, reports,
         provider_scores, token_usage, budget_policies, provider_results,
-        provider_jobs, prompt_jobs, llm_runs, analysis_run_items,
+        hierarchy_discovery_relationships, provider_jobs,
+        hierarchy_discovery_jobs, prompt_jobs, llm_runs, analysis_run_items,
         analysis_run_provider_models, analysis_runs, entity_paths,
+        pre_analysis_requests,
         product_use_contexts, brand_products, category_brands,
         domain_categories, use_contexts, products, brands, categories, domains
       RESTART IDENTITY CASCADE
@@ -98,7 +102,7 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
     );
   });
 
-  it("creates exactly the 34 final production tables", async () => {
+  it("creates exactly the 36 final production tables", async () => {
     const result = await pool.query<{ tablename: string }>(
       `SELECT tablename
        FROM pg_tables
@@ -138,11 +142,11 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
          WHERE trigger_schema = 'public') AS triggers
     `);
     assert.deepEqual(result.rows[0], {
-      enums: "26",
-      foreign_keys: "57",
-      unique_constraints: "44",
-      check_constraints: "112",
-      indexes: "138",
+      enums: "29",
+      foreign_keys: "77",
+      unique_constraints: "48",
+      check_constraints: "125",
+      indexes: "148",
       triggers: "26"
     });
   });
@@ -306,7 +310,7 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
     );
   });
 
-  it("protects the complete frozen classification execution identity", async () => {
+  it("protects the complete frozen discovery execution identity", async () => {
     const trigger = await pool.query<{
       action_statement: string;
       action_timing: string;
@@ -316,13 +320,13 @@ describe("Final V6 baseline schema", { skip: !enabled, concurrency: 1 }, () => {
        FROM information_schema.triggers
        WHERE trigger_schema = 'public'
          AND event_object_table =
-             'domain_category_classification_jobs'
+             'hierarchy_discovery_jobs'
          AND trigger_name =
-             'domain_category_classification_jobs_identity_trigger'`
+             'hierarchy_discovery_jobs_identity_trigger'`
     );
     assert.deepEqual(trigger.rows, [{
       action_statement:
-        "EXECUTE FUNCTION preserve_classification_job_execution_identity()",
+        "EXECUTE FUNCTION preserve_hierarchy_discovery_job_execution_identity()",
       action_timing: "BEFORE",
       event_manipulation: "UPDATE"
     }]);

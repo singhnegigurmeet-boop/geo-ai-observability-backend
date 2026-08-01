@@ -96,7 +96,7 @@ export const openApiDocument = {
         },
         responses: {
           "202": {
-            description: "Analysis run accepted or idempotently replayed",
+            description: "Pre-analysis request accepted or idempotently replayed",
             content: {
               "application/json": {
                 schema: {
@@ -121,7 +121,7 @@ export const openApiDocument = {
         tags: ["Analysis"],
         summary: "Preview canonical analysis fan-out and estimated cost",
         description:
-          "Runs the same canonical hierarchy, category, prompt, exact model, classification, estimation, and safety-limit planner as creation. It creates no analysis business rows, outbox events, jobs, reservations, or reports.",
+          "Checks hierarchy readiness first. Ready hierarchy receives the canonical analysis estimate; incomplete hierarchy returns bounded discovery-required estimates without creating business rows.",
         security: ownershipSecurity,
         requestBody: {
           required: true,
@@ -146,6 +146,19 @@ export const openApiDocument = {
           "401": publicErrorResponse("Missing or invalid session"),
           "403": publicErrorResponse("Workspace or claim access denied"),
           "500": publicErrorResponse("Unexpected internal error")
+        }
+      }
+    },
+    "/v1/analysis/requests/{preAnalysisRequestId}": {
+      get: {
+        tags: ["Analysis"],
+        summary: "Read an owned pre-analysis request status",
+        security: ownershipSecurity,
+        parameters: [{ name: "preAnalysisRequestId", in: "path", required: true, schema: { $ref: "#/components/schemas/DatabaseId" } }],
+        responses: {
+          "200": { description: "Discovery and downstream analysis linkage status", content: { "application/json": { schema: { type: "object" } } } },
+          "401": publicErrorResponse("Missing or invalid session"),
+          "404": publicErrorResponse("Pre-analysis request not found for this owner")
         }
       }
     },
@@ -382,18 +395,16 @@ export const openApiDocument = {
       CreateAnalysisResponse: {
         type: "object",
         required: [
+          "preAnalysisRequestId",
           "analysisRunId",
-          "startingEntityPathId",
           "status",
           "idempotentReplay",
           "createdAt"
         ],
         properties: {
-          analysisRunId: { $ref: "#/components/schemas/DatabaseId" },
-          startingEntityPathId: {
-            $ref: "#/components/schemas/DatabaseId"
-          },
-          status: { type: "string", enum: ["queued"] },
+          preAnalysisRequestId: { $ref: "#/components/schemas/DatabaseId" },
+          analysisRunId: { oneOf: [{ $ref: "#/components/schemas/DatabaseId" }, { type: "null" }] },
+          status: { type: "string", enum: ["accepted", "checking_hierarchy", "discovering", "planning", "analysis_created", "completed_without_analysis", "failed", "paused_budget", "cancelled"] },
           idempotentReplay: { type: "boolean" },
           createdAt: { type: "string", format: "date-time" }
         }
@@ -510,7 +521,7 @@ export const openApiDocument = {
           methodology: {
             type: "object",
             description:
-              "Safe frozen analysis, classification, prompt/model, scoring, report, and canonical-planning lineage."
+              "Safe frozen analysis, hierarchy-discovery, prompt/model, scoring, report, and canonical-planning lineage."
           },
           executiveSummary: {
             type: "object",
@@ -595,14 +606,14 @@ export const openApiDocument = {
           usageAndCost: {
             type: "object",
             description:
-              "Frozen bounded planning estimates beside actual telemetry, variance, missing telemetry, and provider/model, category, prompt-type, classification, and normal-analysis breakdowns."
+              "Frozen bounded planning estimates beside actual telemetry, variance, missing telemetry, and provider/model, category, prompt-type, hierarchy-discovery, and normal-analysis breakdowns."
           },
           categoryBreakdown: {
             type: "array",
             maxItems: MAX_REPORT_EXECUTION_ITEMS,
             items: { type: "object" },
             description:
-              "Every expected category/model path, authoritative model-path GEO scores, classification provenance, disagreement, exact coverage, and prompt outcomes."
+              "Every expected category/model path, authoritative model-path GEO scores, discovery provenance, disagreement, exact coverage, and prompt outcomes."
           },
           providerModelComparison: {
             type: "array",
@@ -649,14 +660,12 @@ export const openApiDocument = {
           "normalizedDomain",
           "frozenCategoryIds",
           "frozenRequestedCategoryCount",
-          "reusedMatchedCategoryCount",
-          "unresolvedCandidateCount",
-          "classificationRequired",
+          "hierarchyReady",
+          "discoveryRequired",
           "estimatedSelectedPathCount",
           "applicablePromptCountEstimate",
           "resolvedProviderModels",
           "normalProviderJobCountEstimate",
-          "classificationProviderJobCount",
           "totalProviderJobCountEstimate",
           "tokenEstimate",
           "costEstimate",
@@ -675,9 +684,8 @@ export const openApiDocument = {
             items: { $ref: "#/components/schemas/DatabaseId" }
           },
           frozenRequestedCategoryCount: { type: "integer", minimum: 0 },
-          reusedMatchedCategoryCount: { type: "integer", minimum: 0 },
-          unresolvedCandidateCount: { type: "integer", minimum: 0 },
-          classificationRequired: { type: "boolean" },
+          hierarchyReady: { type: "boolean" },
+          discoveryRequired: { type: "boolean" },
           estimatedSelectedPathCount: {
             $ref: "#/components/schemas/EstimateRange"
           },
@@ -707,18 +715,12 @@ export const openApiDocument = {
           normalProviderJobCountEstimate: {
             $ref: "#/components/schemas/EstimateRange"
           },
-          classificationProviderJobCount: {
-            type: "integer",
-            minimum: 0,
-            maximum: 1
-          },
           totalProviderJobCountEstimate: {
             $ref: "#/components/schemas/EstimateRange"
           },
           tokenEstimate: { type: "object" },
           costEstimate: { type: "object" },
           normalAnalysisEstimate: { type: "object" },
-          classificationEstimate: { type: "object" },
           byProviderModel: {
             type: "array",
             maxItems: MAX_ANALYSIS_PROVIDER_MODELS,

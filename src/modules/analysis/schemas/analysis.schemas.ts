@@ -65,6 +65,7 @@ export const createAnalysisRequestSchema = z
 export const analysisRunParamsSchema = z.object({
   analysisRunId: databaseId
 });
+export const preAnalysisRequestParamsSchema = z.object({ preAnalysisRequestId: databaseId });
 
 export function parseIdempotencyKey(value: string | undefined) {
   const key = value?.trim();

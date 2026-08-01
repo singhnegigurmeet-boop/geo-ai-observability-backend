@@ -14,6 +14,13 @@ export class ProviderExecutionError extends Error {
 }
 
 export function providerHttpError(provider: string, status: number) {
+  if (status === 402) {
+    return new ProviderExecutionError(
+      "PROVIDER_CREDIT_EXHAUSTED",
+      `${provider} request could not run because provider credit is exhausted`,
+      true
+    );
+  }
   const retryable = status === 429 || status >= 500;
   return new ProviderExecutionError(
     status === 429

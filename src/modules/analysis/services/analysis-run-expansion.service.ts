@@ -11,16 +11,12 @@ import { AnalysisRunItemRepository } from "../repositories/analysis-run-item.rep
 import { ReportRepository } from "../../reports/repositories/report.repository.js";
 import { ReportOutcomeService } from "../../reports/services/report-outcome.service.js";
 import type { AnalysisRunCreatedPayload } from "../messages/analysis-run-worker.messages.js";
-import { DomainCategoryClassificationRepository } from "../repositories/domain-category-classification.repository.js";
-import { resolveClassificationModel } from "../../providers/policies/provider-model.policy.js";
-import type { ProviderName } from "../../../common/types/database.types.js";
 
 type ExpansionDatabase = DatabaseExecutor & TransactionPool;
 
 export type AnalysisRunExpansionResult =
   | { outcome: "expanded"; itemCount: number }
   | { outcome: "empty"; itemCount: 0 }
-  | { outcome: "classification_pending"; itemCount: 0 }
   | { outcome: "noop"; itemCount: 0 };
 
 export class PermanentAnalysisRunError extends Error {
@@ -36,18 +32,7 @@ export class PermanentAnalysisRunError extends Error {
 }
 
 export class AnalysisRunExpansionService {
-  constructor(
-    private readonly database: ExpansionDatabase,
-    private readonly classifier: {
-      provider: ProviderName;
-      model: string;
-      realProvidersEnabled: boolean;
-    } = {
-      provider: "mock",
-      model: "mock-fast",
-      realProvidersEnabled: false
-    }
-  ) {}
+  constructor(private readonly database: ExpansionDatabase) {}
 
   async expand(
     payload: AnalysisRunCreatedPayload
@@ -80,59 +65,6 @@ export class AnalysisRunExpansionService {
       }
 
       const breadth = run.user_id && run.workspace_id ? 5 : 3;
-      if (startingPath.path_type === "domain") {
-        const classifications =
-          new DomainCategoryClassificationRepository(client);
-        const candidates = await classifications.unresolvedCandidates(
-          run.analysis_run_id,
-          startingPath.domain_id
-        );
-        if (candidates.length > 0) {
-          const classifier = resolveClassificationModel({
-            ...this.classifier
-          });
-          const domainName = run.request_payload.domain;
-          if (typeof domainName !== "string") {
-            throw new PermanentAnalysisRunError(
-              "CANONICAL_DOMAIN_MISSING",
-              "Analysis run has no canonical domain"
-            );
-          }
-          const classification = await classifications.createOrReuse({
-            analysisRunId: run.analysis_run_id,
-            domainId: startingPath.domain_id,
-            normalizedDomain: domainName,
-            candidates,
-            classifier
-          });
-          if (
-            classification.row.status === "queued" ||
-            classification.row.status === "processing"
-          ) {
-            if (classification.created) {
-              await new OutboxEventWriterRepository(client).createOrReuse({
-                eventKey:
-                  `domain_category_classification.created:${classification.row.domain_category_classification_job_id}`,
-                eventType: "domain_category_classification.created",
-                eventVersion: 1,
-                aggregateType: "domain_category_classification",
-                aggregateId:
-                  classification.row.domain_category_classification_job_id,
-                headers: {
-                  queueName: "domain_category_classification_queue"
-                },
-                payload: {
-                  classificationJobId:
-                    classification.row
-                      .domain_category_classification_job_id
-                }
-              });
-            }
-            await expansion.markProcessing(run.analysis_run_id);
-            return { outcome: "classification_pending", itemCount: 0 };
-          }
-        }
-      }
       const selections =
         startingPath.path_type === "domain"
           ? await expansion.listRequestedCategoryChildren(
@@ -142,46 +74,18 @@ export class AnalysisRunExpansionService {
             )
           : await selectChildren(expansion, startingPath, breadth);
       if (selections.length === 0) {
-        const classificationStatus =
-          startingPath.path_type === "domain"
-            ? await expansion.latestClassificationStatus(run.analysis_run_id)
-            : null;
-        if (
-          classificationStatus === "invalid" ||
-          classificationStatus === "failed"
-        ) {
-          await expansion.markClassificationFailed(run.analysis_run_id);
-          await new ReportOutcomeService(
-            new ReportRepository(client)
-          ).createFailedEmpty({
-            analysisRunId: run.analysis_run_id,
-            errorCode: "CLASSIFICATION_EVIDENCE_UNAVAILABLE",
-            summary:
-              "No valid domain category classification evidence was available."
-          });
-          return { outcome: "empty", itemCount: 0 };
-        }
         await expansion.markNoExpansionChildren(
           run.analysis_run_id,
           `No active ${nextHierarchyLevel(startingPath.path_type)} relationships exist for the starting path`
         );
-        const noMatchingCategory =
-          startingPath.path_type === "domain" &&
-          classificationStatus === "completed_empty";
         await new ReportOutcomeService(
           new ReportRepository(client)
         ).createCompletedEmpty({
           analysisRunId: run.analysis_run_id,
           startingEntityPathId: run.starting_entity_path_id,
-          reason: noMatchingCategory
-            ? "no_matching_category"
-            : "no_applicable_analysis_item",
-          summary: noMatchingCategory
-            ? "The classifier found no matching category in the frozen candidate set."
-            : "No eligible analysis targets were configured for this path.",
-          nextAction: noMatchingCategory
-            ? "Submit a different active category selection if broader classification is required."
-            : "Configure an active child relationship for the selected hierarchy path."
+          reason: "no_applicable_analysis_item",
+          summary: "No eligible analysis targets were configured for this path.",
+          nextAction: "Run hierarchy discovery or configure an active child relationship for the selected hierarchy path."
         });
         return { outcome: "empty", itemCount: 0 };
       }

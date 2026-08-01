@@ -22,7 +22,7 @@ export type ProviderResultScoringState = {
   provider_job_status: string;
   prompt_job_status: string | null;
   prompt_type: PromptType | null;
-  job_kind: "normal_prompt" | "domain_category_classification";
+  job_kind: "normal_prompt" | "hierarchy_discovery";
   provider_score_id: string | null;
 };
 
@@ -36,10 +36,7 @@ export class ProviderScoreRepository {
           result.provider_result_id,
           result.provider_job_id,
           prompt.prompt_job_id,
-          COALESCE(
-            item.analysis_run_id,
-            classification.analysis_run_id
-          ) AS analysis_run_id,
+          item.analysis_run_id,
           result.status AS result_status,
           result.context_validation_status,
           result.validated_response,
@@ -59,9 +56,6 @@ export class ProviderScoreRepository {
           ON llm.llm_run_id = prompt.llm_run_id
         LEFT JOIN analysis_run_items AS item
           ON item.analysis_run_item_id = llm.analysis_run_item_id
-        LEFT JOIN domain_category_classification_jobs AS classification
-          ON classification.domain_category_classification_job_id =
-             job.classification_job_id
         LEFT JOIN provider_scores AS score
           ON score.provider_result_id = result.provider_result_id
          AND score.scoring_version = $2

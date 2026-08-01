@@ -18,10 +18,12 @@ export type ProviderExecutionState = ProviderJobRow & {
   business_prompt_version: string | null;
   prompt_input_payload: JsonObject | null;
   response_contract_version: string;
-  classification_status: string | null;
-  classification_input_payload: JsonObject | null;
-  analysis_run_id: string;
-  analysis_run_status: string;
+  discovery_status: string | null;
+  discovery_stage: "category" | "brand" | "product" | "use_context" | null;
+  discovery_input_payload: JsonObject | null;
+  pre_analysis_request_id: string | null;
+  analysis_run_id: string | null;
+  analysis_run_status: string | null;
   anonymous_session_id: string | null;
   user_id: string | null;
   workspace_id: string | null;
@@ -31,7 +33,7 @@ export class ProviderExecutionRepository extends MockProviderRepository {
   async lockAnalysisRunForProviderJob(providerJobId: string) {
     await this.database.query(
       `SELECT pg_advisory_xact_lock(
-         COALESCE(item.analysis_run_id, classification.analysis_run_id)
+         COALESCE(item.analysis_run_id, -discovery.hierarchy_discovery_job_id)
        )
        FROM provider_jobs AS job
        LEFT JOIN prompt_jobs AS prompt
@@ -39,9 +41,8 @@ export class ProviderExecutionRepository extends MockProviderRepository {
        LEFT JOIN llm_runs AS llm ON llm.llm_run_id = prompt.llm_run_id
        LEFT JOIN analysis_run_items AS item
          ON item.analysis_run_item_id = llm.analysis_run_item_id
-       LEFT JOIN domain_category_classification_jobs AS classification
-         ON classification.domain_category_classification_job_id =
-            job.classification_job_id
+       LEFT JOIN hierarchy_discovery_jobs AS discovery
+         ON discovery.hierarchy_discovery_job_id = job.discovery_job_id
        WHERE job.provider_job_id = $1`,
       [providerJobId]
     );
@@ -53,33 +54,34 @@ export class ProviderExecutionRepository extends MockProviderRepository {
         SELECT
           job.*,
           prompt.status AS prompt_status,
-          COALESCE(prompt.prompt_text, classification.rendered_prompt)
+          COALESCE(prompt.prompt_text, discovery.rendered_prompt)
             AS prompt_text,
           prompt.prompt_type,
           prompt.prompt_depth,
           prompt.business_prompt_version,
           prompt.input_payload AS prompt_input_payload,
-          classification.status AS classification_status,
-          classification.input_payload AS classification_input_payload,
+          discovery.status AS discovery_status,
+          discovery.stage AS discovery_stage,
+          discovery.input_payload AS discovery_input_payload,
+          request.pre_analysis_request_id,
           run.analysis_run_id,
           run.status AS analysis_run_status,
-          run.anonymous_session_id,
-          run.user_id,
-          run.workspace_id
+          COALESCE(run.anonymous_session_id,request.anonymous_session_id) AS anonymous_session_id,
+          COALESCE(run.user_id,request.user_id) AS user_id,
+          COALESCE(run.workspace_id,request.workspace_id) AS workspace_id
         FROM provider_jobs AS job
         LEFT JOIN prompt_jobs AS prompt
           ON prompt.prompt_job_id = job.prompt_job_id
         LEFT JOIN llm_runs AS llm ON llm.llm_run_id = prompt.llm_run_id
         LEFT JOIN analysis_run_items AS item
           ON item.analysis_run_item_id = llm.analysis_run_item_id
-        LEFT JOIN domain_category_classification_jobs AS classification
-          ON classification.domain_category_classification_job_id =
-             job.classification_job_id
-        JOIN analysis_runs AS run
-          ON run.analysis_run_id =
-             COALESCE(item.analysis_run_id, classification.analysis_run_id)
+        LEFT JOIN hierarchy_discovery_jobs AS discovery
+          ON discovery.hierarchy_discovery_job_id = job.discovery_job_id
+        LEFT JOIN pre_analysis_requests AS request
+          ON request.pre_analysis_request_id=discovery.pre_analysis_request_id
+        LEFT JOIN analysis_runs AS run ON run.analysis_run_id=item.analysis_run_id
         WHERE job.provider_job_id = $1
-        FOR UPDATE OF job, run
+        FOR UPDATE OF job
       `,
       [providerJobId]
     );

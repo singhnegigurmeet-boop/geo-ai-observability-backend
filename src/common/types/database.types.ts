@@ -13,17 +13,23 @@ export type EntityPathType = "domain" | "category" | "brand" | "product" | "use_
 export type AnalysisRunSource = "manual" | "scheduled";
 export type CategorySelectionMode = "all" | "selected";
 export type PromptDepth = "weak" | "medium" | "high";
-export type ClassificationJobStatus =
+export type HierarchyDiscoveryJobStatus =
   | "queued"
   | "processing"
   | "completed"
   | "completed_empty"
   | "invalid"
   | "failed"
+  | "paused_budget"
   | "cancelled";
 export type ProviderJobKind =
   | "normal_prompt"
-  | "domain_category_classification";
+  | "hierarchy_discovery";
+export type HierarchyDiscoveryStage = "category" | "brand" | "product" | "use_context";
+export type PreAnalysisRequestStatus =
+  | "accepted" | "checking_hierarchy" | "discovering" | "planning"
+  | "analysis_created" | "completed_without_analysis" | "failed"
+  | "paused_budget" | "cancelled";
 export type ContextValidationStatus =
   | "valid"
   | "invalid"
@@ -187,11 +193,12 @@ export type DomainCategoryRow = {
   category_id: DbId;
   is_active: boolean;
   sort_order: number | null;
-  source: "manual" | "import" | "llm_classification";
-  classification_provider_result_id: DbId | null;
-  classification_rank: number | null;
-  classification_confidence: NumericString | null;
-  classified_at: Date | null;
+  source: "manual" | "import" | "llm_discovery";
+  discovery_provider_result_id: DbId | null;
+  discovery_rank: number | null;
+  discovery_confidence: NumericString | null;
+  discovery_reason: string | null;
+  discovered_at: Date | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -261,6 +268,7 @@ export type AnalysisRunRow = {
   completed_at: Date | null;
   created_at: Date;
   updated_at: Date;
+  pre_analysis_request_id: DbId | null;
 };
 
 export type AnalysisRunProviderModelRow = {
@@ -275,22 +283,59 @@ export type AnalysisRunProviderModelRow = {
 
 export type AnalysisRunRequestedCategoryRow = {
   analysis_run_requested_category_id: DbId;
-  analysis_run_id: DbId;
+  analysis_run_id: DbId | null;
+  pre_analysis_request_id: DbId | null;
   category_id: DbId;
   ordinal: number;
   created_at: Date;
 };
 
-export type DomainCategoryClassificationJobRow = {
-  domain_category_classification_job_id: DbId;
+export type PreAnalysisRequestRow = {
+  pre_analysis_request_id: DbId;
   idempotency_key: string;
-  analysis_run_id: DbId;
+  anonymous_session_id: DbId | null;
+  user_id: DbId | null;
+  workspace_id: DbId | null;
   domain_id: DbId;
+  starting_entity_path_id: DbId;
+  category_selection_mode: CategorySelectionMode;
+  prompt_depth: PromptDepth;
+  source: AnalysisRunSource;
+  status: PreAnalysisRequestStatus;
+  request_payload: JsonObject;
+  canonical_request_hash: string;
+  discovery_compatibility_hash: string;
+  reused_from_pre_analysis_request_id: DbId | null;
+  analysis_run_id: DbId | null;
+  discovery_status: string | null;
+  discovery_coverage: JsonObject;
+  error_code: string | null;
+  error_message: string | null;
+  started_at: Date | null;
+  completed_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type HierarchyDiscoveryJobRow = {
+  hierarchy_discovery_job_id: DbId;
+  idempotency_key: string;
+  pre_analysis_request_id: DbId;
+  domain_id: DbId;
+  stage: HierarchyDiscoveryStage;
+  domain_category_id: DbId | null;
+  category_brand_id: DbId | null;
+  brand_product_id: DbId | null;
+  branch_key: string;
   candidate_set_hash: string;
-  status: ClassificationJobStatus;
-  classifier_provider: ProviderName;
-  classifier_model: string;
+  status: HierarchyDiscoveryJobStatus;
+  primary_provider: ProviderName;
+  primary_model: string;
+  fallback_provider: ProviderName | null;
+  fallback_model: string | null;
+  fallback_attempted: boolean;
   model_profile_version: string;
+  discovery_policy_version: string;
   prompt_version: string;
   response_contract_version: string;
   provider_instruction_profile: string;
@@ -362,7 +407,8 @@ export type ProviderJobRow = {
   idempotency_key: string;
   job_kind: ProviderJobKind;
   prompt_job_id: DbId | null;
-  classification_job_id: DbId | null;
+  discovery_job_id: DbId | null;
+  discovery_attempt: number;
   provider: ProviderName;
   model: string;
   response_contract_version: string;
@@ -541,6 +587,7 @@ export type SchedulerJobRow = {
   next_run_at: Date;
   last_enqueued_at: Date | null;
   last_analysis_run_id: DbId | null;
+  last_pre_analysis_request_id: DbId | null;
   created_at: Date;
   updated_at: Date;
 };

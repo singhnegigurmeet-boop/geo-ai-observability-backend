@@ -9,7 +9,7 @@ import type { UsageEstimate } from "../types/budget.types.js";
 
 type ExecutablePromptType =
   | PromptType
-  | "domain_category_classification";
+  | `hierarchy_discovery_${"category" | "brand" | "product" | "use_context"}`;
 
 export class TokenEstimatorService {
   estimate(input: {

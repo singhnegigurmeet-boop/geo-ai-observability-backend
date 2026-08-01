@@ -592,25 +592,6 @@ describe(
       });
       assert.equal(await runStatus(pool, failed.analysisRunId), "cancelled");
 
-      const emptyRunId = await seedNoMatchingCategoryRun(pool);
-      await pool.query(
-        `UPDATE analysis_runs
-         SET status = 'processing', completed_at = NULL
-         WHERE analysis_run_id = $1`,
-        [emptyRunId]
-      );
-      await new FailureRecordRepository(pool).createAndTerminalize({
-        queueName: "analysis_run_queue",
-        messageId: `analysis-run-empty-delayed:${emptyRunId}`,
-        aggregateType: "analysis_run",
-        aggregateId: emptyRunId,
-        attemptNumber: 3,
-        errorCode: "DELAYED_FAILURE",
-        errorMessage: "delayed failure"
-      });
-      const emptyReport = await terminalizationReport(pool, emptyRunId);
-      assert.equal(emptyReport.runStatus, "completed");
-      assert.equal(emptyReport.lifecycleState, "completed_empty");
     });
 
     it("retains exact missing-before-fan-out coverage after prompt exhaustion", async () => {
@@ -794,14 +775,6 @@ describe(
       assert.equal(report.lifecycleState, "failed_empty");
     });
 
-    it("preserves no_matching_category as completed_empty with zero expected work", async () => {
-      const analysisRunId = await seedNoMatchingCategoryRun(pool);
-      const outcome = await aggregateExactCoverage(pool, analysisRunId);
-      assert.equal(outcome.lifecycleState, "completed_empty");
-      const report = await exactCoverageReport(pool, analysisRunId);
-      assert.equal(report.coverage.expectedProviderJobs, 0);
-      assert.equal(report.lifecycleState, "completed_empty");
-    });
   }
 );
 
@@ -1402,67 +1375,6 @@ async function seedExactCoverageRun(
     pathIds,
     categoryIds
   };
-}
-
-async function seedNoMatchingCategoryRun(pool: pg.Pool) {
-  const unique = crypto.randomUUID();
-  const sessionId = (
-    await pool.query<{ id: string }>(
-      `INSERT INTO anonymous_sessions (token_hash, expires_at)
-       VALUES ($1, now() + interval '1 day')
-       RETURNING anonymous_session_id AS id`,
-      [`empty-token:${unique}`]
-    )
-  ).rows[0]!.id;
-  const domainId = (
-    await pool.query<{ id: string }>(
-      `INSERT INTO domains (normalized_domain)
-       VALUES ($1) RETURNING domain_id AS id`,
-      [`empty-${unique}.example`]
-    )
-  ).rows[0]!.id;
-  const pathId = (
-    await pool.query<{ id: string }>(
-      `INSERT INTO entity_paths (domain_id, path_type)
-       VALUES ($1, 'domain') RETURNING entity_path_id AS id`,
-      [domainId]
-    )
-  ).rows[0]!.id;
-  const analysisRunId = (
-    await pool.query<{ id: string }>(
-      `INSERT INTO analysis_runs (
-         idempotency_key, anonymous_session_id, starting_entity_path_id,
-         category_selection_mode, prompt_depth, prompt_policy_version,
-         status, request_payload, started_at, completed_at
-       ) VALUES (
-         $1, $2, $3, 'all', 'weak', 'geo-prompt-policy-v1',
-         'completed', '{}'::jsonb, now(), now()
-       ) RETURNING analysis_run_id AS id`,
-      [`empty-run:${unique}`, sessionId, pathId]
-    )
-  ).rows[0]!.id;
-  await pool.query(
-    `INSERT INTO domain_category_classification_jobs (
-       idempotency_key, analysis_run_id, domain_id, candidate_set_hash,
-       status, classifier_provider, classifier_model, model_profile_version,
-       prompt_version, response_contract_version,
-       provider_instruction_profile, structured_output_mode, input_payload,
-       rendered_prompt, candidate_count, started_at, completed_at
-     ) VALUES (
-       $1, $2, $3, $4, 'completed_empty', 'mock', 'mock-fast',
-       'mock-profile-v1', 'classification-v1',
-       'classification-response-v1', 'mock-json-schema-v1',
-       'json_schema', '{}'::jsonb, 'Rendered classification', 1,
-       now(), now()
-     )`,
-    [
-      `empty-classification:${unique}`,
-      analysisRunId,
-      domainId,
-      "0".repeat(64)
-    ]
-  );
-  return analysisRunId;
 }
 
 async function aggregateExactCoverage(

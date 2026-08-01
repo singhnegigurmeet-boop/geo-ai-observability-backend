@@ -50,17 +50,43 @@ CREATE TYPE public.category_selection_mode AS ENUM (
 
 
 --
--- Name: classification_job_status; Type: TYPE; Schema: public; Owner: -
+-- Name: hierarchy_discovery_job_status; Type: TYPE; Schema: public; Owner: -
 --
 
-CREATE TYPE public.classification_job_status AS ENUM (
+CREATE TYPE public.hierarchy_discovery_job_status AS ENUM (
     'queued',
     'processing',
     'completed',
     'completed_empty',
     'invalid',
     'failed',
+    'paused_budget',
     'cancelled'
+);
+
+CREATE TYPE public.pre_analysis_request_status AS ENUM (
+    'accepted',
+    'checking_hierarchy',
+    'discovering',
+    'planning',
+    'analysis_created',
+    'completed_without_analysis',
+    'failed',
+    'paused_budget',
+    'cancelled'
+);
+
+CREATE TYPE public.hierarchy_discovery_stage AS ENUM (
+    'category',
+    'brand',
+    'product',
+    'use_context'
+);
+
+CREATE TYPE public.hierarchy_discovery_relationship_action AS ENUM (
+    'created',
+    'reactivated',
+    'reused'
 );
 
 
@@ -224,7 +250,7 @@ CREATE TYPE public.prompt_depth AS ENUM (
 
 CREATE TYPE public.provider_job_kind AS ENUM (
     'normal_prompt',
-    'domain_category_classification'
+    'hierarchy_discovery'
 );
 
 
@@ -394,15 +420,15 @@ BEGIN
       RAISE EXCEPTION 'normal provider job requires a rendered nonblank prompt'
         USING ERRCODE = '23514';
     END IF;
-  ELSIF NEW.job_kind = 'domain_category_classification' THEN
+  ELSIF NEW.job_kind = 'hierarchy_discovery' THEN
     IF NOT EXISTS (
       SELECT 1
-      FROM public.domain_category_classification_jobs
-      WHERE domain_category_classification_job_id = NEW.classification_job_id
+      FROM public.hierarchy_discovery_jobs
+      WHERE hierarchy_discovery_job_id = NEW.discovery_job_id
         AND rendered_prompt IS NOT NULL
         AND length(btrim(rendered_prompt)) > 0
     ) THEN
-      RAISE EXCEPTION 'classification provider job requires a rendered nonblank prompt'
+      RAISE EXCEPTION 'discovery provider job requires a rendered nonblank prompt'
         USING ERRCODE = '23514';
     END IF;
   END IF;
@@ -424,7 +450,7 @@ BEGIN
      AND (
        NEW.job_kind IS DISTINCT FROM OLD.job_kind
        OR NEW.prompt_job_id IS DISTINCT FROM OLD.prompt_job_id
-       OR NEW.classification_job_id IS DISTINCT FROM OLD.classification_job_id
+       OR NEW.discovery_job_id IS DISTINCT FROM OLD.discovery_job_id
        OR NEW.provider IS DISTINCT FROM OLD.provider
        OR NEW.model IS DISTINCT FROM OLD.model
        OR NEW.response_contract_version IS DISTINCT FROM OLD.response_contract_version
@@ -442,16 +468,16 @@ END;
 $$;
 
 
-CREATE FUNCTION public.preserve_classification_job_execution_identity() RETURNS trigger
+CREATE FUNCTION public.preserve_hierarchy_discovery_job_execution_identity() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
   IF NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
-     OR NEW.analysis_run_id IS DISTINCT FROM OLD.analysis_run_id
+     OR NEW.pre_analysis_request_id IS DISTINCT FROM OLD.pre_analysis_request_id
      OR NEW.domain_id IS DISTINCT FROM OLD.domain_id
      OR NEW.candidate_set_hash IS DISTINCT FROM OLD.candidate_set_hash
-     OR NEW.classifier_provider IS DISTINCT FROM OLD.classifier_provider
-     OR NEW.classifier_model IS DISTINCT FROM OLD.classifier_model
+     OR NEW.primary_provider IS DISTINCT FROM OLD.primary_provider
+     OR NEW.primary_model IS DISTINCT FROM OLD.primary_model
      OR NEW.model_profile_version IS DISTINCT FROM OLD.model_profile_version
      OR NEW.prompt_version IS DISTINCT FROM OLD.prompt_version
      OR NEW.response_contract_version IS DISTINCT FROM OLD.response_contract_version
@@ -463,7 +489,7 @@ BEGIN
        OLD.rendered_prompt IS NOT NULL
        AND NEW.rendered_prompt IS DISTINCT FROM OLD.rendered_prompt
      ) THEN
-    RAISE EXCEPTION 'classification execution identity is immutable'
+    RAISE EXCEPTION 'hierarchy discovery execution identity is immutable'
       USING ERRCODE = '23514';
   END IF;
   RETURN NEW;
@@ -742,10 +768,12 @@ CREATE TABLE public.analysis_run_provider_models (
 
 CREATE TABLE public.analysis_run_requested_categories (
     analysis_run_requested_category_id bigint NOT NULL,
-    analysis_run_id bigint NOT NULL,
+    analysis_run_id bigint,
+    pre_analysis_request_id bigint,
     category_id bigint NOT NULL,
     ordinal integer NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT analysis_run_requested_categories_owner_check CHECK (((analysis_run_id IS NOT NULL)::integer + (pre_analysis_request_id IS NOT NULL)::integer) = 1),
     CONSTRAINT analysis_run_requested_categories_ordinal_check CHECK ((ordinal >= 0))
 );
 
@@ -797,11 +825,46 @@ CREATE TABLE public.analysis_runs (
     completed_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    pre_analysis_request_id bigint,
     CONSTRAINT analysis_runs_completion_check CHECK ((((status = ANY (ARRAY['completed'::public.analysis_execution_status, 'partial_success'::public.analysis_execution_status, 'failed'::public.analysis_execution_status, 'cancelled'::public.analysis_execution_status])) AND (completed_at IS NOT NULL)) OR ((status <> ALL (ARRAY['completed'::public.analysis_execution_status, 'partial_success'::public.analysis_execution_status, 'failed'::public.analysis_execution_status, 'cancelled'::public.analysis_execution_status])) AND (completed_at IS NULL)))),
     CONSTRAINT analysis_runs_idempotency_not_blank_check CHECK ((length(btrim(idempotency_key)) > 0)),
     CONSTRAINT analysis_runs_ownership_check CHECK ((((anonymous_session_id IS NOT NULL) AND (user_id IS NULL) AND (workspace_id IS NULL)) OR ((user_id IS NOT NULL) AND (workspace_id IS NOT NULL)))),
     CONSTRAINT analysis_runs_prompt_policy_not_blank_check CHECK ((length(btrim(prompt_policy_version)) > 0)),
     CONSTRAINT analysis_runs_request_payload_object_check CHECK ((jsonb_typeof(request_payload) = 'object'::text))
+);
+
+CREATE TABLE public.pre_analysis_requests (
+    pre_analysis_request_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    idempotency_key text NOT NULL UNIQUE,
+    anonymous_session_id bigint,
+    user_id bigint,
+    workspace_id bigint,
+    domain_id bigint NOT NULL,
+    starting_entity_path_id bigint NOT NULL,
+    category_selection_mode public.category_selection_mode NOT NULL,
+    prompt_depth public.prompt_depth NOT NULL,
+    source public.analysis_run_source DEFAULT 'manual' NOT NULL,
+    status public.pre_analysis_request_status DEFAULT 'accepted' NOT NULL,
+    request_payload jsonb NOT NULL,
+    canonical_request_hash character(64) NOT NULL,
+    discovery_compatibility_hash character(64) NOT NULL,
+    reused_from_pre_analysis_request_id bigint,
+    analysis_run_id bigint,
+    discovery_status text,
+    discovery_coverage jsonb DEFAULT '{}'::jsonb NOT NULL,
+    error_code text,
+    error_message text,
+    started_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT pre_analysis_requests_idempotency_not_blank CHECK (length(btrim(idempotency_key)) > 0),
+    CONSTRAINT pre_analysis_requests_hashes_check CHECK (canonical_request_hash ~ '^[0-9a-f]{64}$' AND discovery_compatibility_hash ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT pre_analysis_requests_payload_check CHECK (jsonb_typeof(request_payload) = 'object' AND jsonb_typeof(discovery_coverage) = 'object'),
+    CONSTRAINT pre_analysis_requests_owner_check CHECK (((anonymous_session_id IS NOT NULL) AND (user_id IS NULL) AND (workspace_id IS NULL)) OR ((user_id IS NOT NULL) AND (workspace_id IS NOT NULL))),
+    CONSTRAINT pre_analysis_requests_analysis_link_state_check CHECK ((status = 'analysis_created' AND analysis_run_id IS NOT NULL) OR (status <> 'analysis_created' AND analysis_run_id IS NULL)),
+    CONSTRAINT pre_analysis_requests_completion_check CHECK ((status IN ('analysis_created','completed_without_analysis','failed','cancelled') AND completed_at IS NOT NULL) OR (status NOT IN ('analysis_created','completed_without_analysis','failed','cancelled') AND completed_at IS NULL)),
+    CONSTRAINT pre_analysis_requests_analysis_run_unique UNIQUE (analysis_run_id)
 );
 
 
@@ -1030,30 +1093,40 @@ CREATE TABLE public.domain_categories (
     is_active boolean DEFAULT true NOT NULL,
     sort_order integer,
     source text DEFAULT 'manual'::text NOT NULL,
-    classification_provider_result_id bigint,
-    classification_rank integer,
-    classification_confidence numeric(5,4),
-    classified_at timestamp with time zone,
+    discovery_provider_result_id bigint,
+    discovery_rank integer,
+    discovery_confidence numeric(5,4),
+    discovery_reason text,
+    discovered_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT domain_categories_classification_provenance_check CHECK ((((source = ANY (ARRAY['manual'::text, 'import'::text])) AND (classification_provider_result_id IS NULL) AND (classification_rank IS NULL) AND (classification_confidence IS NULL) AND (classified_at IS NULL)) OR ((source = 'llm_classification'::text) AND (classification_provider_result_id IS NOT NULL) AND (classification_rank IS NOT NULL) AND (classification_rank > 0) AND (classification_confidence IS NOT NULL) AND (classification_confidence >= (0)::numeric) AND (classification_confidence <= (1)::numeric) AND (classified_at IS NOT NULL)))),
-    CONSTRAINT domain_categories_source_check CHECK ((source = ANY (ARRAY['manual'::text, 'import'::text, 'llm_classification'::text])))
+    CONSTRAINT domain_categories_discovery_provenance_check CHECK ((((source = ANY (ARRAY['manual'::text, 'import'::text])) AND (discovery_provider_result_id IS NULL) AND (discovery_rank IS NULL) AND (discovery_confidence IS NULL) AND (discovery_reason IS NULL) AND (discovered_at IS NULL)) OR ((source = 'llm_discovery'::text) AND (discovery_provider_result_id IS NOT NULL) AND (discovery_rank IS NOT NULL) AND (discovery_rank > 0) AND (discovery_confidence IS NOT NULL) AND (discovery_confidence >= (0)::numeric) AND (discovery_confidence <= (1)::numeric) AND (discovery_reason IS NOT NULL) AND (discovered_at IS NOT NULL)))),
+    CONSTRAINT domain_categories_source_check CHECK ((source = ANY (ARRAY['manual'::text, 'import'::text, 'llm_discovery'::text])))
 );
 
 --
--- Name: domain_category_classification_jobs; Type: TABLE; Schema: public; Owner: -
+-- Name: hierarchy_discovery_jobs; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.domain_category_classification_jobs (
-    domain_category_classification_job_id bigint NOT NULL,
+CREATE TABLE public.hierarchy_discovery_jobs (
+    hierarchy_discovery_job_id bigint NOT NULL,
     idempotency_key text NOT NULL,
-    analysis_run_id bigint NOT NULL,
+    pre_analysis_request_id bigint NOT NULL,
     domain_id bigint NOT NULL,
+    stage public.hierarchy_discovery_stage NOT NULL,
+    domain_category_id bigint,
+    category_brand_id bigint,
+    brand_product_id bigint,
+    branch_key character(64) NOT NULL,
     candidate_set_hash character(64) NOT NULL,
-    status public.classification_job_status DEFAULT 'queued'::public.classification_job_status NOT NULL,
-    classifier_provider public.provider_name NOT NULL,
-    classifier_model text NOT NULL,
+    status public.hierarchy_discovery_job_status DEFAULT 'queued'::public.hierarchy_discovery_job_status NOT NULL,
+    primary_provider public.provider_name NOT NULL,
+    primary_model text NOT NULL,
+    fallback_provider public.provider_name,
+    fallback_model text,
+    fallback_attempted boolean DEFAULT false NOT NULL,
     model_profile_version text NOT NULL,
+    discovery_policy_version text NOT NULL,
     prompt_version text NOT NULL,
     response_contract_version text NOT NULL,
     provider_instruction_profile text NOT NULL,
@@ -1067,22 +1140,43 @@ CREATE TABLE public.domain_category_classification_jobs (
     completed_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT classification_jobs_candidate_count_check CHECK ((candidate_count > 0)),
-    CONSTRAINT classification_jobs_completion_check CHECK ((((status = ANY (ARRAY['completed'::public.classification_job_status, 'completed_empty'::public.classification_job_status, 'invalid'::public.classification_job_status, 'failed'::public.classification_job_status, 'cancelled'::public.classification_job_status])) AND (completed_at IS NOT NULL)) OR ((status = ANY (ARRAY['queued'::public.classification_job_status, 'processing'::public.classification_job_status])) AND (completed_at IS NULL)))),
-    CONSTRAINT classification_jobs_hash_check CHECK ((candidate_set_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT classification_jobs_input_object_check CHECK ((jsonb_typeof(input_payload) = 'object'::text)),
-    CONSTRAINT classification_jobs_nonblank_check CHECK (((length(btrim(idempotency_key)) > 0) AND (length(btrim(classifier_model)) > 0) AND (length(btrim(model_profile_version)) > 0) AND (length(btrim(prompt_version)) > 0) AND (length(btrim(response_contract_version)) > 0) AND (length(btrim(provider_instruction_profile)) > 0) AND (length(btrim(structured_output_mode)) > 0))),
-    CONSTRAINT classification_jobs_rendered_state_check CHECK ((((status = 'queued'::public.classification_job_status) AND (rendered_prompt IS NULL)) OR ((status = ANY (ARRAY['failed'::public.classification_job_status, 'cancelled'::public.classification_job_status])) AND ((rendered_prompt IS NULL) OR (length(btrim(rendered_prompt)) > 0))) OR ((status = ANY (ARRAY['processing'::public.classification_job_status, 'completed'::public.classification_job_status, 'completed_empty'::public.classification_job_status, 'invalid'::public.classification_job_status])) AND (rendered_prompt IS NOT NULL) AND (length(btrim(rendered_prompt)) > 0))))
+    CONSTRAINT hierarchy_discovery_jobs_candidate_count_check CHECK (candidate_count >= 0),
+    CONSTRAINT hierarchy_discovery_jobs_completion_check CHECK ((status IN ('completed','completed_empty','invalid','failed','cancelled') AND completed_at IS NOT NULL) OR (status IN ('queued','processing','paused_budget') AND completed_at IS NULL)),
+    CONSTRAINT hierarchy_discovery_jobs_hash_check CHECK (candidate_set_hash ~ '^[0-9a-f]{64}$' AND branch_key ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT hierarchy_discovery_jobs_input_object_check CHECK (jsonb_typeof(input_payload) = 'object'),
+    CONSTRAINT hierarchy_discovery_jobs_nonblank_check CHECK (length(btrim(idempotency_key)) > 0 AND length(btrim(primary_model)) > 0 AND length(btrim(model_profile_version)) > 0 AND length(btrim(discovery_policy_version)) > 0 AND length(btrim(prompt_version)) > 0 AND length(btrim(response_contract_version)) > 0 AND length(btrim(provider_instruction_profile)) > 0 AND length(btrim(structured_output_mode)) > 0),
+    CONSTRAINT hierarchy_discovery_jobs_fallback_check CHECK ((fallback_provider IS NULL) = (fallback_model IS NULL)),
+    CONSTRAINT hierarchy_discovery_jobs_parent_check CHECK ((stage = 'category' AND domain_category_id IS NULL AND category_brand_id IS NULL AND brand_product_id IS NULL) OR (stage = 'brand' AND domain_category_id IS NOT NULL AND category_brand_id IS NULL AND brand_product_id IS NULL) OR (stage = 'product' AND domain_category_id IS NOT NULL AND category_brand_id IS NOT NULL AND brand_product_id IS NULL) OR (stage = 'use_context' AND domain_category_id IS NOT NULL AND category_brand_id IS NOT NULL AND brand_product_id IS NOT NULL)),
+    CONSTRAINT hierarchy_discovery_jobs_rendered_state_check CHECK ((status = 'queued' AND rendered_prompt IS NULL) OR (status IN ('failed','cancelled','paused_budget') AND (rendered_prompt IS NULL OR length(btrim(rendered_prompt)) > 0)) OR (status IN ('processing','completed','completed_empty','invalid') AND rendered_prompt IS NOT NULL AND length(btrim(rendered_prompt)) > 0))
 );
 
 
-ALTER TABLE public.domain_category_classification_jobs ALTER COLUMN domain_category_classification_job_id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.domain_category_classification_jobs_domain_category_classification_job_id_seq
+ALTER TABLE public.hierarchy_discovery_jobs ALTER COLUMN hierarchy_discovery_job_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.hierarchy_discovery_jobs_hierarchy_discovery_job_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
     NO MAXVALUE
     CACHE 1
+);
+
+CREATE TABLE public.hierarchy_discovery_relationships (
+    hierarchy_discovery_relationship_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    hierarchy_discovery_job_id bigint NOT NULL,
+    domain_category_id bigint,
+    category_brand_id bigint,
+    brand_product_id bigint,
+    product_use_context_id bigint,
+    provider_result_id bigint,
+    action public.hierarchy_discovery_relationship_action NOT NULL,
+    rank integer NOT NULL,
+    confidence numeric(5,4),
+    reason text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT hierarchy_discovery_relationships_edge_check CHECK (((domain_category_id IS NOT NULL)::integer + (category_brand_id IS NOT NULL)::integer + (brand_product_id IS NOT NULL)::integer + (product_use_context_id IS NOT NULL)::integer) = 1),
+    CONSTRAINT hierarchy_discovery_relationships_rank_check CHECK (rank > 0),
+    CONSTRAINT hierarchy_discovery_relationships_confidence_check CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+    CONSTRAINT hierarchy_discovery_relationships_job_edge_unique UNIQUE NULLS NOT DISTINCT (hierarchy_discovery_job_id, domain_category_id, category_brand_id, brand_product_id, product_use_context_id)
 );
 
 
@@ -1452,7 +1546,8 @@ CREATE TABLE public.provider_jobs (
     idempotency_key text NOT NULL,
     job_kind public.provider_job_kind NOT NULL,
     prompt_job_id bigint,
-    classification_job_id bigint,
+    discovery_job_id bigint,
+    discovery_attempt smallint DEFAULT 0 NOT NULL,
     provider public.provider_name NOT NULL,
     model text NOT NULL,
     response_contract_version text NOT NULL,
@@ -1472,9 +1567,10 @@ CREATE TABLE public.provider_jobs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT provider_jobs_attempts_check CHECK (((attempt_count >= 0) AND (max_attempts = 3) AND (attempt_count <= max_attempts))),
+    CONSTRAINT provider_jobs_discovery_attempt_check CHECK (((job_kind = 'normal_prompt' AND discovery_attempt = 0) OR (job_kind = 'hierarchy_discovery' AND discovery_attempt IN (0, 1)))),
     CONSTRAINT provider_jobs_idempotency_not_blank_check CHECK ((length(btrim(idempotency_key)) > 0)),
     CONSTRAINT provider_jobs_identity_not_blank_check CHECK (((length(btrim(response_contract_version)) > 0) AND (length(btrim(provider_instruction_profile)) > 0) AND (length(btrim(model_profile_version)) > 0) AND (length(btrim(structured_output_mode)) > 0))),
-    CONSTRAINT provider_jobs_kind_parent_check CHECK ((((job_kind = 'normal_prompt'::public.provider_job_kind) AND (prompt_job_id IS NOT NULL) AND (classification_job_id IS NULL)) OR ((job_kind = 'domain_category_classification'::public.provider_job_kind) AND (prompt_job_id IS NULL) AND (classification_job_id IS NOT NULL)))),
+    CONSTRAINT provider_jobs_kind_parent_check CHECK ((((job_kind = 'normal_prompt'::public.provider_job_kind) AND (prompt_job_id IS NOT NULL) AND (discovery_job_id IS NULL)) OR ((job_kind = 'hierarchy_discovery'::public.provider_job_kind) AND (prompt_job_id IS NULL) AND (discovery_job_id IS NOT NULL)))),
     CONSTRAINT provider_jobs_model_not_blank_check CHECK ((length(btrim(model)) > 0)),
     CONSTRAINT provider_jobs_request_hash_check CHECK (((request_hash IS NULL) OR (request_hash ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT provider_jobs_request_payload_object_check CHECK ((jsonb_typeof(request_payload) = 'object'::text))
@@ -1635,6 +1731,7 @@ CREATE TABLE public.scheduler_jobs (
     next_run_at timestamp with time zone NOT NULL,
     last_enqueued_at timestamp with time zone,
     last_analysis_run_id bigint,
+    last_pre_analysis_request_id bigint,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT scheduler_jobs_expression_not_blank_check CHECK ((length(btrim(schedule_expression)) > 0)),
@@ -1993,6 +2090,9 @@ ALTER TABLE ONLY public.analysis_runs
 ALTER TABLE ONLY public.analysis_runs
     ADD CONSTRAINT analysis_runs_pkey PRIMARY KEY (analysis_run_id);
 
+ALTER TABLE ONLY public.analysis_runs
+    ADD CONSTRAINT analysis_runs_pre_analysis_request_unique UNIQUE (pre_analysis_request_id);
+
 
 --
 -- Name: anonymous_sessions anonymous_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -2107,27 +2207,27 @@ ALTER TABLE ONLY public.domain_categories
 
 
 --
--- Name: domain_category_classification_jobs domain_category_classification_jobs_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: hierarchy_discovery_jobs hierarchy_discovery_jobs_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.domain_category_classification_jobs
-    ADD CONSTRAINT domain_category_classification_jobs_idempotency_key_key UNIQUE (idempotency_key);
-
-
---
--- Name: domain_category_classification_jobs domain_category_classification_jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.domain_category_classification_jobs
-    ADD CONSTRAINT domain_category_classification_jobs_pkey PRIMARY KEY (domain_category_classification_job_id);
+ALTER TABLE ONLY public.hierarchy_discovery_jobs
+    ADD CONSTRAINT hierarchy_discovery_jobs_idempotency_key_key UNIQUE (idempotency_key);
 
 
 --
--- Name: domain_category_classification_jobs domain_category_classification_jobs_run_hash_unique; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: hierarchy_discovery_jobs hierarchy_discovery_jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.domain_category_classification_jobs
-    ADD CONSTRAINT domain_category_classification_jobs_run_hash_unique UNIQUE (analysis_run_id, candidate_set_hash);
+ALTER TABLE ONLY public.hierarchy_discovery_jobs
+    ADD CONSTRAINT hierarchy_discovery_jobs_pkey PRIMARY KEY (hierarchy_discovery_job_id);
+
+
+--
+-- Name: hierarchy_discovery_jobs hierarchy_discovery_jobs_request_branch_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hierarchy_discovery_jobs
+    ADD CONSTRAINT hierarchy_discovery_jobs_request_branch_unique UNIQUE (pre_analysis_request_id, branch_key);
 
 
 --
@@ -2662,10 +2762,13 @@ CREATE INDEX domain_categories_category_idx ON public.domain_categories USING bt
 CREATE INDEX domain_categories_selection_idx ON public.domain_categories USING btree (domain_id, is_active, sort_order, created_at, domain_category_id);
 
 
-CREATE INDEX domain_category_classification_jobs_dispatch_idx ON public.domain_category_classification_jobs USING btree (status, created_at, domain_category_classification_job_id) WHERE (status = ANY (ARRAY['queued'::public.classification_job_status, 'processing'::public.classification_job_status]));
+CREATE INDEX hierarchy_discovery_jobs_dispatch_idx ON public.hierarchy_discovery_jobs USING btree (status, created_at, hierarchy_discovery_job_id) WHERE (status IN ('queued','processing'));
 
 
-CREATE INDEX domain_category_classification_jobs_run_idx ON public.domain_category_classification_jobs USING btree (analysis_run_id, created_at);
+CREATE INDEX hierarchy_discovery_jobs_request_idx ON public.hierarchy_discovery_jobs USING btree (pre_analysis_request_id, stage, created_at);
+
+CREATE INDEX pre_analysis_requests_status_idx ON public.pre_analysis_requests USING btree (status, updated_at);
+CREATE INDEX pre_analysis_requests_compatibility_idx ON public.pre_analysis_requests USING btree (domain_id, discovery_compatibility_hash, completed_at DESC) WHERE status = 'analysis_created';
 
 
 --
@@ -2806,13 +2909,13 @@ CREATE INDEX provider_jobs_dispatch_idx ON public.provider_jobs USING btree (pro
 CREATE INDEX provider_jobs_prompt_idx ON public.provider_jobs USING btree (prompt_job_id, provider);
 
 
-CREATE INDEX provider_jobs_classification_idx ON public.provider_jobs USING btree (classification_job_id, provider) WHERE (classification_job_id IS NOT NULL);
+CREATE INDEX provider_jobs_discovery_idx ON public.provider_jobs USING btree (discovery_job_id, provider) WHERE (discovery_job_id IS NOT NULL);
 
 
 CREATE UNIQUE INDEX provider_jobs_normal_prompt_unique_idx ON public.provider_jobs USING btree (prompt_job_id, provider, model) WHERE (job_kind = 'normal_prompt'::public.provider_job_kind);
 
 
-CREATE UNIQUE INDEX provider_jobs_classification_unique_idx ON public.provider_jobs USING btree (classification_job_id) WHERE (job_kind = 'domain_category_classification'::public.provider_job_kind);
+CREATE UNIQUE INDEX provider_jobs_discovery_unique_idx ON public.provider_jobs USING btree (discovery_job_id, discovery_attempt) WHERE (job_kind = 'hierarchy_discovery'::public.provider_job_kind);
 
 
 --
@@ -2919,7 +3022,7 @@ CREATE TRIGGER analysis_run_provider_models_immutable_trigger BEFORE DELETE OR U
 CREATE TRIGGER analysis_run_requested_categories_immutable_trigger BEFORE DELETE OR UPDATE ON public.analysis_run_requested_categories FOR EACH ROW EXECUTE FUNCTION public.reject_immutable_evidence_mutation();
 
 
-CREATE TRIGGER domain_category_classification_jobs_identity_trigger BEFORE UPDATE ON public.domain_category_classification_jobs FOR EACH ROW EXECUTE FUNCTION public.preserve_classification_job_execution_identity();
+CREATE TRIGGER hierarchy_discovery_jobs_identity_trigger BEFORE UPDATE ON public.hierarchy_discovery_jobs FOR EACH ROW EXECUTE FUNCTION public.preserve_hierarchy_discovery_job_execution_identity();
 
 
 --
@@ -2968,7 +3071,7 @@ CREATE TRIGGER failure_records_notify_terminal_trigger AFTER INSERT ON public.fa
 -- Name: provider_jobs provider_jobs_require_rendered_prompt_trigger; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER provider_jobs_require_rendered_prompt_trigger BEFORE INSERT OR UPDATE OF job_kind, prompt_job_id, classification_job_id ON public.provider_jobs FOR EACH ROW EXECUTE FUNCTION public.enforce_provider_job_rendered_prompt();
+CREATE TRIGGER provider_jobs_require_rendered_prompt_trigger BEFORE INSERT OR UPDATE OF job_kind, prompt_job_id, discovery_job_id ON public.provider_jobs FOR EACH ROW EXECUTE FUNCTION public.enforce_provider_job_rendered_prompt();
 
 
 CREATE TRIGGER provider_jobs_preserve_execution_identity_trigger BEFORE UPDATE ON public.provider_jobs FOR EACH ROW EXECUTE FUNCTION public.preserve_provider_job_execution_identity();
@@ -3045,6 +3148,12 @@ ALTER TABLE ONLY public.analysis_run_requested_categories
 ALTER TABLE ONLY public.analysis_run_requested_categories
     ADD CONSTRAINT analysis_run_requested_categories_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.categories(category_id) ON DELETE RESTRICT;
 
+ALTER TABLE ONLY public.analysis_run_requested_categories
+    ADD CONSTRAINT analysis_run_requested_categories_pre_analysis_request_id_fkey FOREIGN KEY (pre_analysis_request_id) REFERENCES public.pre_analysis_requests(pre_analysis_request_id) ON DELETE RESTRICT;
+
+CREATE UNIQUE INDEX analysis_run_requested_categories_request_category_unique ON public.analysis_run_requested_categories (pre_analysis_request_id, category_id) WHERE pre_analysis_request_id IS NOT NULL;
+CREATE UNIQUE INDEX analysis_run_requested_categories_request_ordinal_unique ON public.analysis_run_requested_categories (pre_analysis_request_id, ordinal) WHERE pre_analysis_request_id IS NOT NULL;
+
 
 --
 -- Name: analysis_runs analysis_runs_anonymous_session_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -3084,6 +3193,26 @@ ALTER TABLE ONLY public.analysis_runs
 
 ALTER TABLE ONLY public.analysis_runs
     ADD CONSTRAINT analysis_runs_workspace_membership_fk FOREIGN KEY (workspace_id, user_id) REFERENCES public.workspace_members(workspace_id, user_id) MATCH FULL ON DELETE RESTRICT;
+
+ALTER TABLE ONLY public.analysis_runs
+    ADD CONSTRAINT analysis_runs_pre_analysis_request_id_fkey FOREIGN KEY (pre_analysis_request_id) REFERENCES public.pre_analysis_requests(pre_analysis_request_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY public.pre_analysis_requests
+    ADD CONSTRAINT pre_analysis_requests_anonymous_session_id_fkey FOREIGN KEY (anonymous_session_id) REFERENCES public.anonymous_sessions(anonymous_session_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.pre_analysis_requests
+    ADD CONSTRAINT pre_analysis_requests_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(user_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.pre_analysis_requests
+    ADD CONSTRAINT pre_analysis_requests_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES public.workspaces(workspace_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.pre_analysis_requests
+    ADD CONSTRAINT pre_analysis_requests_workspace_membership_fk FOREIGN KEY (workspace_id, user_id) REFERENCES public.workspace_members(workspace_id, user_id) MATCH FULL ON DELETE RESTRICT;
+ALTER TABLE ONLY public.pre_analysis_requests
+    ADD CONSTRAINT pre_analysis_requests_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES public.domains(domain_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.pre_analysis_requests
+    ADD CONSTRAINT pre_analysis_requests_starting_entity_path_id_fkey FOREIGN KEY (starting_entity_path_id) REFERENCES public.entity_paths(entity_path_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.pre_analysis_requests
+    ADD CONSTRAINT pre_analysis_requests_reused_from_fkey FOREIGN KEY (reused_from_pre_analysis_request_id) REFERENCES public.pre_analysis_requests(pre_analysis_request_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.pre_analysis_requests
+    ADD CONSTRAINT pre_analysis_requests_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES public.analysis_runs(analysis_run_id) ON DELETE RESTRICT;
 
 
 --
@@ -3191,15 +3320,26 @@ ALTER TABLE ONLY public.domain_categories
 
 
 ALTER TABLE ONLY public.domain_categories
-    ADD CONSTRAINT domain_categories_classification_provider_result_id_fkey FOREIGN KEY (classification_provider_result_id) REFERENCES public.provider_results(provider_result_id) ON DELETE RESTRICT;
+    ADD CONSTRAINT domain_categories_discovery_provider_result_id_fkey FOREIGN KEY (discovery_provider_result_id) REFERENCES public.provider_results(provider_result_id) ON DELETE RESTRICT;
 
 
-ALTER TABLE ONLY public.domain_category_classification_jobs
-    ADD CONSTRAINT domain_category_classification_jobs_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES public.analysis_runs(analysis_run_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.hierarchy_discovery_jobs
+    ADD CONSTRAINT hierarchy_discovery_jobs_pre_analysis_request_id_fkey FOREIGN KEY (pre_analysis_request_id) REFERENCES public.pre_analysis_requests(pre_analysis_request_id) ON DELETE RESTRICT;
 
 
-ALTER TABLE ONLY public.domain_category_classification_jobs
-    ADD CONSTRAINT domain_category_classification_jobs_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES public.domains(domain_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.hierarchy_discovery_jobs
+    ADD CONSTRAINT hierarchy_discovery_jobs_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES public.domains(domain_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY public.hierarchy_discovery_jobs ADD CONSTRAINT hierarchy_discovery_jobs_domain_category_id_fkey FOREIGN KEY (domain_category_id) REFERENCES public.domain_categories(domain_category_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.hierarchy_discovery_jobs ADD CONSTRAINT hierarchy_discovery_jobs_category_brand_id_fkey FOREIGN KEY (category_brand_id) REFERENCES public.category_brands(category_brand_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.hierarchy_discovery_jobs ADD CONSTRAINT hierarchy_discovery_jobs_brand_product_id_fkey FOREIGN KEY (brand_product_id) REFERENCES public.brand_products(brand_product_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY public.hierarchy_discovery_relationships ADD CONSTRAINT hierarchy_discovery_relationships_job_id_fkey FOREIGN KEY (hierarchy_discovery_job_id) REFERENCES public.hierarchy_discovery_jobs(hierarchy_discovery_job_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.hierarchy_discovery_relationships ADD CONSTRAINT hierarchy_discovery_relationships_domain_category_id_fkey FOREIGN KEY (domain_category_id) REFERENCES public.domain_categories(domain_category_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.hierarchy_discovery_relationships ADD CONSTRAINT hierarchy_discovery_relationships_category_brand_id_fkey FOREIGN KEY (category_brand_id) REFERENCES public.category_brands(category_brand_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.hierarchy_discovery_relationships ADD CONSTRAINT hierarchy_discovery_relationships_brand_product_id_fkey FOREIGN KEY (brand_product_id) REFERENCES public.brand_products(brand_product_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.hierarchy_discovery_relationships ADD CONSTRAINT hierarchy_discovery_relationships_product_use_context_id_fkey FOREIGN KEY (product_use_context_id) REFERENCES public.product_use_contexts(product_use_context_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.hierarchy_discovery_relationships ADD CONSTRAINT hierarchy_discovery_relationships_provider_result_id_fkey FOREIGN KEY (provider_result_id) REFERENCES public.provider_results(provider_result_id) ON DELETE RESTRICT;
 
 
 --
@@ -3315,7 +3455,7 @@ ALTER TABLE ONLY public.provider_jobs
 
 
 ALTER TABLE ONLY public.provider_jobs
-    ADD CONSTRAINT provider_jobs_classification_job_id_fkey FOREIGN KEY (classification_job_id) REFERENCES public.domain_category_classification_jobs(domain_category_classification_job_id) ON DELETE RESTRICT;
+    ADD CONSTRAINT provider_jobs_discovery_job_id_fkey FOREIGN KEY (discovery_job_id) REFERENCES public.hierarchy_discovery_jobs(hierarchy_discovery_job_id) ON DELETE RESTRICT;
 
 
 --
@@ -3348,6 +3488,9 @@ ALTER TABLE ONLY public.reports
 
 ALTER TABLE ONLY public.scheduler_jobs
     ADD CONSTRAINT scheduler_jobs_last_analysis_run_id_fkey FOREIGN KEY (last_analysis_run_id) REFERENCES public.analysis_runs(analysis_run_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY public.scheduler_jobs
+    ADD CONSTRAINT scheduler_jobs_last_pre_analysis_request_id_fkey FOREIGN KEY (last_pre_analysis_request_id) REFERENCES public.pre_analysis_requests(pre_analysis_request_id) ON DELETE RESTRICT;
 
 
 --

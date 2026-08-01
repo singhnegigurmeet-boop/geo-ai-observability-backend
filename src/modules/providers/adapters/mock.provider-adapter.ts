@@ -42,27 +42,33 @@ export class MockProviderAdapter implements ProviderAdapter {
 }
 
 function deterministicResponse(request: ProviderExecutionRequest): JsonObject {
-  if (request.promptType === "domain_category_classification") {
-    const first = request.classificationCandidates?.[0];
+  if (request.discoveryStage) {
+    const first = request.discoveryCandidates?.[0];
+    const field = request.discoveryStage === "brand" || request.discoveryStage === "product"
+      ? "items"
+      : "selections";
+    const identity: JsonObject = request.discoveryStage === "category"
+      ? first ? { category_id: first.id } : {}
+      : request.discoveryStage === "use_context"
+        ? first ? { use_context_id: first.id } : {}
+        : { name: request.discoveryStage === "brand" ? "Example Brand" : "Example Product" };
     return {
-      prompt_type: "domain_category_classification",
+      prompt_type: `hierarchy_discovery_${request.discoveryStage}`,
       contract_version: request.responseContractVersion,
-      matches: first
+      [field]: first || request.discoveryStage === "brand" || request.discoveryStage === "product"
         ? [
             {
-              category_id: first.categoryId,
+              ...identity,
               rank: 1,
               confidence: 0.75,
-              reason: "Deterministic match against a supplied category."
+              reason: "Deterministic hierarchy discovery result."
             }
           ]
         : [],
-      summary: first
-        ? "One deterministic category match."
-        : "No category matched."
+      summary: "Deterministic hierarchy discovery response."
     };
   }
-  const result = resultFor(request.promptType, request);
+  const result = resultFor(request.promptType as PromptType, request);
   return {
     prompt_type: request.promptType,
     contract_version: request.responseContractVersion,

@@ -25,9 +25,9 @@ const suites = {
     "tests/integration/analysis/expansion-reliability.integration.test.ts",
     ["RUN_EXPANSION_RELIABILITY_INTEGRATION_TESTS"]
   ],
-  classification: [
-    "tests/integration/analysis/classification-phase4.integration.test.ts",
-    ["RUN_CLASSIFICATION_PHASE4_INTEGRATION_TESTS"]
+  discovery: [
+    "tests/integration/analysis/hierarchy-discovery.integration.test.ts",
+    ["RUN_HIERARCHY_DISCOVERY_INTEGRATION_TESTS"]
   ],
   llm: ["tests/integration/llm/llm-run.integration.test.ts", ["RUN_LLM_RUN_INTEGRATION_TESTS"]],
   prompts: [

@@ -184,43 +184,20 @@ describe(
 
     assert.deepEqual(
       await new AnalysisRunExpansionService(pool).expand(payload(run)),
-      { outcome: "classification_pending", itemCount: 0 }
+      { outcome: "empty", itemCount: 0 }
     );
     const state = await runState(pool, run.runId);
-    assert.equal(state.status, "processing");
+    assert.equal(state.status, "completed");
     assert.equal(state.error_code, null);
     assert.ok(state.started_at);
-    assert.equal(state.completed_at, null);
+    assert.ok(state.completed_at);
     assert.equal((await runItems(pool, run.runId)).length, 0);
     assert.equal(await itemOutboxCount(pool, run.runId), 0);
-    const classification = await pool.query<{
-      status: string;
-      candidate_count: number;
-    }>(
-      `SELECT status,
-              jsonb_array_length(input_payload->'candidates') AS candidate_count
-       FROM domain_category_classification_jobs
-       WHERE analysis_run_id = $1`,
-      [run.runId]
-    );
-    assert.deepEqual(classification.rows, [
-      { status: "queued", candidate_count: 2 }
-    ]);
+    assert.equal((await pool.query("SELECT 1 FROM hierarchy_discovery_jobs")).rowCount, 0);
     assert.equal(await countFailureRecords(pool), 0);
     assert.deepEqual(
       await new AnalysisRunExpansionService(pool).expand(payload(run)),
-      { outcome: "classification_pending", itemCount: 0 }
-    );
-    assert.equal(
-      (
-        await pool.query(
-          `SELECT 1
-           FROM domain_category_classification_jobs
-           WHERE analysis_run_id = $1`,
-          [run.runId]
-        )
-      ).rowCount,
-      1
+      { outcome: "noop", itemCount: 0 }
     );
   });
 

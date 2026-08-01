@@ -9,6 +9,8 @@ export const analysisRouter = createAnalysisModule(pool, {
   userSessionTtlSeconds: env.USER_SESSION_TTL_SECONDS,
   anonymousSessionTtlSeconds: env.ANONYMOUS_SESSION_TTL_SECONDS,
   realProvidersEnabled: env.ENABLE_REAL_PROVIDERS,
-  classificationProvider: env.CLASSIFICATION_PROVIDER,
-  classificationModel: env.CLASSIFICATION_MODEL
+  discoveryProvider: env.DISCOVERY_PROVIDER,
+  discoveryModel: env.DISCOVERY_MODEL,
+  discoveryFallbackProvider: env.DISCOVERY_FALLBACK_PROVIDER,
+  discoveryFallbackModel: env.DISCOVERY_FALLBACK_MODEL
 });

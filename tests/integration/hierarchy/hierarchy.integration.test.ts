@@ -112,7 +112,7 @@ describe(
       await pool?.end();
     });
 
-    it("creates four ID-only hierarchy tables within the 34-table baseline", async () => {
+    it("creates four ID-only hierarchy tables within the 36-table baseline", async () => {
       const tables = await pool.query<{ table_name: string }>(
         `
           SELECT table_name
@@ -122,7 +122,7 @@ describe(
           ORDER BY table_name
         `
       );
-      assert.equal(tables.rows.length, 34);
+      assert.equal(tables.rows.length, 36);
       for (const table of [
         "domain_categories",
         "category_brands",
@@ -446,7 +446,7 @@ describe(
           `hierarchy-valid-${index}`,
           owner
         );
-        assert.equal(result.status, "queued");
+        assert.equal(result.status, "accepted");
       }
     });
 
@@ -540,7 +540,11 @@ describe(
         `
           SELECT count(*)
           FROM entity_paths
-          WHERE entity_path_id = $1
+          WHERE entity_path_id = (
+              SELECT starting_entity_path_id
+              FROM pre_analysis_requests
+              WHERE pre_analysis_request_id = $1
+            )
             AND domain_id = $2
             AND category_id = $3
             AND brand_id = $4
@@ -548,7 +552,7 @@ describe(
             AND use_context_id IS NULL
         `,
         [
-          created.startingEntityPathId,
+          created.preAnalysisRequestId,
           fixture.domainId,
           fixture.categoryA,
           fixture.brandA
@@ -563,17 +567,17 @@ describe(
         `
           SELECT headers, payload
           FROM outbox_events
-          WHERE aggregate_type = 'analysis_run'
+          WHERE aggregate_type = 'pre_analysis_request'
             AND aggregate_id = $1
         `,
-        [created.analysisRunId]
+        [created.preAnalysisRequestId]
       );
       assert.deepEqual(event.rows[0]?.headers, {
-        queueName: "analysis_run_queue"
+        queueName: "domain_hierarchy_discovery_queue"
       });
       assert.deepEqual(
         Object.keys(event.rows[0]?.payload ?? {}).sort(),
-        ["analysisRunId"]
+        ["preAnalysisRequestId"]
       );
       const items = await pool.query<{ count: string }>(
         "SELECT count(*) FROM analysis_run_items"

@@ -19,8 +19,10 @@ export type AnalysisModuleOptions = {
   userSessionTtlSeconds: number;
   anonymousSessionTtlSeconds: number;
   realProvidersEnabled?: boolean;
-  classificationProvider?: ProviderName;
-  classificationModel?: string;
+  discoveryProvider?: ProviderName;
+  discoveryModel?: string;
+  discoveryFallbackProvider?: ProviderName;
+  discoveryFallbackModel?: string;
 };
 
 export function createAnalysisModule(
@@ -52,8 +54,10 @@ export function createAnalysisModule(
     undefined,
     options.realProvidersEnabled ?? false,
     {
-      provider: options.classificationProvider ?? "mock",
-      model: options.classificationModel ?? "mock-fast",
+      provider: options.discoveryProvider ?? "mock",
+      model: options.discoveryModel ?? "mock-fast",
+      fallbackProvider: options.discoveryFallbackProvider ?? null,
+      fallbackModel: options.discoveryFallbackModel ?? null,
       realProvidersEnabled: options.realProvidersEnabled ?? false
     }
   );

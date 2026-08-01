@@ -17,11 +17,13 @@ const envSchema = z
     RABBITMQ_CONFIRM_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
     ANALYSIS_RUN_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(5),
     ANALYSIS_RUN_ITEM_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
-    CLASSIFICATION_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(5),
-    CLASSIFICATION_PROVIDER: z
+    DISCOVERY_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(5),
+    DISCOVERY_PROVIDER: z
       .enum(["mock", "openai", "gemini", "claude"])
       .default("mock"),
-    CLASSIFICATION_MODEL: z.string().trim().min(1).default("mock-fast"),
+    DISCOVERY_MODEL: z.string().trim().min(1).default("mock-fast"),
+    DISCOVERY_FALLBACK_PROVIDER: z.enum(["mock", "openai", "gemini", "claude"]).optional(),
+    DISCOVERY_FALLBACK_MODEL: z.string().trim().min(1).optional(),
     LLM_RUN_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
     PROMPT_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
     MOCK_PROVIDER_WORKER_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
@@ -54,6 +56,15 @@ const envSchema = z
     {
       message: "OUTBOX_RETRY_MAX_MS must be greater than or equal to OUTBOX_RETRY_BASE_MS",
       path: ["OUTBOX_RETRY_MAX_MS"]
+    }
+  )
+  .refine(
+    (value) =>
+      Boolean(value.DISCOVERY_FALLBACK_PROVIDER) ===
+      Boolean(value.DISCOVERY_FALLBACK_MODEL),
+    {
+      message: "Discovery fallback provider and model must be configured together",
+      path: ["DISCOVERY_FALLBACK_PROVIDER"]
     }
   );
 

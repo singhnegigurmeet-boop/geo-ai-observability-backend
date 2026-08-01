@@ -67,6 +67,29 @@ export class AnalysisRunRequestedCategoryRepository {
     return this.listIds(analysisRunId);
   }
 
+  async createOrReuseForRequest(preAnalysisRequestId: string, categoryIds: readonly string[]) {
+    for (const [ordinal, categoryId] of categoryIds.entries()) {
+      await this.database.query(
+        `INSERT INTO analysis_run_requested_categories
+           (pre_analysis_request_id, category_id, ordinal)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (pre_analysis_request_id, category_id)
+           WHERE pre_analysis_request_id IS NOT NULL DO NOTHING`,
+        [preAnalysisRequestId, categoryId, ordinal]
+      );
+    }
+    return this.listRequestIds(preAnalysisRequestId);
+  }
+
+  async listRequestIds(preAnalysisRequestId: string) {
+    const result = await this.database.query<{ category_id: string }>(
+      `SELECT category_id FROM analysis_run_requested_categories
+       WHERE pre_analysis_request_id = $1 ORDER BY ordinal`,
+      [preAnalysisRequestId]
+    );
+    return result.rows.map((row) => row.category_id);
+  }
+
   async listIds(analysisRunId: string) {
     const result =
       await this.database.query<AnalysisRunRequestedCategoryRow>(

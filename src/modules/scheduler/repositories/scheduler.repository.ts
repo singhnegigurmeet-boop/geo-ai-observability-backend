@@ -25,6 +25,7 @@ export class SchedulerRepository {
           schedule.request_payload,
           schedule.next_run_at,
           domain.normalized_domain,
+          domain.domain_id,
           path.category_id,
           path.brand_id,
           path.product_id,
@@ -169,14 +170,14 @@ export class SchedulerRepository {
     schedulerJobId: string;
     dueAt: Date;
     nextRunAt: Date;
-    analysisRunId: string;
+    preAnalysisRequestId: string;
   }) {
     const result = await this.database.query<{ scheduler_job_id: string }>(
       `
         UPDATE scheduler_jobs
         SET next_run_at = $3,
             last_enqueued_at = now(),
-            last_analysis_run_id = $4,
+            last_pre_analysis_request_id = $4,
             updated_at = now()
         WHERE scheduler_job_id = $1
           AND status = 'active'
@@ -187,7 +188,7 @@ export class SchedulerRepository {
         input.schedulerJobId,
         input.dueAt,
         input.nextRunAt,
-        input.analysisRunId
+        input.preAnalysisRequestId
       ]
     );
     return Boolean(result.rows[0]);

@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import {
   MAX_RETAINED_GENERATED_CONTENT_BYTES,
   retainGeneratedContent,
-  validateClassificationOutput,
+  validateDiscoveryOutput,
   validateProviderOutput
 } from "../../../src/modules/providers/services/provider-output-validation.service.js";
 import type { EntityPathContext } from "../../../src/modules/prompts/contracts/entity-path-context.contract.js";
@@ -233,12 +233,13 @@ describe("provider output validation boundary", () => {
     );
   });
 
-  it("rejects classification IDs outside the active frozen candidate set", () => {
-    const result = validateClassificationOutput({
+  it("rejects discovery IDs outside the active frozen candidate set", () => {
+    const result = validateDiscoveryOutput({
+      stage: "category",
       generatedContent: JSON.stringify({
-        prompt_type: "domain_category_classification",
-        contract_version: "domain-category-classification-response-v1",
-        matches: [
+        prompt_type: "hierarchy_discovery_category",
+        contract_version: "hierarchy-discovery-category-response-v1",
+        selections: [
           {
             category_id: "99",
             rank: 1,
@@ -249,12 +250,13 @@ describe("provider output validation boundary", () => {
         summary: "One match"
       }),
       candidateIds: ["1", "2"],
-      activeFrozenCategoryIds: new Set(["1", "2"])
+      activeFrozenCandidateIds: new Set(["1", "2"]),
+      maximumDiscoveredNames: 3
     });
     assert.equal(result.valid, false);
     assert.equal(
       errorCode(result.validationErrors[0]),
-      "CLASSIFICATION_CATEGORY_CONTEXT"
+      "DISCOVERY_CANDIDATE_CONTEXT"
     );
   });
 

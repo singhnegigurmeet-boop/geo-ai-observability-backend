@@ -6,7 +6,7 @@ import type {
 } from "../../../common/types/database.types.js";
 import { PROMPT_DEPTH_LIMITS } from "../../prompts/policies/prompt-policy.registry.js";
 import {
-  domainCategoryClassificationResponseSchema,
+  hierarchyDiscoveryResponseSchemas,
   parseGeneratedJson,
   validateNormalResponse
 } from "../contracts/provider-response.contracts.js";
@@ -136,10 +136,12 @@ export function validateProviderOutput(
   };
 }
 
-export function validateClassificationOutput(input: {
+export function validateDiscoveryOutput(input: {
+  stage: "category" | "brand" | "product" | "use_context";
   generatedContent: string;
   candidateIds: readonly string[];
-  activeFrozenCategoryIds: ReadonlySet<string>;
+  activeFrozenCandidateIds: ReadonlySet<string>;
+  maximumDiscoveredNames: number;
 }): ProviderOutputValidation {
   let parsed: unknown;
   try {
@@ -147,7 +149,7 @@ export function validateClassificationOutput(input: {
   } catch {
     return invalid("RAW_JSON_PARSE_ERROR", "Generated content is not valid JSON");
   }
-  const contract = domainCategoryClassificationResponseSchema.safeParse(parsed);
+  const contract = hierarchyDiscoveryResponseSchemas[input.stage].safeParse(parsed);
   if (!contract.success) {
     return {
       valid: false,
@@ -161,27 +163,24 @@ export function validateClassificationOutput(input: {
       contextValidationStatus: "invalid"
     };
   }
-  if (contract.data.matches.length > input.candidateIds.length) {
-    return invalid(
-      "CLASSIFICATION_MATCH_COUNT",
-      "Match count exceeds frozen candidate count"
-    );
+  const data = contract.data as unknown as JsonObject;
+  const rows = (data.selections ?? data.items) as JsonObject[];
+  if ((input.stage === "brand" || input.stage === "product") && rows.length > input.maximumDiscoveredNames) {
+    return invalid("DISCOVERY_BREADTH_EXCEEDED", "Discovered name count exceeds the actor breadth limit");
   }
-  const candidates = new Set(input.candidateIds);
-  for (const match of contract.data.matches) {
-    if (
-      !candidates.has(match.category_id) ||
-      !input.activeFrozenCategoryIds.has(match.category_id)
-    ) {
-      return invalid(
-        "CLASSIFICATION_CATEGORY_CONTEXT",
-        "Returned category is outside the active frozen candidate set"
-      );
+  if (input.stage === "category" || input.stage === "use_context") {
+    const candidates = new Set(input.candidateIds);
+    const key = input.stage === "category" ? "category_id" : "use_context_id";
+    for (const row of rows) {
+      const id = row[key] as string;
+      if (!candidates.has(id) || !input.activeFrozenCandidateIds.has(id)) {
+        return invalid("DISCOVERY_CANDIDATE_CONTEXT", "Returned identifier is outside the active frozen candidate set");
+      }
     }
   }
   return {
     valid: true,
-    validatedResponse: contract.data as JsonObject,
+    validatedResponse: data,
     validationErrors: [],
     contextValidationStatus: "valid"
   };

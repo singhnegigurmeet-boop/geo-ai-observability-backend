@@ -10,7 +10,7 @@ import {
 } from "../../scoring/types/score.types.js";
 import {
   ReportRepository,
-  type ClassificationReportRecord,
+  type DiscoveryReportRecord,
   type ReportMethodologyContext,
   type ReportExecutionRecord
 } from "../repositories/report.repository.js";
@@ -82,12 +82,12 @@ export class ReportAggregationService {
       materialized,
       runStatus: run.status
     });
-    const classification = await this.reports.classificationRecord(
+    const discovery = await this.reports.discoveryRecord(
       analysisRunId
     );
     let methodology = await this.reports.methodologyContext(analysisRunId);
     const businessEmptyReason = resolveBusinessEmptyReason(
-      classification,
+      discovery,
       items.length,
       expected.length,
       run.status
@@ -127,7 +127,7 @@ export class ReportAggregationService {
       analysisRunId,
       reconciled,
       effectiveRunStatus,
-      classification,
+      discovery,
       methodology,
       businessEmptyReason
     );
@@ -162,7 +162,7 @@ export function buildMultiProviderReport(
   analysisRunId: string,
   reconciled: ReconciledProviderExecution[],
   runStatus: AnalysisExecutionStatus,
-  classification: ClassificationReportRecord | null = null,
+  discovery: DiscoveryReportRecord | null = null,
   methodology: ReportMethodologyContext | null = null,
   businessEmptyReason:
     | "no_matching_category"
@@ -268,7 +268,7 @@ export function buildMultiProviderReport(
     modelPaths,
     reconciled,
     methodology,
-    classification
+    discovery
   );
   const overallScores = categoryScores
     .map((category) => category.geoScore)
@@ -312,13 +312,10 @@ export function buildMultiProviderReport(
         methodology?.category_selection_mode ?? null,
       requestedCategoryIds: methodology?.requested_category_ids ?? [],
       matchedCategories: methodology?.matched_categories ?? [],
-      classificationProvider: classification?.classifier_provider ?? null,
-      classificationModel: classification?.classifier_model ?? null,
-      classificationModelProfileVersion:
-        classification?.model_profile_version ?? null,
-      classificationPromptVersion: classification?.prompt_version ?? null,
-      classificationResponseContractVersion:
-        classification?.response_contract_version ?? null,
+      hierarchyDiscoveryStatus: discovery?.discovery_status ?? null,
+      hierarchyDiscoveryCoverage: discovery?.discovery_coverage ?? {},
+      reusedFromPreAnalysisRequestId:
+        discovery?.reused_from_pre_analysis_request_id ?? null,
       promptDepth: methodology?.prompt_depth ?? null,
       promptPolicyVersion: methodology?.prompt_policy_version ?? null,
       selectedProviderModels:
@@ -416,46 +413,31 @@ export function buildMultiProviderReport(
     categoryScores,
     categoryBreakdown: categoryScores,
     promptOutcomes,
-    classification: classification
+    hierarchyDiscovery: discovery
       ? {
-          status: classification.classification_status,
-          provider: classification.classifier_provider,
-          model: classification.classifier_model,
-          modelProfileVersion: classification.model_profile_version,
-          promptVersion: classification.prompt_version,
-          responseContractVersion:
-            classification.response_contract_version,
-          providerInstructionProfile:
-            classification.provider_instruction_profile ?? null,
-          structuredOutputMode:
-            classification.structured_output_mode ?? null,
-          providerResultId: classification.provider_result_id,
-          classifiedAt: classification.completed_at ?? null,
-          evidenceStatus: classification.result_status ?? "missing",
-          matches:
-            classification.validated_response &&
-            Array.isArray(classification.validated_response.matches)
-              ? classification.validated_response.matches
-              : [],
+          status: discovery.discovery_status,
+          coverage: discovery.discovery_coverage,
+          reusedFromPreAnalysisRequestId:
+            discovery.reused_from_pre_analysis_request_id,
           usage: {
-            inputTokens: Number(classification.input_tokens ?? 0),
-            outputTokens: Number(classification.output_tokens ?? 0),
-            costMicros: Number(classification.cost_micros ?? 0),
+            inputTokens: Number(discovery.input_tokens ?? 0),
+            outputTokens: Number(discovery.output_tokens ?? 0),
+            costMicros: Number(discovery.cost_micros ?? 0),
             estimatedInputTokens:
-              classification.estimated_input_tokens === null ||
-              classification.estimated_input_tokens === undefined
+              discovery.estimated_input_tokens === null ||
+              discovery.estimated_input_tokens === undefined
                 ? null
-                : Number(classification.estimated_input_tokens),
+                : Number(discovery.estimated_input_tokens),
             estimatedOutputTokens:
-              classification.estimated_output_tokens === null ||
-              classification.estimated_output_tokens === undefined
+              discovery.estimated_output_tokens === null ||
+              discovery.estimated_output_tokens === undefined
                 ? null
-                : Number(classification.estimated_output_tokens),
+                : Number(discovery.estimated_output_tokens),
             estimatedCostMicros:
-              classification.estimated_cost_micros === null ||
-              classification.estimated_cost_micros === undefined
+              discovery.estimated_cost_micros === null ||
+              discovery.estimated_cost_micros === undefined
                 ? null
-                : Number(classification.estimated_cost_micros)
+                : Number(discovery.estimated_cost_micros)
           }
         }
       : null,
@@ -474,12 +456,12 @@ export function buildMultiProviderReport(
         costMicros: total.costMicros + record.usage.costMicros
       }),
       {
-        inputTokens: Number(classification?.input_tokens ?? 0),
-        outputTokens: Number(classification?.output_tokens ?? 0),
-        costMicros: Number(classification?.cost_micros ?? 0)
+        inputTokens: Number(discovery?.input_tokens ?? 0),
+        outputTokens: Number(discovery?.output_tokens ?? 0),
+        costMicros: Number(discovery?.cost_micros ?? 0)
       }
     ),
-    usageAndCost: buildUsageAndCost(records, classification, methodology)
+    usageAndCost: buildUsageAndCost(records, discovery, methodology)
   } satisfies JsonObject;
 }
 
@@ -487,7 +469,7 @@ function buildCategoryScores(
   modelPaths: ModelPathScore[],
   reconciled: readonly ReconciledProviderExecution[],
   methodology: ReportMethodologyContext | null,
-  classification: ClassificationReportRecord | null
+  discovery: DiscoveryReportRecord | null
 ) {
   const groups = new Map<
     string,
@@ -523,16 +505,15 @@ function buildCategoryScores(
       expectedModels: group.length,
       modelCoverage:
         group.length === 0 ? 0 : round((scores.length / group.length) * 100),
-      classificationSource: classificationSource(
+      discoverySource: discoverySource(
         provenance ?? undefined,
-        classification?.provider_result_id ?? null,
+        discovery?.reused_from_pre_analysis_request_id ?? null,
         methodology?.created_at ?? null
       ),
-      classificationProviderResultProvenance:
+      discoveryProviderResultProvenance:
         provenance?.providerResultId ?? null,
-      classificationRank: provenance?.classificationRank ?? null,
-      classificationConfidence:
-        provenance?.classificationConfidence ?? null,
+      discoveryRank: provenance?.discoveryRank ?? null,
+      discoveryConfidence: provenance?.discoveryConfidence ?? null,
       providerModelPathScores: [...group].sort(compareModelPath),
       modelDisagreement: disagreement,
       validDiagnosticResultCount: coverage.validDiagnostic,
@@ -718,7 +699,7 @@ function buildProviderModelComparison(
 
 function buildUsageAndCost(
   records: ReportExecutionRecord[],
-  classification: ClassificationReportRecord | null,
+  discovery: DiscoveryReportRecord | null,
   methodology: ReportMethodologyContext | null
 ) {
   const byCategory = new Map<
@@ -749,15 +730,15 @@ function buildUsageAndCost(
     (record) => ({ promptType: record.prompt_type })
   );
   const normalActual = usageTotal(records);
-  const classificationActual = {
-    inputTokens: Number(classification?.input_tokens ?? 0),
-    outputTokens: Number(classification?.output_tokens ?? 0),
+  const discoveryActual = {
+    inputTokens: Number(discovery?.input_tokens ?? 0),
+    outputTokens: Number(discovery?.output_tokens ?? 0),
     totalTokens:
-      Number(classification?.input_tokens ?? 0) +
-      Number(classification?.output_tokens ?? 0),
-    costMicros: Number(classification?.cost_micros ?? 0)
+      Number(discovery?.input_tokens ?? 0) +
+      Number(discovery?.output_tokens ?? 0),
+    costMicros: Number(discovery?.cost_micros ?? 0)
   };
-  const actual = addUsage(normalActual, classificationActual);
+  const actual = addUsage(normalActual, discoveryActual);
   const planningEstimate =
     methodology?.request_payload?.planningEstimate ?? null;
   const estimatedCost =
@@ -771,7 +752,7 @@ function buildUsageAndCost(
     estimatedCostRangeMicros: estimatedCost,
     actual,
     normalAnalysis: normalActual,
-    classification: classificationActual,
+    hierarchyDiscovery: discoveryActual,
     byProviderModel,
     byCategory: [...byCategory.values()].sort((left, right) =>
       (left.categoryId ?? "").localeCompare(right.categoryId ?? "")
@@ -784,10 +765,10 @@ function buildUsageAndCost(
           record.output_tokens === null ||
           record.cost_micros === null
       ).length +
-      (classification &&
-      (classification.input_tokens === null ||
-        classification.output_tokens === null ||
-        classification.cost_micros === null)
+      (discovery &&
+      (discovery.input_tokens === null ||
+        discovery.output_tokens === null ||
+        discovery.cost_micros === null)
         ? 1
         : 0),
     costVarianceMicros:
@@ -991,25 +972,20 @@ function compareModelPath(
   );
 }
 
-function classificationSource(
+function discoverySource(
   provenance: JsonObject | undefined,
-  currentProviderResultId: string | null,
+  reusedFromPreAnalysisRequestId: string | null,
   runCreatedAt: string | null
 ) {
   if (!provenance) return null;
   if (provenance.source === "manual") return "reused_manual";
   if (provenance.source === "import") return "reused_import";
-  if (provenance.source !== "llm_classification") {
+  if (provenance.source !== "llm_discovery") {
     return typeof provenance.source === "string"
       ? provenance.source
       : null;
   }
-  if (
-    currentProviderResultId === null ||
-    provenance.providerResultId !== currentProviderResultId
-  ) {
-    return "reused_previous_llm_classification";
-  }
+  if (reusedFromPreAnalysisRequestId !== null) return "reused_discovery";
   const relationshipCreatedAt =
     typeof provenance.relationshipCreatedAt === "string"
       ? Date.parse(provenance.relationshipCreatedAt)
@@ -1019,7 +995,7 @@ function classificationSource(
     Number.isFinite(runCreated) &&
     relationshipCreatedAt < runCreated
     ? "concurrently_reused_or_reactivated"
-    : "newly_classified";
+    : "newly_discovered";
 }
 
 function scoreBand(score: number | null) {
@@ -1082,15 +1058,12 @@ function mean(values: number[]) {
 }
 
 function resolveBusinessEmptyReason(
-  classification: ClassificationReportRecord | null,
+  _discovery: DiscoveryReportRecord | null,
   itemCount: number,
   expectedCount: number,
   runStatus: AnalysisExecutionStatus
 ): "no_matching_category" | "no_applicable_analysis_item" | null {
   if (expectedCount !== 0) return null;
-  if (classification?.classification_status === "completed_empty") {
-    return "no_matching_category";
-  }
   if (
     itemCount === 0 &&
     (runStatus === "completed" || runStatus === "partial_success")

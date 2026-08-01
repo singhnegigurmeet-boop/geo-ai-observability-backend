@@ -13,8 +13,8 @@ export type MockProviderExecutionState = ProviderJobRow & {
   prompt_depth: PromptDepth | null;
   business_prompt_version: string | null;
   response_contract_version: string;
-  analysis_run_id: string;
-  analysis_run_status: string;
+  analysis_run_id: string | null;
+  analysis_run_status: string | null;
   anonymous_session_id: string | null;
   user_id: string | null;
   workspace_id: string | null;

@@ -19,7 +19,7 @@ export class BudgetRepository {
     workspaceId: string | null;
     userId: string | null;
     anonymousSessionId: string | null;
-    analysisRunId: string;
+    analysisRunId: string | null;
   }): Promise<ApplicableBudgetPolicy[]> {
     const result = await this.database.query<BudgetPolicyRow>(
       `
@@ -47,6 +47,7 @@ export class BudgetRepository {
             OR (
               budget_scope = 'analysis_run'
               AND analysis_run_id = $6
+              AND $6::bigint IS NOT NULL
             )
           )
         ORDER BY budget_policy_id
@@ -91,14 +92,18 @@ export class BudgetRepository {
           FROM token_usage AS usage
           JOIN provider_jobs AS provider_job
             ON provider_job.provider_job_id = usage.provider_job_id
-          JOIN prompt_jobs AS prompt
+          LEFT JOIN prompt_jobs AS prompt
             ON prompt.prompt_job_id = provider_job.prompt_job_id
-          JOIN llm_runs AS llm
+          LEFT JOIN llm_runs AS llm
             ON llm.llm_run_id = prompt.llm_run_id
-          JOIN analysis_run_items AS item
+          LEFT JOIN analysis_run_items AS item
             ON item.analysis_run_item_id = llm.analysis_run_item_id
-          JOIN analysis_runs AS run
+          LEFT JOIN analysis_runs AS run
             ON run.analysis_run_id = item.analysis_run_id
+          LEFT JOIN hierarchy_discovery_jobs AS discovery
+            ON discovery.hierarchy_discovery_job_id=provider_job.discovery_job_id
+          LEFT JOIN pre_analysis_requests AS request
+            ON request.pre_analysis_request_id=discovery.pre_analysis_request_id
           WHERE provider_job.provider = $1
             AND ($2::text IS NULL OR provider_job.model = $2)
             AND usage.recorded_at >=
@@ -107,16 +112,16 @@ export class BudgetRepository {
               $4::text = 'platform_default'
               OR (
                 $4::text = 'workspace'
-                AND run.workspace_id = $5::bigint
+                AND COALESCE(run.workspace_id,request.workspace_id) = $5::bigint
               )
               OR (
                 $4::text = 'user'
-                AND run.user_id = $6::bigint
+                AND COALESCE(run.user_id,request.user_id) = $6::bigint
               )
               OR (
                 $4::text = 'anonymous_session'
-                AND run.anonymous_session_id = $7::bigint
-                AND run.user_id IS NULL
+                AND COALESCE(run.anonymous_session_id,request.anonymous_session_id) = $7::bigint
+                AND COALESCE(run.user_id,request.user_id) IS NULL
               )
               OR (
                 $4::text = 'analysis_run'

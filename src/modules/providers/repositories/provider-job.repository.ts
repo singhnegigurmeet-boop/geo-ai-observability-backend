@@ -97,8 +97,8 @@ export class ProviderJobRepository {
     return existing.rows[0];
   }
 
-  async createOrReuseClassification(input: {
-    classificationJobId: string;
+  async createOrReuseDiscovery(input: {
+    discoveryJobId: string;
     provider: ProviderName;
     model: string;
     responseContractVersion: string;
@@ -107,29 +107,32 @@ export class ProviderJobRepository {
     structuredOutputMode: string;
     requestHash: string;
     requestPayload: JsonObject;
+    discoveryAttempt?: 0 | 1;
   }) {
+    const discoveryAttempt = input.discoveryAttempt ?? 0;
     const idempotencyKey =
-      `provider_job:classification:${input.classificationJobId}`;
+      `provider_job:discovery:${input.discoveryJobId}:${discoveryAttempt}`;
     const inserted = await this.database.query<ProviderJobRow>(
       `
         INSERT INTO provider_jobs (
-          idempotency_key, job_kind, classification_job_id,
+          idempotency_key, job_kind, discovery_job_id, discovery_attempt,
           provider, model, response_contract_version,
           provider_instruction_profile, model_profile_version,
           structured_output_mode, request_hash, status, request_payload
         )
         VALUES (
-          $1, 'domain_category_classification', $2, $3, $4, $5, $6,
-          $7, $8, $9, 'queued', $10
+          $1, 'hierarchy_discovery', $2, $3, $4, $5, $6, $7,
+          $8, $9, $10, 'queued', $11
         )
-        ON CONFLICT (classification_job_id)
-          WHERE job_kind = 'domain_category_classification'
+        ON CONFLICT (discovery_job_id, discovery_attempt)
+          WHERE job_kind = 'hierarchy_discovery'
         DO NOTHING
         RETURNING *
       `,
       [
         idempotencyKey,
-        input.classificationJobId,
+        input.discoveryJobId,
+        discoveryAttempt,
         input.provider,
         input.model,
         input.responseContractVersion,
@@ -145,20 +148,22 @@ export class ProviderJobRepository {
       `
         SELECT *
         FROM provider_jobs
-        WHERE classification_job_id = $1
-          AND job_kind = 'domain_category_classification'
-          AND idempotency_key = $2
-          AND provider = $3
-          AND model = $4
-          AND response_contract_version = $5
-          AND provider_instruction_profile = $6
-          AND model_profile_version = $7
-          AND structured_output_mode = $8
-          AND request_hash = $9
-          AND request_payload = $10::jsonb
+        WHERE discovery_job_id = $1
+          AND discovery_attempt = $2
+          AND job_kind = 'hierarchy_discovery'
+          AND idempotency_key = $3
+          AND provider = $4
+          AND model = $5
+          AND response_contract_version = $6
+          AND provider_instruction_profile = $7
+          AND model_profile_version = $8
+          AND structured_output_mode = $9
+          AND request_hash = $10
+          AND request_payload = $11::jsonb
       `,
       [
-        input.classificationJobId,
+        input.discoveryJobId,
+        discoveryAttempt,
         idempotencyKey,
         input.provider,
         input.model,
@@ -171,7 +176,7 @@ export class ProviderJobRepository {
       ]
     );
     if (!existing.rows[0]) {
-      throw new Error("Existing classification provider job violates identity");
+      throw new Error("Existing discovery provider job violates identity");
     }
     return existing.rows[0];
   }

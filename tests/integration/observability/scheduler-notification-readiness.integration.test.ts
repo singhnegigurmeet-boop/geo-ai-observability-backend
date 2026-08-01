@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it } from "node:test";
 import pg from "pg";
-import { AnalysisRunExpansionService } from "../../../src/modules/analysis/services/analysis-run-expansion.service.js";
 import { RabbitMqConnection } from "../../../src/common/messaging/rabbitmq.connection.js";
 import { NotificationService } from "../../../src/modules/notifications/services/notification.service.js";
 import { ReadinessService } from "../../../src/modules/observability/services/readiness.service.js";
@@ -37,7 +36,7 @@ describe("Scheduler, notifications, and readiness integration", {
     await pool?.end();
   });
 
-  it("claims one due tick concurrently, advances it, and enters the normal pipeline", async () => {
+  it("claims one due tick concurrently, advances it, and enters pre-analysis", async () => {
     const fixture = await seedOwnedHierarchy(pool);
     const dueAt = new Date("2026-07-25T00:00:00.000Z");
     const schedule = await pool.query<{ scheduler_job_id: string }>(
@@ -84,42 +83,34 @@ describe("Scheduler, notifications, and readiness integration", {
     );
 
     const state = await pool.query<{
-      analysis_run_id: string;
+      pre_analysis_request_id: string;
       source: string;
       next_run_at: Date;
       run_count: string;
       outbox_count: string;
     }>(
       `
-        SELECT schedule.last_analysis_run_id AS analysis_run_id,
-               run.source, schedule.next_run_at,
+        SELECT schedule.last_pre_analysis_request_id AS pre_analysis_request_id,
+               request.source, schedule.next_run_at,
                (SELECT count(*)::text FROM analysis_runs) AS run_count,
                (SELECT count(*)::text FROM outbox_events
-                WHERE event_type = 'analysis_run.created') AS outbox_count
+                WHERE event_type = 'pre_analysis_request.accepted') AS outbox_count
         FROM scheduler_jobs AS schedule
-        JOIN analysis_runs AS run
-          ON run.analysis_run_id = schedule.last_analysis_run_id
+        JOIN pre_analysis_requests AS request
+          ON request.pre_analysis_request_id = schedule.last_pre_analysis_request_id
         WHERE schedule.scheduler_job_id = $1
       `,
       [schedule.rows[0]!.scheduler_job_id]
     );
     assert.equal(state.rows[0]?.source, "scheduled");
-    assert.equal(state.rows[0]?.run_count, "1");
+    assert.equal(state.rows[0]?.run_count, "0");
     assert.equal(state.rows[0]?.outbox_count, "1");
     assert.equal(
       state.rows[0]?.next_run_at.toISOString(),
       "2026-07-25T01:00:00.000Z"
     );
 
-    const expanded = await new AnalysisRunExpansionService(pool).expand({
-      analysisRunId: state.rows[0]!.analysis_run_id,
-      startingEntityPathId: fixture.pathId,
-      actorType: "user",
-      userId: fixture.userId,
-      workspaceId: fixture.workspaceId,
-      anonymousSessionId: null
-    });
-    assert.deepEqual(expanded, { outcome: "expanded", itemCount: 1 });
+    assert.ok(state.rows[0]!.pre_analysis_request_id);
   });
 
   it("pauses an invalid schedule and records one admin notification transactionally", async () => {

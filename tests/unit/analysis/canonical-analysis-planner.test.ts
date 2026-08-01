@@ -11,29 +11,25 @@ const owner: OwnershipContext = {
 };
 
 describe("canonical analysis planner", () => {
-  it("uses deterministic classification uncertainty and exact multiplication without writes", async () => {
+  it("plans only from hierarchy-ready targets without writes", async () => {
     const statements: string[] = [];
     const database = fakeDatabase(statements, 10);
-    const planner = new CanonicalAnalysisPlannerService(database as never);
+    const planner = new CanonicalAnalysisPlannerService(database as never, fakeHierarchy() as never);
     const plan = await planner.plan({ domain: "New.Example." }, owner);
 
     assert.deepEqual(plan.estimatedEligibleCategories, {
-      minimum: 0,
+      minimum: 3,
       maximum: 3
     });
     assert.deepEqual(
       plan.expectedExecutions.normalProviderJobCountEstimate,
-      { minimum: 0, maximum: 9 }
-    );
-    assert.equal(
-      plan.expectedExecutions.classificationProviderJobCount,
-      1
+      { minimum: 9, maximum: 9 }
     );
     assert.deepEqual(
       plan.expectedExecutions.totalProviderJobCountEstimate,
-      { minimum: 1, maximum: 10 }
+      { minimum: 9, maximum: 9 }
     );
-    assert.equal(plan.classificationRequired, true);
+    assert.equal(plan.discoveryRequired, false);
     assert.equal(
       statements.some((statement) =>
         /\b(INSERT|UPDATE|DELETE)\b/i.test(statement)
@@ -44,7 +40,7 @@ describe("canonical analysis planner", () => {
 
   it("produces the same canonical hash for repeated planning and changes it for a category set change", async () => {
     const database = fakeDatabase([], 3);
-    const planner = new CanonicalAnalysisPlannerService(database as never);
+    const planner = new CanonicalAnalysisPlannerService(database as never, fakeHierarchy() as never);
     const first = await planner.plan(
       {
         domain: "identity.example",
@@ -94,7 +90,27 @@ function fakeDatabase(statements: string[], categoryCount: number) {
         };
       }
       if (statement.includes("FROM domains")) return { rows: [] };
+      if (statement.includes("FROM domain_categories")) {
+        return { rows: Array.from({ length: Math.min(categoryCount, 3) }, (_, index) => ({ category_id: String(index + 1) })) };
+      }
       throw new Error(`Unexpected read query: ${statement}`);
+    }
+  };
+}
+
+function fakeHierarchy() {
+  return {
+    async validateStartingPath() {
+      return {
+        normalizedDomain: "identity.example",
+        domain: { domain_id: "1" },
+        path: {
+          entity_path_id: "1", path_type: "domain", domain_id: "1",
+          category_id: null, brand_id: null, product_id: null,
+          use_context_id: null, path_key: "domain:1", is_active: true,
+          validation_status: "valid", created_at: new Date(0), updated_at: new Date(0)
+        }
+      };
     }
   };
 }

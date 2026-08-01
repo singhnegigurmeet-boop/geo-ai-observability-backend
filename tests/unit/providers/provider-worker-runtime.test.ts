@@ -4,7 +4,7 @@ import type { ConsumeMessage } from "amqplib";
 import { ProviderExecutionError } from "../../../src/modules/providers/errors/provider-execution.error.js";
 import { ProviderWorkerRuntime } from "../../../src/modules/providers/runtime/provider-worker.runtime.js";
 
-describe("real provider retry and DLQ classification", () => {
+describe("real provider retry and DLQ routing", () => {
   it("records and republishes timeout, rate-limit, and 5xx errors", async () => {
     for (const code of [
       "PROVIDER_TIMEOUT",

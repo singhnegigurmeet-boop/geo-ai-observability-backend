@@ -101,19 +101,10 @@ export type ReportMaterializationRecord = {
   estimated_cost_micros?: string | null;
 };
 
-export type ClassificationReportRecord = {
-  classification_status: string;
-  classifier_provider: ProviderName;
-  classifier_model: string;
-  model_profile_version: string;
-  prompt_version: string;
-  response_contract_version: string;
-  provider_instruction_profile?: string;
-  structured_output_mode?: string;
-  completed_at?: string | null;
-  provider_result_id: string | null;
-  result_status: ProviderResultStatus | null;
-  validated_response: JsonObject | null;
+export type DiscoveryReportRecord = {
+  discovery_status: string | null;
+  discovery_coverage: JsonObject;
+  reused_from_pre_analysis_request_id: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
   cost_micros: string | null;
@@ -334,43 +325,34 @@ export class ReportRepository {
     return result.rows;
   }
 
-  async classificationRecord(analysisRunId: string) {
-    const result = await this.database.query<ClassificationReportRecord>(
+  async discoveryRecord(analysisRunId: string) {
+    const result = await this.database.query<DiscoveryReportRecord>(
       `
         SELECT
-          classification.status AS classification_status,
-          classification.classifier_provider,
-          classification.classifier_model,
-          classification.model_profile_version,
-          classification.prompt_version,
-          classification.response_contract_version,
-          classification.provider_instruction_profile,
-          classification.structured_output_mode,
-          classification.completed_at::text,
-          result.provider_result_id,
-          result.status AS result_status,
-          result.validated_response,
-          actual_usage.input_tokens,
-          actual_usage.output_tokens,
-          actual_usage.cost_micros,
-          estimated_usage.input_tokens AS estimated_input_tokens,
-          estimated_usage.output_tokens AS estimated_output_tokens,
-          estimated_usage.cost_micros AS estimated_cost_micros
-        FROM domain_category_classification_jobs AS classification
-        LEFT JOIN provider_jobs AS job
-          ON job.classification_job_id =
-             classification.domain_category_classification_job_id
-        LEFT JOIN provider_results AS result
-          ON result.provider_job_id = job.provider_job_id
-        LEFT JOIN token_usage AS actual_usage
-          ON actual_usage.provider_job_id = job.provider_job_id
-         AND actual_usage.usage_kind = 'actual'
-        LEFT JOIN token_usage AS estimated_usage
-          ON estimated_usage.provider_job_id = job.provider_job_id
-         AND estimated_usage.usage_kind = 'estimated'
-        WHERE classification.analysis_run_id = $1
-        ORDER BY classification.created_at DESC
-        LIMIT 1
+          request.discovery_status,
+          request.discovery_coverage,
+          request.reused_from_pre_analysis_request_id,
+          usage.input_tokens, usage.output_tokens, usage.cost_micros,
+          usage.estimated_input_tokens, usage.estimated_output_tokens,
+          usage.estimated_cost_micros
+        FROM analysis_runs run
+        JOIN pre_analysis_requests request
+          ON request.pre_analysis_request_id=run.pre_analysis_request_id
+        LEFT JOIN LATERAL (
+          SELECT
+            sum(actual.input_tokens)::bigint AS input_tokens,
+            sum(actual.output_tokens)::bigint AS output_tokens,
+            sum(actual.cost_micros)::bigint AS cost_micros,
+            sum(estimated.input_tokens)::bigint AS estimated_input_tokens,
+            sum(estimated.output_tokens)::bigint AS estimated_output_tokens,
+            sum(estimated.cost_micros)::bigint AS estimated_cost_micros
+          FROM hierarchy_discovery_jobs discovery
+          JOIN provider_jobs job ON job.discovery_job_id=discovery.hierarchy_discovery_job_id
+          LEFT JOIN token_usage actual ON actual.provider_job_id=job.provider_job_id AND actual.usage_kind='actual'
+          LEFT JOIN token_usage estimated ON estimated.provider_job_id=job.provider_job_id AND estimated.usage_kind='estimated'
+          WHERE discovery.pre_analysis_request_id=COALESCE(request.reused_from_pre_analysis_request_id,request.pre_analysis_request_id)
+        ) usage ON true
+        WHERE run.analysis_run_id=$1
       `,
       [analysisRunId]
     );
@@ -416,10 +398,10 @@ export class ReportRepository {
                   'categoryId', matched.category_id,
                   'categoryName', matched.category_name,
                   'source', matched.source,
-                  'providerResultId', matched.classification_provider_result_id,
-                  'classificationRank', matched.classification_rank,
-                  'classificationConfidence', matched.classification_confidence,
-                  'classifiedAt', matched.classified_at,
+                  'providerResultId', matched.discovery_provider_result_id,
+                  'discoveryRank', matched.discovery_rank,
+                  'discoveryConfidence', matched.discovery_confidence,
+                  'discoveredAt', matched.discovered_at,
                   'relationshipCreatedAt', matched.relationship_created_at
                 )
                 ORDER BY matched.item_ordinal
@@ -430,10 +412,10 @@ export class ReportRepository {
                   category.category_id::text AS category_id,
                   category.category_name,
                   relationship.source,
-                  relationship.classification_provider_result_id,
-                  relationship.classification_rank,
-                  relationship.classification_confidence,
-                  relationship.classified_at,
+                  relationship.discovery_provider_result_id,
+                  relationship.discovery_rank,
+                  relationship.discovery_confidence,
+                  relationship.discovered_at,
                   relationship.created_at AS relationship_created_at
                 FROM analysis_run_items AS item
                 JOIN entity_paths AS path

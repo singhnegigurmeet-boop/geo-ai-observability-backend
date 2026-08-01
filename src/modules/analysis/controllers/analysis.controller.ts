@@ -7,7 +7,7 @@ import type { AnalysisService } from "../services/analysis.service.js";
 
 type AnalysisServiceContract = Pick<
   AnalysisService,
-  "create" | "preview" | "getStatus" | "getReport" | "cancel"
+  "create" | "preview" | "getStatus" | "getRequestStatus" | "getReport" | "cancel"
 >;
 
 export class AnalysisController {
@@ -42,6 +42,11 @@ export class AnalysisController {
       owner
     );
     return apiResult(200, result);
+  };
+
+  requestStatus = async (request: Request) => {
+    const owner = requireOwnershipContext(request);
+    return apiResult(200, await this.analyses.getRequestStatus(request.params.preAnalysisRequestId as string, owner));
   };
 
   report = async (request: Request) => {

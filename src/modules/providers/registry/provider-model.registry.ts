@@ -32,7 +32,7 @@ export type ProviderModelProfile = {
   model: string;
   enabled: boolean;
   selectableForAnalysis: boolean;
-  eligibleForClassification: boolean;
+  eligibleForDiscovery: boolean;
   anonymousEligible: boolean;
   loggedInEligible: boolean;
   adapterSupported: boolean;
@@ -62,7 +62,7 @@ export const PROVIDER_MODEL_REGISTRY = [
     model: "mock-fast",
     enabled: true,
     selectableForAnalysis: true,
-    eligibleForClassification: true,
+    eligibleForDiscovery: true,
     anonymousEligible: true,
     loggedInEligible: true,
     adapterSupported: true,
@@ -85,7 +85,7 @@ export const PROVIDER_MODEL_REGISTRY = [
     model: "mock-standard",
     enabled: true,
     selectableForAnalysis: true,
-    eligibleForClassification: true,
+    eligibleForDiscovery: true,
     anonymousEligible: false,
     loggedInEligible: true,
     adapterSupported: true,
@@ -108,7 +108,7 @@ export const PROVIDER_MODEL_REGISTRY = [
     model: "mock-quality",
     enabled: true,
     selectableForAnalysis: true,
-    eligibleForClassification: true,
+    eligibleForDiscovery: true,
     anonymousEligible: false,
     loggedInEligible: true,
     adapterSupported: true,
@@ -131,7 +131,7 @@ export const PROVIDER_MODEL_REGISTRY = [
     model: "gpt-4o-mini",
     enabled: true,
     selectableForAnalysis: true,
-    eligibleForClassification: true,
+    eligibleForDiscovery: true,
     anonymousEligible: false,
     loggedInEligible: true,
     adapterSupported: true,
@@ -155,7 +155,7 @@ export const PROVIDER_MODEL_REGISTRY = [
     model: "gemini-1.5-flash",
     enabled: true,
     selectableForAnalysis: true,
-    eligibleForClassification: true,
+    eligibleForDiscovery: true,
     anonymousEligible: false,
     loggedInEligible: true,
     adapterSupported: true,
@@ -179,7 +179,7 @@ export const PROVIDER_MODEL_REGISTRY = [
     model: "claude-3-5-sonnet",
     enabled: true,
     selectableForAnalysis: true,
-    eligibleForClassification: true,
+    eligibleForDiscovery: true,
     anonymousEligible: false,
     loggedInEligible: true,
     adapterSupported: true,
@@ -222,8 +222,7 @@ export function enabledAnalysisProfiles(provider?: ProviderName) {
   );
 }
 
-export function classificationProfile(provider: ProviderName, model: string) {
+export function discoveryProfile(provider: ProviderName, model: string) {
   const profile = providerModelProfile(provider, model);
-  return profile?.enabled && profile.eligibleForClassification ? profile : null;
+  return profile?.enabled && profile.eligibleForDiscovery ? profile : null;
 }
-

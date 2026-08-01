@@ -87,7 +87,7 @@ export class AnalysisRunExpansionRepository {
         JOIN categories AS child
           ON child.category_id = relationship.category_id AND child.is_active
         WHERE requested.analysis_run_id = $1
-        ORDER BY relationship.classification_rank ASC NULLS LAST,
+        ORDER BY relationship.discovery_rank ASC NULLS LAST,
                  relationship.sort_order ASC NULLS LAST,
                  requested.ordinal,
                  relationship.domain_category_id
@@ -273,38 +273,6 @@ export class AnalysisRunExpansionRepository {
             error_message = NULL,
             updated_at = now()
         WHERE analysis_run_id = $1 AND status IN ('queued', 'processing')
-      `,
-      [analysisRunId]
-    );
-  }
-
-  async latestClassificationStatus(analysisRunId: string) {
-    const result = await this.database.query<{ status: string }>(
-      `
-        SELECT status
-        FROM domain_category_classification_jobs
-        WHERE analysis_run_id = $1
-        ORDER BY created_at DESC
-        LIMIT 1
-      `,
-      [analysisRunId]
-    );
-    return result.rows[0]?.status ?? null;
-  }
-
-  async markClassificationFailed(analysisRunId: string) {
-    await this.database.query(
-      `
-        UPDATE analysis_runs
-        SET status = 'failed',
-            started_at = COALESCE(started_at, now()),
-            completed_at = now(),
-            error_code = 'CLASSIFICATION_EVIDENCE_UNAVAILABLE',
-            error_message =
-              'Domain category classification did not produce valid evidence.',
-            updated_at = now()
-        WHERE analysis_run_id = $1
-          AND status IN ('queued', 'processing')
       `,
       [analysisRunId]
     );

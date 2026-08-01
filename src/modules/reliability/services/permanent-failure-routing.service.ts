@@ -17,8 +17,7 @@ export type PermanentFailureRoute =
   | "prompt_job"
   | "provider_job"
   | "normal_scoring"
-  | "classification_job"
-  | "classification_result"
+  | "pre_analysis_request"
   | "scheduler_job"
   | "notification";
 
@@ -65,16 +64,10 @@ export function resolvePermanentFailureRoute(
     return "normal_scoring";
   }
   if (
-    aggregateType === "domain_category_classification" &&
-    queueName === "domain_category_classification_queue"
+    aggregateType === "pre_analysis_request" &&
+    queueName === "domain_hierarchy_discovery_queue"
   ) {
-    return "classification_job";
-  }
-  if (
-    aggregateType === "provider_result" &&
-    queueName === "domain_category_classification_result_queue"
-  ) {
-    return "classification_result";
+    return "pre_analysis_request";
   }
   if (aggregateType === "scheduler_job" && queueName === "scheduler_queue") {
     return "scheduler_job";

@@ -122,19 +122,8 @@ export class FailureRecordRepository {
       case "normal_scoring":
         await this.terminalizeNormalScoring(input.aggregateId);
         return;
-      case "classification_job":
-        await this.terminalizeClassificationJob(
-          input.aggregateId,
-          safeCode,
-          safeMessage
-        );
-        return;
-      case "classification_result":
-        await this.terminalizeClassificationResult(
-          input.aggregateId,
-          safeCode,
-          safeMessage
-        );
+      case "pre_analysis_request":
+        await this.database.query(`UPDATE pre_analysis_requests SET status='failed',discovery_status='failed',error_code=$2,error_message=$3,completed_at=now(),updated_at=now() WHERE pre_analysis_request_id=$1 AND status NOT IN ('analysis_created','completed_without_analysis','cancelled')`, [input.aggregateId,safeCode,safeMessage]);
         return;
       case "scheduler_job":
       case "notification":
@@ -149,26 +138,14 @@ export class FailureRecordRepository {
     errorCode: string,
     errorMessage: string
   ) {
-    const run = await this.database.query<{
-      status: string;
-      classification_completed_empty: boolean;
-    }>(
-      `SELECT
-         run.status,
-         EXISTS (
-           SELECT 1
-           FROM domain_category_classification_jobs AS classification
-           WHERE classification.analysis_run_id = run.analysis_run_id
-             AND classification.status = 'completed_empty'
-         ) AS classification_completed_empty
-       FROM analysis_runs AS run
+    const run = await this.database.query<{ status: string }>(
+      `SELECT run.status FROM analysis_runs AS run
        WHERE run.analysis_run_id = $1
        FOR UPDATE OF run`,
       [analysisRunId]
     );
     if (!run.rows[0]) return;
-    if (!run.rows[0].classification_completed_empty) {
-      await this.database.query(
+    await this.database.query(
         `
           UPDATE analysis_runs
           SET status = 'failed',
@@ -181,7 +158,6 @@ export class FailureRecordRepository {
         `,
         [analysisRunId, errorCode, errorMessage]
       );
-    }
     await this.requestReportAggregation(analysisRunId);
   }
 
@@ -259,28 +235,28 @@ export class FailureRecordRepository {
     errorMessage: string
   ) {
     const parent = await this.database.query<{
-      analysis_run_id: string;
-      classification_job_id: string | null;
+      analysis_run_id: string | null;
+      discovery_job_id: string | null;
+      pre_analysis_request_id: string | null;
     }>(
       `
         SELECT
-          COALESCE(item.analysis_run_id, classification.analysis_run_id)
-            AS analysis_run_id,
-          job.classification_job_id
+          item.analysis_run_id,
+          job.discovery_job_id,
+          discovery.pre_analysis_request_id
         FROM provider_jobs AS job
         LEFT JOIN prompt_jobs AS prompt
           ON prompt.prompt_job_id = job.prompt_job_id
         LEFT JOIN llm_runs AS llm ON llm.llm_run_id = prompt.llm_run_id
         LEFT JOIN analysis_run_items AS item
           ON item.analysis_run_item_id = llm.analysis_run_item_id
-        LEFT JOIN domain_category_classification_jobs AS classification
-          ON classification.domain_category_classification_job_id =
-             job.classification_job_id
+        LEFT JOIN hierarchy_discovery_jobs AS discovery
+          ON discovery.hierarchy_discovery_job_id=job.discovery_job_id
         WHERE job.provider_job_id = $1
       `,
       [providerJobId]
     );
-    if (parent.rows[0]) {
+    if (parent.rows[0]?.analysis_run_id) {
       await this.database.query(
         `SELECT analysis_run_id FROM analysis_runs
          WHERE analysis_run_id = $1 FOR UPDATE`,
@@ -300,13 +276,9 @@ export class FailureRecordRepository {
       `,
       [providerJobId, errorCode, errorMessage]
     );
-    if (parent.rows[0]?.classification_job_id) {
-      await this.terminalizeClassification(
-        parent.rows[0].classification_job_id,
-        parent.rows[0].analysis_run_id,
-        errorCode,
-        errorMessage
-      );
+    if (parent.rows[0]?.discovery_job_id && parent.rows[0].pre_analysis_request_id) {
+      await this.database.query(`UPDATE hierarchy_discovery_jobs SET status='failed',error_code=$2,error_message=$3,completed_at=now(),updated_at=now() WHERE hierarchy_discovery_job_id=$1 AND status IN ('queued','processing')`,[parent.rows[0].discovery_job_id,errorCode,errorMessage]);
+      await new OutboxEventWriterRepository(this.database).createOrReuse({eventKey:`pre_analysis_request.discovery_failed:${parent.rows[0].pre_analysis_request_id}:${parent.rows[0].discovery_job_id}`,eventType:"pre_analysis_request.discovery_progress",eventVersion:1,aggregateType:"pre_analysis_request",aggregateId:parent.rows[0].pre_analysis_request_id,headers:{queueName:"domain_hierarchy_discovery_queue"},payload:{preAnalysisRequestId:parent.rows[0].pre_analysis_request_id}});
       return;
     }
     const summary =
@@ -366,98 +338,10 @@ export class FailureRecordRepository {
     await this.requestReportAggregation(row.analysis_run_id);
   }
 
-  private async terminalizeClassificationJob(
-    classificationJobId: string,
-    errorCode: string,
-    errorMessage: string
-  ) {
-    const classification = await this.database.query<{
-      analysis_run_id: string;
-    }>(
-      `
-        SELECT analysis_run_id
-        FROM domain_category_classification_jobs
-        WHERE domain_category_classification_job_id = $1
-      `,
-      [classificationJobId]
-    );
-    if (!classification.rows[0]) return;
-    await this.terminalizeClassification(
-      classificationJobId,
-      classification.rows[0].analysis_run_id,
-      errorCode,
-      errorMessage
-    );
-  }
-
-  private async terminalizeClassificationResult(
-    providerResultId: string,
-    errorCode: string,
-    errorMessage: string
-  ) {
-    const classification = await this.database.query<{
-      classification_job_id: string;
-      analysis_run_id: string;
-    }>(
-      `
-        SELECT
-          job.classification_job_id,
-          classification.analysis_run_id
-        FROM provider_results AS result
-        JOIN provider_jobs AS job
-          ON job.provider_job_id = result.provider_job_id
-         AND job.job_kind = 'domain_category_classification'
-        JOIN domain_category_classification_jobs AS classification
-          ON classification.domain_category_classification_job_id =
-             job.classification_job_id
-        WHERE result.provider_result_id = $1
-      `,
-      [providerResultId]
-    );
-    if (!classification.rows[0]) return;
-    await this.terminalizeClassification(
-      classification.rows[0].classification_job_id,
-      classification.rows[0].analysis_run_id,
-      errorCode,
-      errorMessage
-    );
-  }
-
   private requestReportAggregation(analysisRunId: string) {
     return new ReportAggregationService(
       new ReportRepository(this.database)
     ).createIfReady(analysisRunId);
-  }
-
-  private async terminalizeClassification(
-    classificationJobId: string,
-    analysisRunId: string,
-    errorCode: string | null,
-    errorMessage: string
-  ) {
-    await this.database.query(
-      `
-        UPDATE domain_category_classification_jobs
-        SET status = 'failed',
-            error_code = $2,
-            error_message = $3,
-            completed_at = COALESCE(completed_at, now()),
-            updated_at = now()
-        WHERE domain_category_classification_job_id = $1
-          AND status IN ('queued', 'processing')
-      `,
-      [classificationJobId, errorCode, errorMessage]
-    );
-    await new OutboxEventWriterRepository(this.database).createOrReuse({
-      eventKey:
-        `analysis_run.classification_failed:${analysisRunId}:${classificationJobId}`,
-      eventType: "analysis_run.created",
-      eventVersion: 1,
-      aggregateType: "analysis_run",
-      aggregateId: analysisRunId,
-      headers: { queueName: "analysis_run_queue" },
-      payload: { analysisRunId }
-    });
   }
 
   async createAndTerminalize(input: RecordWorkerFailure) {
@@ -503,9 +387,8 @@ function safeFailureMessage(route: PermanentFailureRoute) {
       return "Provider execution exhausted its retry policy.";
     case "normal_scoring":
       return "Provider scoring exhausted its retry policy.";
-    case "classification_job":
-    case "classification_result":
-      return "Domain classification exhausted its retry policy.";
+    case "pre_analysis_request":
+      return "Hierarchy discovery exhausted its retry policy.";
     case "scheduler_job":
       return "Scheduled analysis processing failed.";
     case "notification":

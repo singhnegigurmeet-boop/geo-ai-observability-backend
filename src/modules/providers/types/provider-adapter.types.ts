@@ -10,16 +10,14 @@ export type ProviderExecutionRequest = {
   provider: ProviderName;
   model: string;
   promptText: string;
-  promptType: PromptType | "domain_category_classification";
+  promptType: PromptType | `hierarchy_discovery_${"category" | "brand" | "product" | "use_context"}`;
   promptDepth: PromptDepth;
   responseContractVersion: string;
   structuredOutputMode: string;
   maximumOutputTokens: number;
   exactTargetName: string;
-  classificationCandidates?: Array<{
-    categoryId: string;
-    categoryName: string;
-  }>;
+  discoveryStage?: "category" | "brand" | "product" | "use_context";
+  discoveryCandidates?: Array<{ id: string; name: string }>;
   timeoutMs: number;
 };
 

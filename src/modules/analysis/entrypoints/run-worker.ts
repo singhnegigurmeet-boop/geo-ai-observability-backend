@@ -23,13 +23,7 @@ async function main() {
   const channel = await rabbitMq.getConfirmChannel();
   runtime = new AnalysisRunWorkerRuntime(
     channel,
-    new AnalysisRunWorker(
-      new AnalysisRunExpansionService(pool, {
-        provider: env.CLASSIFICATION_PROVIDER,
-        model: env.CLASSIFICATION_MODEL,
-        realProvidersEnabled: env.ENABLE_REAL_PROVIDERS
-      })
-    ),
+    new AnalysisRunWorker(new AnalysisRunExpansionService(pool)),
     new FailureRecordRepository(pool),
     {
       mainExchange: env.RABBITMQ_EXCHANGE,

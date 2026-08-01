@@ -22,6 +22,8 @@ export type CreateAnalysisRunRecord = {
   promptDepth: PromptDepth;
   promptPolicyVersion: string;
   requestPayload: JsonObject;
+  source?: "manual" | "scheduled";
+  preAnalysisRequestId?: string | null;
 };
 
 export class AnalysisRepository {
@@ -49,9 +51,10 @@ export class AnalysisRepository {
           prompt_policy_version,
           source,
           status,
-          request_payload
+          request_payload,
+          pre_analysis_request_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'manual', 'queued', $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $10, 'queued', $9, $11)
         ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING *
       `,
@@ -64,7 +67,9 @@ export class AnalysisRepository {
         input.categorySelectionMode,
         input.promptDepth,
         input.promptPolicyVersion,
-        input.requestPayload
+        input.requestPayload,
+        input.source ?? "manual",
+        input.preAnalysisRequestId ?? null
       ]
     );
     return result.rows[0] ?? null;

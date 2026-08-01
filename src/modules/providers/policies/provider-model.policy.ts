@@ -4,7 +4,7 @@ import type {
 } from "../../../common/types/database.types.js";
 import {
   MAX_ANALYSIS_PROVIDER_MODELS,
-  classificationProfile,
+  discoveryProfile,
   enabledAnalysisProfiles,
   providerModelProfile,
   type ProviderModelProfile
@@ -142,15 +142,15 @@ export function resolveProviderModelSet(
   );
 }
 
-export function resolveClassificationModel(input: {
+export function resolveDiscoveryModel(input: {
   provider: ProviderName;
   model: string;
   realProvidersEnabled: boolean;
 }) {
-  const profile = classificationProfile(input.provider, input.model);
+  const profile = discoveryProfile(input.provider, input.model);
   if (!profile) {
     throw new InvalidProviderModelSelectionError(
-      `${input.provider}/${input.model} is not eligible for classification`
+      `${input.provider}/${input.model} is not eligible for hierarchy discovery`
     );
   }
   if (profile.provider !== "mock" && !input.realProvidersEnabled) {
@@ -159,7 +159,7 @@ export function resolveClassificationModel(input: {
   return selection(profile);
 }
 
-export function validateFrozenClassificationModel(
+export function validateFrozenDiscoveryModel(
   frozen: ProviderModelPair & {
     modelProfileVersion: string;
     providerInstructionProfile: string;
@@ -167,15 +167,15 @@ export function validateFrozenClassificationModel(
   },
   realProvidersEnabled = false
 ): ProviderModelSelection {
-  const profile = classificationProfile(frozen.provider, frozen.model);
+  const profile = discoveryProfile(frozen.provider, frozen.model);
   if (
     !profile ||
     !profile.enabled ||
-    !profile.eligibleForClassification ||
+    !profile.eligibleForDiscovery ||
     !profile.adapterSupported
   ) {
     throw new InvalidProviderModelSelectionError(
-      `Frozen classifier ${frozen.provider}/${frozen.model} is unavailable`
+      `Frozen discovery model ${frozen.provider}/${frozen.model} is unavailable`
     );
   }
   if (profile.provider !== "mock" && !realProvidersEnabled) {
@@ -183,7 +183,7 @@ export function validateFrozenClassificationModel(
   }
   if (profile.modelProfileVersion !== frozen.modelProfileVersion) {
     throw new InvalidProviderModelSelectionError(
-      "Frozen classifier model-profile version is unavailable"
+      "Frozen discovery model-profile version is unavailable"
     );
   }
   if (
@@ -191,7 +191,7 @@ export function validateFrozenClassificationModel(
     frozen.providerInstructionProfile
   ) {
     throw new InvalidProviderModelSelectionError(
-      "Frozen classifier instruction profile is unavailable"
+      "Frozen discovery instruction profile is unavailable"
     );
   }
   if (
@@ -201,7 +201,7 @@ export function validateFrozenClassificationModel(
     )
   ) {
     throw new InvalidProviderModelSelectionError(
-      "Frozen classifier structured-output mode is unavailable"
+      "Frozen discovery structured-output mode is unavailable"
     );
   }
   assertDepthSupported(profile, "weak");
