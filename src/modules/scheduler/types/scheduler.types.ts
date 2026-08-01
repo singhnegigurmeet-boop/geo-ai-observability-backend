@@ -3,8 +3,6 @@ import type {
   JsonObject,
   PromptDepth
 } from "../../../common/types/database.types.js";
-import type { ProviderModelSelection } from "../../providers/policies/provider-model.policy.js";
-import type { CanonicalAnalysisRequest } from "../../analysis/types/analysis.types.js";
 
 export type DueSchedulerJob = {
   scheduler_job_id: string;
@@ -24,10 +22,4 @@ export type DueSchedulerJob = {
   brand_id: string | null;
   product_id: string | null;
   use_context_id: string | null;
-};
-
-export type SchedulerRequestPolicy = {
-  providerModels: ProviderModelSelection[];
-  categoryIds: string[];
-  canonicalRequestPayload: CanonicalAnalysisRequest;
 };

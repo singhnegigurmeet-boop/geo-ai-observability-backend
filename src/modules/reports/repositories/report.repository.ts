@@ -350,7 +350,7 @@ export class ReportRepository {
           JOIN provider_jobs job ON job.discovery_job_id=discovery.hierarchy_discovery_job_id
           LEFT JOIN token_usage actual ON actual.provider_job_id=job.provider_job_id AND actual.usage_kind='actual'
           LEFT JOIN token_usage estimated ON estimated.provider_job_id=job.provider_job_id AND estimated.usage_kind='estimated'
-          WHERE discovery.pre_analysis_request_id=COALESCE(request.reused_from_pre_analysis_request_id,request.pre_analysis_request_id)
+          WHERE discovery.pre_analysis_request_id=request.pre_analysis_request_id
         ) usage ON true
         WHERE run.analysis_run_id=$1
       `,

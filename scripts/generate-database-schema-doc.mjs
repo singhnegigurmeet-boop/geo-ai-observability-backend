@@ -24,14 +24,16 @@ const purpose = {
   brand_products: "Links a product to a domain/category/brand branch through `category_brands`.",
   product_use_contexts: "Links a use context to a product branch through `brand_products`.",
   entity_paths: "Materializes valid hierarchy paths (domain through optional category, brand, product, and use context) for stable selection and analysis references.",
-  analysis_runs: "Top-level analysis request and lifecycle record, owned either by a guest session or by a user/workspace membership.",
+  pre_analysis_requests: "Stores owner-scoped accepted intent, discovery/readiness lifecycle, idempotency identity, and the reciprocal link to an eventual analysis run.",
+  hierarchy_discovery_jobs: "Stores one immutable, typed category/brand/product/use-context discovery branch and its mutable execution lifecycle.",
+  hierarchy_discovery_relationships: "Stores immutable discovery provenance linking one discovery job and optional same-job provider result to one authoritative hierarchy edge.",
+  analysis_runs: "Top-level normal-analysis lifecycle record created after the pre-analysis boundary, owned either by a guest session or by a user/workspace membership.",
   analysis_run_items: "Expands one analysis run into ordered work items, one per selected materialized entity path.",
   analysis_run_provider_models: "Immutable snapshot of the ordered provider/model choices used by an analysis run.",
-  analysis_run_requested_categories: "Immutable ordered snapshot of the exact active category candidates selected for a run, including `all` selections resolved at creation.",
-  domain_category_classification_jobs: "Aggregate and frozen execution context for one domain-category classification attempt over unresolved requested candidates.",
+  analysis_run_requested_categories: "Immutable ordered snapshot of exact active category candidates, owned by either one pre-analysis request or one analysis run.",
   llm_runs: "Groups prompt-generation and provider work for one analysis item; `run_key` permits distinct runs such as the primary run.",
   prompt_jobs: "Stores prompt planning/rendering jobs, rendered prompt text, input context, priority, attempts, and execution state.",
-  provider_jobs: "Stores one provider/model execution job for a rendered prompt and tracks retry and execution state.",
+  provider_jobs: "Stores one provider/model execution job for either a rendered normal prompt or a rendered hierarchy-discovery job and tracks retry and execution state.",
   provider_results: "Immutable raw and parsed response evidence returned by a provider, including validation outcome and latency.",
   provider_scores: "Immutable, versioned score calculated from one provider result, with component-level scoring evidence.",
   token_usage: "Immutable estimated or actual token/cost ledger entries for provider jobs; used for accounting and budget enforcement.",
@@ -47,7 +49,8 @@ const purpose = {
 const group = {
   "Identity and tenancy": ["users", "user_sessions", "anonymous_sessions", "workspaces", "workspace_members", "workspace_role_change_requests"],
   "Entity hierarchy": ["domains", "categories", "brands", "products", "use_contexts", "domain_categories", "category_brands", "brand_products", "product_use_contexts", "entity_paths"],
-  "Analysis execution": ["analysis_runs", "analysis_run_requested_categories", "analysis_run_provider_models", "domain_category_classification_jobs", "analysis_run_items", "llm_runs", "prompt_jobs", "provider_jobs"],
+  "Pre-analysis and discovery": ["pre_analysis_requests", "analysis_run_requested_categories", "hierarchy_discovery_jobs", "hierarchy_discovery_relationships"],
+  "Analysis execution": ["analysis_runs", "analysis_run_provider_models", "analysis_run_items", "llm_runs", "prompt_jobs", "provider_jobs"],
   "Evidence, scoring, and reporting": ["provider_results", "provider_scores", "token_usage", "reports"],
   "Budgets, scheduling, and reliability": ["budget_policies", "scheduler_jobs", "scheduler_job_requested_categories", "notifications", "outbox_events", "failure_records"],
 };
@@ -99,9 +102,10 @@ for (const match of sql.matchAll(/ALTER TABLE ONLY public\.(\w+)\s+ADD CONSTRAIN
 }
 
 const triggers = new Map();
-for (const match of sql.matchAll(/CREATE TRIGGER (\S+) ([\s\S]*?) ON public\.(\w+) FOR EACH ROW EXECUTE FUNCTION public\.(\w+)\(\);/g)) {
+for (const match of sql.matchAll(/CREATE (?:CONSTRAINT )?TRIGGER (\S+) (.+?) ON public\.(\w+) (.*?)FOR EACH ROW EXECUTE FUNCTION public\.(\w+)\(\);/g)) {
   const values = triggers.get(match[3]) ?? [];
-  values.push(`${match[1]}: ${match[2].replace(/\s+/g, " ").trim()} -> \`${match[4]}()\``);
+  const definition = `${match[2]} ${match[4]}`.replace(/\s+/g, " ").trim();
+  values.push(`${match[1]}: ${definition} -> \`${match[5]}()\``);
   triggers.set(match[3], values);
 }
 
@@ -151,6 +155,29 @@ function compactCheck(definition) {
   return `\`${match[1]}\`: \`${match[2].replace(/\s+/g, " ")}\``;
 }
 
+for (const [tableName, body] of tables) {
+  const definitions = splitDefinitions(body);
+  if (!primaryKeys.has(tableName)) {
+    for (const definition of definitions) {
+      const tablePrimary = /^CONSTRAINT \S+ PRIMARY KEY \(([^)]+)\)$/.exec(definition);
+      const columnPrimary = /^(\w+)\s+[\s\S]*\bPRIMARY KEY\b/.exec(definition);
+      if (tablePrimary) primaryKeys.set(tableName, tablePrimary[1]);
+      else if (columnPrimary) primaryKeys.set(tableName, columnPrimary[1]);
+    }
+  }
+  for (const definition of definitions) {
+    const tableUnique = /^CONSTRAINT \S+ UNIQUE( NULLS NOT DISTINCT)? \(([^)]+)\)$/.exec(definition);
+    const columnUnique = /^(\w+)\s+[\s\S]*\bUNIQUE\b/.exec(definition);
+    if (!tableUnique && !columnUnique) continue;
+    const value = tableUnique
+      ? `(${tableUnique[2]})${tableUnique[1] ? " NULLS NOT DISTINCT" : ""}`
+      : `(${columnUnique[1]})`;
+    const values = uniqueConstraints.get(tableName) ?? [];
+    if (!values.includes(value)) values.push(value);
+    uniqueConstraints.set(tableName, values);
+  }
+}
+
 function escapeCell(value) {
   return String(value).replaceAll("|", "\\|").replaceAll("\n", " ");
 }
@@ -168,10 +195,11 @@ const lines = [
   "users --< workspace_members >-- workspaces",
   "  |                                  |",
   "  +-- sessions                      +-- scheduler_jobs --< scheduler_job_requested_categories",
-  "                                     +-- analysis_runs --< analysis_run_requested_categories",
-  "entity hierarchy --> entity_paths ---------+       |",
-  "                                             |       +--< domain_category_classification_jobs --< provider_jobs",
-  "                                             +--< analysis_run_items --< llm_runs --< prompt_jobs --< provider_jobs",
+  "                                     +-- scheduler occurrence --> pre_analysis_requests",
+  "entity hierarchy --> entity_paths ---------+       +--< analysis_run_requested_categories",
+  "                                             |       +--< hierarchy_discovery_jobs --< provider_jobs",
+  "                                             |                 +--< hierarchy_discovery_relationships --> hierarchy edges",
+  "                                             +-- analysis_runs --< analysis_run_items --< llm_runs --< prompt_jobs --< provider_jobs",
   "                                                                                               +-- provider_results -- provider_scores",
   "                                                                                               +-- token_usage",
   "analysis_runs --< reports",
@@ -269,9 +297,10 @@ if (missing.length) throw new Error(`Undocumented tables: ${missing.join(", ")}`
 lines.push(
   "## Operational notes",
   "",
-  "- Frozen selection/evidence tables (`analysis_run_requested_categories`, `analysis_run_provider_models`, `scheduler_job_requested_categories`, `provider_results`, `provider_scores`, `token_usage`, and `reports`) reject updates and deletes through database triggers. New versions or revisions must be inserted instead.",
+  "- Frozen selection/evidence tables (`analysis_run_requested_categories`, `analysis_run_provider_models`, `hierarchy_discovery_relationships`, `scheduler_job_requested_categories`, `provider_results`, `provider_scores`, `token_usage`, and `reports`) reject updates and deletes through database triggers. New versions or revisions must be inserted instead.",
+  "- Discovery-job identity and accepted pre-analysis intent are protected by dedicated triggers; request/run links are checked reciprocally by deferred constraint triggers.",
   "- `analysis_runs` preserves its anonymous origin. A claimed guest run may gain registered ownership only when it matches the immutable claim recorded on `anonymous_sessions`.",
-  "- Every `provider_jobs` row has exactly one parent: a rendered `prompt_jobs` row or a rendered `domain_category_classification_jobs` row.",
+  "- Every `provider_jobs` row has exactly one parent: a rendered `prompt_jobs` row or a rendered `hierarchy_discovery_jobs` row. Discovery attempts must match the frozen primary or fallback provider/model pair.",
   "- `provider_results.raw_response` retains at most 256 KiB; truncation and original UTF-8 byte length are recorded explicitly.",
   "- Inserts or state transitions can create notifications and outbox events for report readiness, budget pauses, cancellations, and terminal technical failures.",
   "- Monetary limits and usage are stored as integer millionths in `cost_limit_micros` and `cost_micros`, avoiding floating-point currency errors.",

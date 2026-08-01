@@ -168,7 +168,7 @@ describe("Scheduler, notifications, and readiness integration", {
   });
 
   it("revalidates scheduler authorization and hierarchy before creating a run", async () => {
-    for (const invalidation of ["user", "hierarchy"] as const) {
+    for (const invalidation of ["user", "viewer", "hierarchy"] as const) {
       await truncatePublicTables(pool);
       const fixture = await seedOwnedHierarchy(pool);
       const dueAt = new Date("2026-07-25T00:00:00.000Z");
@@ -204,6 +204,11 @@ describe("Scheduler, notifications, and readiness integration", {
           "UPDATE users SET status = 'disabled' WHERE user_id = $1",
           [fixture.userId]
         );
+      } else if (invalidation === "viewer") {
+        await pool.query(
+          "UPDATE workspace_members SET role='viewer' WHERE user_id=$1 AND workspace_id=$2",
+          [fixture.userId, fixture.workspaceId]
+        );
       } else {
         await pool.query(
           `UPDATE domains SET is_active = false
@@ -218,11 +223,13 @@ describe("Scheduler, notifications, and readiness integration", {
       const state = await pool.query<{
         status: string;
         runs: string;
+        requests: string;
         events: string;
         error_code: string;
       }>(
         `SELECT schedule.status,
                 (SELECT count(*)::text FROM analysis_runs) AS runs,
+                (SELECT count(*)::text FROM pre_analysis_requests) AS requests,
                 (SELECT count(*)::text FROM outbox_events
                  WHERE event_type = 'analysis_run.created') AS events,
                 failure.error_code
@@ -233,10 +240,11 @@ describe("Scheduler, notifications, and readiness integration", {
       );
       assert.equal(state.rows[0]?.status, "paused");
       assert.equal(state.rows[0]?.runs, "0");
+      assert.equal(state.rows[0]?.requests, "0");
       assert.equal(state.rows[0]?.events, "0");
       assert.equal(
         state.rows[0]?.error_code,
-        invalidation === "user"
+        invalidation === "user" || invalidation === "viewer"
           ? "SCHEDULER_AUTHORIZATION_NO_LONGER_VALID"
           : "HIERARCHY_NO_LONGER_VALID"
       );

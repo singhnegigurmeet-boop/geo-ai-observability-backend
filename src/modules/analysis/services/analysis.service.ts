@@ -32,6 +32,7 @@ import {
   ANALYSIS_PLANNER_VERSION,
   CanonicalAnalysisPlannerService
 } from "./canonical-analysis-planner.service.js";
+import { requireWorkspaceMutationRole } from "../../workspaces/services/workspace-authorization.service.js";
 
 type AnalysisDatabase = DatabaseExecutor & TransactionPool;
 
@@ -120,6 +121,9 @@ export class AnalysisService {
     clientIdempotencyKey: string,
     owner: OwnershipContext
   ): Promise<CreateAnalysisResponse> {
+    if (owner.actorType === "user") {
+      requireWorkspaceMutationRole(owner.workspaceRole);
+    }
     return inTransaction(this.database, async (client) => {
       const categorySelection = request.categorySelection ?? { mode: "all" as const };
       const requestedCategories =
@@ -246,6 +250,9 @@ export class AnalysisService {
   }
 
   async cancel(analysisRunId: string, owner: OwnershipContext) {
+    if (owner.actorType === "user") {
+      requireWorkspaceMutationRole(owner.workspaceRole);
+    }
     return inTransaction(this.database, async (client) => {
       const analyses = new AnalysisRepository(client);
       const run = await analyses.findOwnedRunForUpdate(analysisRunId, owner);

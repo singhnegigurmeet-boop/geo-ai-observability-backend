@@ -47,16 +47,44 @@ export class PreAnalysisRequestRepository {
     return result.rows[0] ?? null;
   }
 
-  async findReusable(domainId: string, compatibilityHash: string, excludingId: string) {
+  async findReusable(request: PreAnalysisRequestRow) {
+    const authenticated = request.user_id !== null && request.workspace_id !== null;
     const result = await this.database.query<PreAnalysisRequestRow>(
       `SELECT * FROM pre_analysis_requests
        WHERE domain_id=$1 AND discovery_compatibility_hash=$2
-         AND pre_analysis_request_id<>$3
-         AND status='analysis_created' AND discovery_status IN ('completed','partial_success')
+          AND pre_analysis_request_id<>$3
+          AND status='analysis_created' AND discovery_status IN ('completed','partial_success')
+          AND (
+            ($4::boolean AND user_id IS NOT NULL AND workspace_id=$5)
+            OR
+            (NOT $4::boolean AND user_id IS NULL AND workspace_id IS NULL
+             AND anonymous_session_id=$6)
+          )
        ORDER BY completed_at DESC, pre_analysis_request_id DESC LIMIT 1`,
-      [domainId, compatibilityHash, excludingId]
+      [request.domain_id, request.discovery_compatibility_hash,
+       request.pre_analysis_request_id, authenticated, request.workspace_id,
+       request.anonymous_session_id]
     );
     return result.rows[0] ?? null;
+  }
+
+  async hasCompletedCompatibleExecution(request: PreAnalysisRequestRow) {
+    const result = await this.database.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pre_analysis_requests prior
+         WHERE prior.domain_id=$1 AND prior.discovery_compatibility_hash=$2
+           AND prior.pre_analysis_request_id<>$3
+           AND prior.status='analysis_created'
+           AND prior.discovery_status IN ('completed','partial_success')
+           AND EXISTS (
+             SELECT 1 FROM hierarchy_discovery_jobs discovery
+             WHERE discovery.pre_analysis_request_id=prior.pre_analysis_request_id
+           )
+       ) AS exists`,
+      [request.domain_id, request.discovery_compatibility_hash,
+       request.pre_analysis_request_id]
+    );
+    return result.rows[0]?.exists ?? false;
   }
 
   async mark(id: string, input: { status: PreAnalysisRequestRow["status"]; discoveryStatus?: string | null; coverage?: JsonObject; errorCode?: string | null; errorMessage?: string | null; analysisRunId?: string | null; reusedFrom?: string | null }) {

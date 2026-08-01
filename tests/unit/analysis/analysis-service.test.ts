@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ownerScopedIdempotencyKey } from "../../../src/modules/analysis/services/analysis.service.js";
+import { AnalysisService, ownerScopedIdempotencyKey } from "../../../src/modules/analysis/services/analysis.service.js";
+import { ApplicationError } from "../../../src/common/errors/application-error.js";
 import type { OwnershipContext } from "../../../src/common/ownership/ownership-context.types.js";
 
 describe("analysis service ownership keys", () => {
@@ -29,5 +30,27 @@ describe("analysis service ownership keys", () => {
       ownerScopedIdempotencyKey(owner, "request"),
       "user:21:31:request"
     );
+  });
+
+  it("rejects viewer create and cancel before touching the database", async () => {
+    let queries = 0;
+    const database = {
+      async query() { queries += 1; throw new Error("database must not be touched"); },
+      async connect() { queries += 1; throw new Error("database must not be touched"); }
+    } as never;
+    const service = new AnalysisService(database);
+    const viewer: OwnershipContext = {
+      actorType: "user", anonymousSessionId: null, userId: "21",
+      workspaceId: "31", workspaceRole: "viewer"
+    };
+    const forbidden = (error: unknown) =>
+      error instanceof ApplicationError && error.category === "FORBIDDEN";
+
+    await assert.rejects(
+      service.create({ domain: "example.com", promptDepth: "medium" }, "key", viewer),
+      forbidden
+    );
+    await assert.rejects(service.cancel("41", viewer), forbidden);
+    assert.equal(queries, 0);
   });
 });

@@ -324,6 +324,30 @@ describe("exact report lifecycle", () => {
     assert.equal(coverage.usableEvidenceCoverage, null);
     assert.equal(coverage.scoreBearingCoverage, null);
   });
+
+  it("exposes reused discovery semantically without leaking its request id", () => {
+    const report = buildMultiProviderReport(
+      "9",
+      [],
+      "completed",
+      {
+        discovery_status: "completed",
+        discovery_coverage: {},
+        reused_from_pre_analysis_request_id: "12345",
+        input_tokens: null,
+        output_tokens: null,
+        cost_micros: null,
+        estimated_input_tokens: null,
+        estimated_output_tokens: null,
+        estimated_cost_micros: null
+      }
+    );
+    const serialized = JSON.stringify(report);
+    assert.equal(report.methodology.reused, true);
+    assert.equal(report.hierarchyDiscovery?.reused, true);
+    assert.equal(serialized.includes("12345"), false);
+    assert.equal(serialized.includes("reusedFromPreAnalysisRequestId"), false);
+  });
 });
 
 function planFor(

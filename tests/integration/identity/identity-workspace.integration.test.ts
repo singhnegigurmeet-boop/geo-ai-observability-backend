@@ -255,6 +255,86 @@ describe(
       );
     });
 
+    it("makes concurrent same-owner claims idempotent", async () => {
+      const owner = await provisionUser(
+        provisioning,
+        "claim-concurrent-same@example.com",
+        "Concurrent Same Claim Workspace"
+      );
+      const anonymous = createAnonymousService(pool, tokens);
+      const created = await anonymous.create();
+      const input = {
+        anonymousSessionId: created.session.anonymous_session_id,
+        userId: owner.user.user_id,
+        workspaceId: owner.workspace.workspace_id
+      };
+
+      const [first, second] = await Promise.all([
+        anonymous.claim(input), anonymous.claim(input)
+      ]);
+      assert.equal(first.claimed_by_user_id, owner.user.user_id);
+      assert.equal(second.claimed_by_user_id, owner.user.user_id);
+      assert.equal(first.claimed_at?.toISOString(), second.claimed_at?.toISOString());
+    });
+
+    it("allows exactly one of two concurrent different-owner claims", async () => {
+      const first = await provisionUser(
+        provisioning,
+        "claim-concurrent-first@example.com",
+        "Concurrent First Claim Workspace"
+      );
+      const second = await provisionUser(
+        provisioning,
+        "claim-concurrent-second@example.com",
+        "Concurrent Second Claim Workspace"
+      );
+      const anonymous = createAnonymousService(pool, tokens);
+      const created = await anonymous.create();
+      const settled = await Promise.allSettled([
+        anonymous.claim({ anonymousSessionId: created.session.anonymous_session_id, userId: first.user.user_id, workspaceId: first.workspace.workspace_id }),
+        anonymous.claim({ anonymousSessionId: created.session.anonymous_session_id, userId: second.user.user_id, workspaceId: second.workspace.workspace_id })
+      ]);
+
+      assert.equal(settled.filter((result) => result.status === "fulfilled").length, 1);
+      const rejected = settled.find((result) => result.status === "rejected");
+      assert.ok(rejected && rejected.status === "rejected");
+      assert.ok(rejected.reason instanceof ApplicationError);
+      assert.equal(rejected.reason.category, "CONFLICT");
+      const stored = await new AnonymousSessionRepository(pool).findByTokenHash(
+        created.session.token_hash
+      );
+      const winner = settled.find((result) => result.status === "fulfilled");
+      assert.ok(winner && winner.status === "fulfilled");
+      assert.equal(stored?.claimed_by_user_id, winner.value.claimed_by_user_id);
+      assert.equal(stored?.claimed_workspace_id, winner.value.claimed_workspace_id);
+    });
+
+    it("rejects viewer claims without mutating the anonymous session", async () => {
+      const viewer = await provisionUser(
+        provisioning,
+        "claim-viewer@example.com",
+        "Viewer Claim Workspace"
+      );
+      await pool.query(
+        "UPDATE workspace_members SET role='viewer' WHERE user_id=$1 AND workspace_id=$2",
+        [viewer.user.user_id, viewer.workspace.workspace_id]
+      );
+      const anonymous = createAnonymousService(pool, tokens);
+      const created = await anonymous.create();
+
+      await assertCategory(anonymous.claim({
+        anonymousSessionId: created.session.anonymous_session_id,
+        userId: viewer.user.user_id,
+        workspaceId: viewer.workspace.workspace_id
+      }), "FORBIDDEN");
+      const stored = await new AnonymousSessionRepository(pool).findByTokenHash(
+        created.session.token_hash
+      );
+      assert.equal(stored?.claimed_by_user_id, null);
+      assert.equal(stored?.claimed_workspace_id, null);
+      assert.equal(stored?.claimed_at, null);
+    });
+
     it("rejects claims without membership and claims owned by someone else", async () => {
       const first = await provisionUser(
         provisioning,

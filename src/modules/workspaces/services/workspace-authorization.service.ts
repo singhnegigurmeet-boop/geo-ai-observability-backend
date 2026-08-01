@@ -5,6 +5,18 @@ import type {
 } from "../../../common/types/database.types.js";
 import type { WorkspaceMemberRepository } from "../repositories/workspace-member.repository.js";
 
+export const WORKSPACE_MUTATION_ROLES = ["owner", "admin", "member"] as const;
+
+export function requireWorkspaceMutationRole(role: WorkspaceRole) {
+  if (!(WORKSPACE_MUTATION_ROLES as readonly WorkspaceRole[]).includes(role)) {
+    throw new ApplicationError(
+      "FORBIDDEN",
+      "Workspace role does not permit mutations"
+    );
+  }
+  return role;
+}
+
 export class WorkspaceAuthorizationService {
   constructor(private readonly memberships: WorkspaceMemberRepository) {}
 
@@ -32,6 +44,11 @@ export class WorkspaceAuthorizationService {
         "Workspace role does not permit this action"
       );
     }
+    return membership;
+  }
+
+  requireMutationRole(membership: WorkspaceMemberRow) {
+    requireWorkspaceMutationRole(membership.role);
     return membership;
   }
 }

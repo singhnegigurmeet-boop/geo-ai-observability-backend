@@ -122,6 +122,8 @@ export class ReportOutcomeService {
           methodology?.selected_provider_models ?? [],
         discoveryStatus: discovery?.discovery_status ?? null,
         discoveryCoverage: discovery?.discovery_coverage ?? null,
+        reused: discovery?.reused_from_pre_analysis_request_id !== null &&
+          discovery?.reused_from_pre_analysis_request_id !== undefined,
         scoringVersion: SCORING_VERSION,
         reportVersion: MULTI_PROVIDER_REPORT_VERSION,
         createdAt: methodology?.created_at ?? null,

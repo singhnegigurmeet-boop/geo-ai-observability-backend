@@ -3,6 +3,7 @@ import { inTransaction } from "../../../common/database/database-executor.js";
 import { ApplicationError } from "../../../common/errors/application-error.js";
 import type { AnonymousSessionRow } from "../../../common/types/database.types.js";
 import { WorkspaceMemberRepository } from "../../workspaces/repositories/workspace-member.repository.js";
+import { WorkspaceAuthorizationService } from "../../workspaces/services/workspace-authorization.service.js";
 import { AnonymousSessionRepository } from "../repositories/anonymous-session.repository.js";
 import type {
   CreateAnonymousSessionInput,
@@ -69,6 +70,7 @@ export class AnonymousSessionService {
     return inTransaction(this.transactionPool, async (client) => {
       const anonymousSessions = new AnonymousSessionRepository(client);
       const memberships = new WorkspaceMemberRepository(client);
+      const authorization = new WorkspaceAuthorizationService(memberships);
       const session = await anonymousSessions.findByIdForUpdate(
         input.anonymousSessionId
       );
@@ -82,6 +84,12 @@ export class AnonymousSessionService {
       const now = this.now();
       assertSessionUsable(session.status, session.expires_at, now);
 
+      const membership = await authorization.requireMembership(
+        input.userId,
+        input.workspaceId
+      );
+      authorization.requireMutationRole(membership);
+
       if (
         session.claimed_by_user_id !== null &&
         (session.claimed_by_user_id !== input.userId ||
@@ -90,17 +98,6 @@ export class AnonymousSessionService {
         throw new ApplicationError(
           "CONFLICT",
           "Anonymous session is already claimed by another owner"
-        );
-      }
-
-      const membership = await memberships.findActiveMembership(
-        input.userId,
-        input.workspaceId
-      );
-      if (!membership) {
-        throw new ApplicationError(
-          "FORBIDDEN",
-          "User is not a member of the requested workspace"
         );
       }
 

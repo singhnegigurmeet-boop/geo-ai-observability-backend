@@ -44,6 +44,22 @@ describe("workspace authorization", () => {
       hasCategory("FORBIDDEN")
     );
   });
+
+  it("centralizes mutation authorization for owner, admin, and member only", () => {
+    const service = new WorkspaceAuthorizationService({} as never);
+    const membership = (role: "owner" | "admin" | "member" | "viewer") => ({
+      workspace_id: "1", user_id: "2", role,
+      joined_at: new Date(), updated_at: new Date()
+    });
+
+    for (const role of ["owner", "admin", "member"] as const) {
+      assert.equal(service.requireMutationRole(membership(role)).role, role);
+    }
+    assert.throws(
+      () => service.requireMutationRole(membership("viewer")),
+      hasCategory("FORBIDDEN")
+    );
+  });
 });
 
 function hasCategory(category: ApplicationError["category"]) {

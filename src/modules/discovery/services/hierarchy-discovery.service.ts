@@ -31,14 +31,16 @@ export class HierarchyDiscoveryService {
       const categoryIds = await new AnalysisRunRequestedCategoryRepository(client).listRequestIds(request.pre_analysis_request_id);
       await requests.mark(request.pre_analysis_request_id, { status: "checking_hierarchy" });
       const readiness = new HierarchyReadinessService(client);
-      const reusable = await requests.findReusable(request.domain_id, request.discovery_compatibility_hash, request.pre_analysis_request_id);
+      const reusable = await requests.findReusable(request);
       if (reusable && await readiness.isReady(path, categoryIds)) {
         await requests.mark(request.pre_analysis_request_id, { status: "planning", discoveryStatus: reusable.discovery_status ?? "completed", coverage: reusable.discovery_coverage, reusedFrom: reusable.pre_analysis_request_id });
         request = (await requests.findForUpdate(request.pre_analysis_request_id))!;
         const runId = await new AnalysisCreationService(client, this.realProvidersEnabled).create(request);
         return { outcome: "analysis_created" as const, analysisRunId: runId };
       }
-      if (await readiness.isReady(path, categoryIds)) {
+      const independentExecutionRequired = !reusable &&
+        await requests.hasCompletedCompatibleExecution(request);
+      if (!independentExecutionRequired && await readiness.isReady(path, categoryIds)) {
         await requests.mark(request.pre_analysis_request_id, { status: "planning", discoveryStatus: "completed", coverage: { mode: "authoritative_hierarchy_reuse", incompleteBranches: [] } });
         request = (await requests.findForUpdate(request.pre_analysis_request_id))!;
         const runId = await new AnalysisCreationService(client, this.realProvidersEnabled).create(request);
@@ -56,7 +58,7 @@ export class HierarchyDiscoveryService {
           return { outcome: "paused_budget" as const, analysisRunId: null };
         }
         if (existing.length === 0) {
-          const created = await this.createStageJobs(client, request, path, categoryIds, stage);
+          const created = await this.createStageJobs(client, request, path, categoryIds, stage, independentExecutionRequired);
           if (created > 0) return { outcome: "discovering" as const, analysisRunId: null };
         }
         if (stage === "category" && !(await readiness.hasViableTarget(path, categoryIds))) {
@@ -78,11 +80,11 @@ export class HierarchyDiscoveryService {
     });
   }
 
-  private async createStageJobs(client: DatabaseExecutor, request: PreAnalysisRequestRow, path: EntityPathRow, categoryIds: string[], stage: HierarchyDiscoveryStage) {
-    const contexts = await stageContexts(client, request, path, categoryIds, stage);
+  private async createStageJobs(client: DatabaseExecutor, request: PreAnalysisRequestRow, path: EntityPathRow, categoryIds: string[], stage: HierarchyDiscoveryStage, independentExecutionRequired: boolean) {
+    const contexts = await stageContexts(client, request, path, categoryIds, stage, independentExecutionRequired);
     let created = 0;
     for (const context of contexts) {
-      if (context.hasActiveChildren) continue;
+      if (context.hasActiveChildren && !independentExecutionRequired) continue;
       const profileData = parseDiscoveryProfile(request.request_payload);
       const profile = providerModelProfile(profileData.provider, profileData.model);
       if (!profile || !profile.eligibleForDiscovery || (!this.realProvidersEnabled && profile.provider !== "mock")) throw new PermanentDiscoveryError("DISCOVERY_PROFILE_UNAVAILABLE", "Frozen discovery provider/model is unavailable");
@@ -101,17 +103,17 @@ export class HierarchyDiscoveryService {
 
 function nextStage(pathType: EntityPathRow["path_type"]): HierarchyDiscoveryStage { return pathType === "domain" ? "category" : pathType === "category" ? "brand" : pathType === "brand" ? "product" : "use_context"; }
 
-async function stageContexts(database: DatabaseExecutor, request: PreAnalysisRequestRow, path: EntityPathRow, categoryIds: string[], stage: HierarchyDiscoveryStage) {
+async function stageContexts(database: DatabaseExecutor, request: PreAnalysisRequestRow, path: EntityPathRow, categoryIds: string[], stage: HierarchyDiscoveryStage, independentExecutionRequired: boolean) {
   if (stage === "category") {
     const candidates = await database.query<{ id:string; name:string }>(
       `SELECT c.category_id AS id,c.category_name AS name
        FROM categories c
        LEFT JOIN domain_categories dc
          ON dc.domain_id=$1 AND dc.category_id=c.category_id AND dc.is_active
-       WHERE c.category_id=ANY($2::bigint[]) AND c.is_active
-         AND dc.domain_category_id IS NULL
+         WHERE c.category_id=ANY($2::bigint[]) AND c.is_active
+          AND ($3::boolean OR dc.domain_category_id IS NULL)
        ORDER BY c.normalized_name,c.category_id`,
-      [path.domain_id, categoryIds]
+      [path.domain_id, categoryIds, independentExecutionRequired]
     );
     return [{ domainCategoryId:null,categoryBrandId:null,brandProductId:null,hasActiveChildren:candidates.rows.length===0,candidates:candidates.rows,inputPayload:{ domain:{id:path.domain_id,name:request.request_payload.domain as string}, candidates:candidates.rows } as JsonObject }];
   }

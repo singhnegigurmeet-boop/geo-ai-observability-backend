@@ -314,8 +314,8 @@ export function buildMultiProviderReport(
       matchedCategories: methodology?.matched_categories ?? [],
       hierarchyDiscoveryStatus: discovery?.discovery_status ?? null,
       hierarchyDiscoveryCoverage: discovery?.discovery_coverage ?? {},
-      reusedFromPreAnalysisRequestId:
-        discovery?.reused_from_pre_analysis_request_id ?? null,
+      reused: discovery?.reused_from_pre_analysis_request_id !== null &&
+        discovery?.reused_from_pre_analysis_request_id !== undefined,
       promptDepth: methodology?.prompt_depth ?? null,
       promptPolicyVersion: methodology?.prompt_policy_version ?? null,
       selectedProviderModels:
@@ -417,8 +417,7 @@ export function buildMultiProviderReport(
       ? {
           status: discovery.discovery_status,
           coverage: discovery.discovery_coverage,
-          reusedFromPreAnalysisRequestId:
-            discovery.reused_from_pre_analysis_request_id,
+          reused: discovery.reused_from_pre_analysis_request_id !== null,
           usage: {
             inputTokens: Number(discovery.input_tokens ?? 0),
             outputTokens: Number(discovery.output_tokens ?? 0),
@@ -507,7 +506,8 @@ function buildCategoryScores(
         group.length === 0 ? 0 : round((scores.length / group.length) * 100),
       discoverySource: discoverySource(
         provenance ?? undefined,
-        discovery?.reused_from_pre_analysis_request_id ?? null,
+        discovery?.reused_from_pre_analysis_request_id !== null &&
+          discovery?.reused_from_pre_analysis_request_id !== undefined,
         methodology?.created_at ?? null
       ),
       discoveryProviderResultProvenance:
@@ -974,7 +974,7 @@ function compareModelPath(
 
 function discoverySource(
   provenance: JsonObject | undefined,
-  reusedFromPreAnalysisRequestId: string | null,
+  reused: boolean,
   runCreatedAt: string | null
 ) {
   if (!provenance) return null;
@@ -985,7 +985,7 @@ function discoverySource(
       ? provenance.source
       : null;
   }
-  if (reusedFromPreAnalysisRequestId !== null) return "reused_discovery";
+  if (reused) return "reused_discovery";
   const relationshipCreatedAt =
     typeof provenance.relationshipCreatedAt === "string"
       ? Date.parse(provenance.relationshipCreatedAt)

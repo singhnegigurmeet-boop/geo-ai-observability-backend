@@ -77,11 +77,67 @@ describe("Transactional pre-analysis API integration", { skip: !enabled, concurr
     assert.equal(preview.discoveryRequired, true);
     assert.deepEqual(await counts(pool), before);
   });
+
+  it("allows viewer preview and owned reads while denying mutations without writes", async () => {
+    const user = await pool.query<{ user_id: string }>("INSERT INTO users(email) VALUES($1) RETURNING user_id", [`viewer-${crypto.randomUUID()}@example.com`]);
+    const workspace = await pool.query<{ workspace_id: string }>("INSERT INTO workspaces(workspace_name,created_by_user_id) VALUES($1,$2) RETURNING workspace_id", [`Viewer ${crypto.randomUUID()}`, user.rows[0]!.user_id]);
+    await pool.query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'viewer')", [workspace.rows[0]!.workspace_id, user.rows[0]!.user_id]);
+    const viewer: OwnershipContext = { actorType: "user", anonymousSessionId: null, userId: user.rows[0]!.user_id, workspaceId: workspace.rows[0]!.workspace_id, workspaceRole: "viewer" };
+    const domain = await pool.query<{ domain_id: string }>("INSERT INTO domains(normalized_domain) VALUES($1) RETURNING domain_id", [`viewer-${crypto.randomUUID()}.example`]);
+    const path = await pool.query<{ entity_path_id: string }>("INSERT INTO entity_paths(domain_id,path_type) VALUES($1,'domain') RETURNING entity_path_id", [domain.rows[0]!.domain_id]);
+    const request = await pool.query<{ pre_analysis_request_id: string }>(
+      `INSERT INTO pre_analysis_requests(idempotency_key,user_id,workspace_id,domain_id,starting_entity_path_id,category_selection_mode,prompt_depth,source,status,request_payload,canonical_request_hash,discovery_compatibility_hash)
+       VALUES($1,$2,$3,$4,$5,'all','medium','manual','accepted','{}',$6,$6) RETURNING pre_analysis_request_id`,
+      [`viewer-request-${crypto.randomUUID()}`, viewer.userId, viewer.workspaceId, domain.rows[0]!.domain_id, path.rows[0]!.entity_path_id, "c".repeat(64)]
+    );
+    const run = await pool.query<{ analysis_run_id: string }>(
+      `INSERT INTO analysis_runs(idempotency_key,user_id,workspace_id,starting_entity_path_id,category_selection_mode,prompt_depth,prompt_policy_version,source,status,request_payload)
+       VALUES($1,$2,$3,$4,'all','medium','geo-prompt-policy-v1','manual','queued','{}') RETURNING analysis_run_id`,
+      [`viewer-run-${crypto.randomUUID()}`, viewer.userId, viewer.workspaceId, path.rows[0]!.entity_path_id]
+    );
+    await pool.query(
+      `INSERT INTO reports(idempotency_key,analysis_run_id,report_version,revision,status,report_data,rendered_text)
+       VALUES($1,$2,'multi-provider-report-v1',1,'completed','{}','viewer report')`,
+      [`viewer-report-${crypto.randomUUID()}`, run.rows[0]!.analysis_run_id]
+    );
+    const analyses = new AnalysisService(pool);
+
+    const before = await counts(pool);
+    assert.equal((await analyses.preview({ domain: "viewer-preview.example" }, viewer)).discoveryRequired, true);
+    assert.equal((await analyses.getRequestStatus(request.rows[0]!.pre_analysis_request_id, viewer)).status, "accepted");
+    assert.equal((await analyses.getStatus(run.rows[0]!.analysis_run_id, viewer)).status, "queued");
+    assert.equal((await analyses.getReport(run.rows[0]!.analysis_run_id, viewer)).renderedText, "viewer report");
+    await assert.rejects(
+      analyses.create({ domain: "viewer-create.example", promptDepth: "medium" }, "viewer-create", viewer),
+      (error) => error instanceof ApplicationError && error.category === "FORBIDDEN"
+    );
+    await assert.rejects(
+      analyses.cancel(run.rows[0]!.analysis_run_id, viewer),
+      (error) => error instanceof ApplicationError && error.category === "FORBIDDEN"
+    );
+    assert.deepEqual(await counts(pool), before);
+    assert.equal((await analyses.getStatus(run.rows[0]!.analysis_run_id, viewer)).status, "queued");
+  });
+
+  it("preserves analysis creation for owner, admin, and member", async () => {
+    const user = await pool.query<{ user_id: string }>("INSERT INTO users(email) VALUES($1) RETURNING user_id", [`mutation-${crypto.randomUUID()}@example.com`]);
+    const workspace = await pool.query<{ workspace_id: string }>("INSERT INTO workspaces(workspace_name,created_by_user_id) VALUES($1,$2) RETURNING workspace_id", [`Mutation ${crypto.randomUUID()}`, user.rows[0]!.user_id]);
+    await pool.query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')", [workspace.rows[0]!.workspace_id, user.rows[0]!.user_id]);
+    const analyses = new AnalysisService(pool);
+    for (const role of ["owner", "admin", "member"] as const) {
+      await pool.query("UPDATE workspace_members SET role=$3 WHERE workspace_id=$1 AND user_id=$2", [workspace.rows[0]!.workspace_id, user.rows[0]!.user_id, role]);
+      const actor: OwnershipContext = { actorType: "user", anonymousSessionId: null, userId: user.rows[0]!.user_id, workspaceId: workspace.rows[0]!.workspace_id, workspaceRole: role };
+      assert.equal((await analyses.create({ domain: `${role}.mutation.example`, promptDepth: "medium" }, `mutation-${role}`, actor)).status, "accepted");
+    }
+    assert.equal((await pool.query("SELECT 1 FROM pre_analysis_requests")).rowCount, 3);
+  });
 });
 
 async function counts(pool: pg.Pool) {
-  const result = await pool.query<{ requests: string; runs: string; jobs: string; events: string }>(
+  const result = await pool.query<{ requests: string; requestedCategories: string; discoveryJobs: string; runs: string; jobs: string; events: string }>(
     `SELECT (SELECT count(*)::text FROM pre_analysis_requests) requests,
+            (SELECT count(*)::text FROM analysis_run_requested_categories) "requestedCategories",
+            (SELECT count(*)::text FROM hierarchy_discovery_jobs) "discoveryJobs",
             (SELECT count(*)::text FROM analysis_runs) runs,
             (SELECT count(*)::text FROM provider_jobs) jobs,
             (SELECT count(*)::text FROM outbox_events) events`

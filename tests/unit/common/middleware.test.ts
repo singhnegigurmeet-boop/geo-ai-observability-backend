@@ -39,6 +39,15 @@ describe("error middleware", () => {
     });
   });
 
+  it("maps viewer mutation denials to HTTP 403", () => {
+    const captured = captureError(
+      new ApplicationError("FORBIDDEN", "Workspace role does not permit mutations")
+    );
+
+    assert.equal(captured.statusCode, 403);
+    assert.equal((captured.body as { code: string }).code, "FORBIDDEN");
+  });
+
   it("does not expose unexpected internal error details", () => {
     const captured = captureError(
       new Error("password=secret; relation internal_table does not exist")

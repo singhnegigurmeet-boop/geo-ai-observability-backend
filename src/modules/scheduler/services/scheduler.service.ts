@@ -24,7 +24,7 @@ import {
   HIERARCHY_DISCOVERY_POLICY_VERSION,
   HIERARCHY_DISCOVERY_PROMPT_VERSIONS
 } from "../../providers/contracts/provider-response.contracts.js";
-import type { ProviderName } from "../../../common/types/database.types.js";
+import type { ProviderName, WorkspaceRole } from "../../../common/types/database.types.js";
 
 type SchedulerDatabase = DatabaseExecutor & TransactionPool;
 
@@ -53,10 +53,17 @@ export class SchedulerService {
       await client.query("SAVEPOINT scheduler_tick_work");
       try {
         const intervalSeconds = parseInterval(job.schedule_expression);
+        let workspaceRole: WorkspaceRole;
         try {
-          await new WorkspaceAuthorizationService(
+          const authorization = new WorkspaceAuthorizationService(
             new WorkspaceMemberRepository(client)
-          ).requireMembership(job.created_by_user_id, job.workspace_id);
+          );
+          const membership = await authorization.requireMembership(
+            job.created_by_user_id,
+            job.workspace_id
+          );
+          authorization.requireMutationRole(membership);
+          workspaceRole = membership.role;
         } catch (error) {
           if (error instanceof ApplicationError) {
             throw new SchedulerValidationError(
@@ -151,7 +158,7 @@ export class SchedulerService {
         };
         const canonicalRequestHash = hashCanonical(canonicalRequest);
         const requests = new PreAnalysisRequestRepository(client);
-        const owner = { actorType: "user" as const, anonymousSessionId: null, userId: job.created_by_user_id, workspaceId: job.workspace_id, workspaceRole: "owner" as const };
+        const owner = { actorType: "user" as const, anonymousSessionId: null, userId: job.created_by_user_id, workspaceId: job.workspace_id, workspaceRole };
         let preAnalysisRequest = await requests.findByIdempotencyKey(tickKey);
         if (!preAnalysisRequest) {
           preAnalysisRequest = await requests.create({

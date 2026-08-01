@@ -431,6 +431,32 @@ BEGIN
       RAISE EXCEPTION 'discovery provider job requires a rendered nonblank prompt'
         USING ERRCODE = '23514';
     END IF;
+
+    IF NEW.discovery_attempt = 0 THEN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM public.hierarchy_discovery_jobs
+        WHERE hierarchy_discovery_job_id = NEW.discovery_job_id
+          AND primary_provider = NEW.provider
+          AND primary_model = NEW.model
+      ) THEN
+        RAISE EXCEPTION 'discovery primary provider job must match frozen primary provider/model'
+          USING ERRCODE = '23514';
+      END IF;
+    ELSIF NEW.discovery_attempt = 1 THEN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM public.hierarchy_discovery_jobs
+        WHERE hierarchy_discovery_job_id = NEW.discovery_job_id
+          AND fallback_provider IS NOT NULL
+          AND fallback_model IS NOT NULL
+          AND fallback_provider = NEW.provider
+          AND fallback_model = NEW.model
+      ) THEN
+        RAISE EXCEPTION 'discovery fallback provider job must match frozen fallback provider/model'
+          USING ERRCODE = '23514';
+      END IF;
+    END IF;
   END IF;
 
   RETURN NEW;
@@ -451,6 +477,7 @@ BEGIN
        NEW.job_kind IS DISTINCT FROM OLD.job_kind
        OR NEW.prompt_job_id IS DISTINCT FROM OLD.prompt_job_id
        OR NEW.discovery_job_id IS DISTINCT FROM OLD.discovery_job_id
+       OR NEW.discovery_attempt IS DISTINCT FROM OLD.discovery_attempt
        OR NEW.provider IS DISTINCT FROM OLD.provider
        OR NEW.model IS DISTINCT FROM OLD.model
        OR NEW.response_contract_version IS DISTINCT FROM OLD.response_contract_version
@@ -475,16 +502,25 @@ BEGIN
   IF NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
      OR NEW.pre_analysis_request_id IS DISTINCT FROM OLD.pre_analysis_request_id
      OR NEW.domain_id IS DISTINCT FROM OLD.domain_id
+     OR NEW.stage IS DISTINCT FROM OLD.stage
+     OR NEW.domain_category_id IS DISTINCT FROM OLD.domain_category_id
+     OR NEW.category_brand_id IS DISTINCT FROM OLD.category_brand_id
+     OR NEW.brand_product_id IS DISTINCT FROM OLD.brand_product_id
+     OR NEW.branch_key IS DISTINCT FROM OLD.branch_key
      OR NEW.candidate_set_hash IS DISTINCT FROM OLD.candidate_set_hash
      OR NEW.primary_provider IS DISTINCT FROM OLD.primary_provider
      OR NEW.primary_model IS DISTINCT FROM OLD.primary_model
+     OR NEW.fallback_provider IS DISTINCT FROM OLD.fallback_provider
+     OR NEW.fallback_model IS DISTINCT FROM OLD.fallback_model
      OR NEW.model_profile_version IS DISTINCT FROM OLD.model_profile_version
+     OR NEW.discovery_policy_version IS DISTINCT FROM OLD.discovery_policy_version
      OR NEW.prompt_version IS DISTINCT FROM OLD.prompt_version
      OR NEW.response_contract_version IS DISTINCT FROM OLD.response_contract_version
      OR NEW.provider_instruction_profile IS DISTINCT FROM OLD.provider_instruction_profile
      OR NEW.structured_output_mode IS DISTINCT FROM OLD.structured_output_mode
      OR NEW.input_payload IS DISTINCT FROM OLD.input_payload
      OR NEW.candidate_count IS DISTINCT FROM OLD.candidate_count
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at
      OR (
        OLD.rendered_prompt IS NOT NULL
        AND NEW.rendered_prompt IS DISTINCT FROM OLD.rendered_prompt
@@ -492,6 +528,193 @@ BEGIN
     RAISE EXCEPTION 'hierarchy discovery execution identity is immutable'
       USING ERRCODE = '23514';
   END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+CREATE FUNCTION public.validate_hierarchy_discovery_job_branch() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.pre_analysis_requests AS request
+    WHERE request.pre_analysis_request_id = NEW.pre_analysis_request_id
+      AND request.domain_id = NEW.domain_id
+  ) THEN
+    RAISE EXCEPTION 'discovery job domain must match its owning request domain'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF NEW.stage IN ('brand', 'product', 'use_context') AND NOT EXISTS (
+    SELECT 1
+    FROM public.domain_categories AS domain_category
+    WHERE domain_category.domain_category_id = NEW.domain_category_id
+      AND domain_category.domain_id = NEW.domain_id
+  ) THEN
+    RAISE EXCEPTION 'discovery domain-category parent does not belong to job domain'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF NEW.stage IN ('product', 'use_context') AND NOT EXISTS (
+    SELECT 1
+    FROM public.category_brands AS category_brand
+    WHERE category_brand.category_brand_id = NEW.category_brand_id
+      AND category_brand.domain_category_id = NEW.domain_category_id
+  ) THEN
+    RAISE EXCEPTION 'discovery category-brand parent does not belong to domain-category branch'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF NEW.stage = 'use_context' AND NOT EXISTS (
+    SELECT 1
+    FROM public.brand_products AS brand_product
+    WHERE brand_product.brand_product_id = NEW.brand_product_id
+      AND brand_product.category_brand_id = NEW.category_brand_id
+  ) THEN
+    RAISE EXCEPTION 'discovery brand-product parent does not belong to category-brand branch'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+CREATE FUNCTION public.validate_hierarchy_discovery_relationship() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  discovery_job public.hierarchy_discovery_jobs%ROWTYPE;
+BEGIN
+  SELECT * INTO discovery_job
+  FROM public.hierarchy_discovery_jobs
+  WHERE hierarchy_discovery_job_id = NEW.hierarchy_discovery_job_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'discovery lineage job does not exist'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF discovery_job.stage = 'category' THEN
+    IF NEW.domain_category_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM public.domain_categories
+      WHERE domain_category_id = NEW.domain_category_id
+        AND domain_id = discovery_job.domain_id
+    ) THEN
+      RAISE EXCEPTION 'category discovery lineage must reference a domain-category in the job domain'
+        USING ERRCODE = '23514';
+    END IF;
+  ELSIF discovery_job.stage = 'brand' THEN
+    IF NEW.category_brand_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM public.category_brands
+      WHERE category_brand_id = NEW.category_brand_id
+        AND domain_category_id = discovery_job.domain_category_id
+    ) THEN
+      RAISE EXCEPTION 'brand discovery lineage must reference a category-brand in the job branch'
+        USING ERRCODE = '23514';
+    END IF;
+  ELSIF discovery_job.stage = 'product' THEN
+    IF NEW.brand_product_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM public.brand_products
+      WHERE brand_product_id = NEW.brand_product_id
+        AND category_brand_id = discovery_job.category_brand_id
+    ) THEN
+      RAISE EXCEPTION 'product discovery lineage must reference a brand-product in the job branch'
+        USING ERRCODE = '23514';
+    END IF;
+  ELSIF discovery_job.stage = 'use_context' THEN
+    IF NEW.product_use_context_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM public.product_use_contexts
+      WHERE product_use_context_id = NEW.product_use_context_id
+        AND brand_product_id = discovery_job.brand_product_id
+    ) THEN
+      RAISE EXCEPTION 'use-context discovery lineage must reference a product-use-context in the job branch'
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
+
+  IF NEW.provider_result_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1
+    FROM public.provider_results AS result
+    JOIN public.provider_jobs AS provider_job
+      ON provider_job.provider_job_id = result.provider_job_id
+    WHERE result.provider_result_id = NEW.provider_result_id
+      AND provider_job.job_kind = 'hierarchy_discovery'
+      AND provider_job.discovery_job_id = NEW.hierarchy_discovery_job_id
+  ) THEN
+    RAISE EXCEPTION 'discovery lineage provider result must belong to the same discovery job'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+CREATE FUNCTION public.preserve_pre_analysis_request_identity() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
+     OR NEW.anonymous_session_id IS DISTINCT FROM OLD.anonymous_session_id
+     OR NEW.user_id IS DISTINCT FROM OLD.user_id
+     OR NEW.workspace_id IS DISTINCT FROM OLD.workspace_id
+     OR NEW.domain_id IS DISTINCT FROM OLD.domain_id
+     OR NEW.starting_entity_path_id IS DISTINCT FROM OLD.starting_entity_path_id
+     OR NEW.category_selection_mode IS DISTINCT FROM OLD.category_selection_mode
+     OR NEW.prompt_depth IS DISTINCT FROM OLD.prompt_depth
+     OR NEW.source IS DISTINCT FROM OLD.source
+     OR NEW.request_payload IS DISTINCT FROM OLD.request_payload
+     OR NEW.canonical_request_hash IS DISTINCT FROM OLD.canonical_request_hash
+     OR NEW.discovery_compatibility_hash IS DISTINCT FROM OLD.discovery_compatibility_hash
+     OR (
+       OLD.reused_from_pre_analysis_request_id IS NOT NULL
+       AND NEW.reused_from_pre_analysis_request_id IS DISTINCT FROM OLD.reused_from_pre_analysis_request_id
+     )
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at
+  THEN
+    RAISE EXCEPTION 'pre-analysis request accepted identity is immutable'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+CREATE FUNCTION public.validate_pre_analysis_run_reciprocity() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  linked_request_id bigint;
+  linked_run_id bigint;
+BEGIN
+  IF TG_TABLE_NAME = 'pre_analysis_requests' THEN
+    IF NEW.analysis_run_id IS NULL THEN
+      RETURN NEW;
+    END IF;
+    SELECT pre_analysis_request_id INTO linked_request_id
+    FROM public.analysis_runs
+    WHERE analysis_run_id = NEW.analysis_run_id;
+    IF linked_request_id IS DISTINCT FROM NEW.pre_analysis_request_id THEN
+      RAISE EXCEPTION 'pre-analysis request and analysis run links must be reciprocal'
+        USING ERRCODE = '23514';
+    END IF;
+  ELSE
+    IF NEW.pre_analysis_request_id IS NULL THEN
+      RETURN NEW;
+    END IF;
+    SELECT analysis_run_id INTO linked_run_id
+    FROM public.pre_analysis_requests
+    WHERE pre_analysis_request_id = NEW.pre_analysis_request_id;
+    IF linked_run_id IS DISTINCT FROM NEW.analysis_run_id THEN
+      RAISE EXCEPTION 'analysis run and pre-analysis request links must be reciprocal'
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
+
   RETURN NEW;
 END;
 $$;
@@ -3024,6 +3247,18 @@ CREATE TRIGGER analysis_run_requested_categories_immutable_trigger BEFORE DELETE
 
 CREATE TRIGGER hierarchy_discovery_jobs_identity_trigger BEFORE UPDATE ON public.hierarchy_discovery_jobs FOR EACH ROW EXECUTE FUNCTION public.preserve_hierarchy_discovery_job_execution_identity();
 
+CREATE TRIGGER hierarchy_discovery_jobs_branch_trigger BEFORE INSERT OR UPDATE ON public.hierarchy_discovery_jobs FOR EACH ROW EXECUTE FUNCTION public.validate_hierarchy_discovery_job_branch();
+
+CREATE TRIGGER hierarchy_discovery_relationships_validate_trigger BEFORE INSERT OR UPDATE ON public.hierarchy_discovery_relationships FOR EACH ROW EXECUTE FUNCTION public.validate_hierarchy_discovery_relationship();
+
+CREATE TRIGGER hierarchy_discovery_relationships_immutable_trigger BEFORE DELETE OR UPDATE ON public.hierarchy_discovery_relationships FOR EACH ROW EXECUTE FUNCTION public.reject_immutable_evidence_mutation();
+
+CREATE TRIGGER pre_analysis_requests_identity_trigger BEFORE UPDATE ON public.pre_analysis_requests FOR EACH ROW EXECUTE FUNCTION public.preserve_pre_analysis_request_identity();
+
+CREATE CONSTRAINT TRIGGER pre_analysis_requests_run_reciprocity_trigger AFTER INSERT OR UPDATE ON public.pre_analysis_requests DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.validate_pre_analysis_run_reciprocity();
+
+CREATE CONSTRAINT TRIGGER analysis_runs_pre_request_reciprocity_trigger AFTER INSERT OR UPDATE ON public.analysis_runs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.validate_pre_analysis_run_reciprocity();
+
 
 --
 -- Name: analysis_runs analysis_runs_notify_budget_paused_trigger; Type: TRIGGER; Schema: public; Owner: -
@@ -3071,7 +3306,7 @@ CREATE TRIGGER failure_records_notify_terminal_trigger AFTER INSERT ON public.fa
 -- Name: provider_jobs provider_jobs_require_rendered_prompt_trigger; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER provider_jobs_require_rendered_prompt_trigger BEFORE INSERT OR UPDATE OF job_kind, prompt_job_id, discovery_job_id ON public.provider_jobs FOR EACH ROW EXECUTE FUNCTION public.enforce_provider_job_rendered_prompt();
+CREATE TRIGGER provider_jobs_require_rendered_prompt_trigger BEFORE INSERT OR UPDATE OF job_kind, prompt_job_id, discovery_job_id, discovery_attempt, provider, model ON public.provider_jobs FOR EACH ROW EXECUTE FUNCTION public.enforce_provider_job_rendered_prompt();
 
 
 CREATE TRIGGER provider_jobs_preserve_execution_identity_trigger BEFORE UPDATE ON public.provider_jobs FOR EACH ROW EXECUTE FUNCTION public.preserve_provider_job_execution_identity();
